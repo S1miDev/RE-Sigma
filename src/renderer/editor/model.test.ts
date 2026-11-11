@@ -1,0 +1,383 @@
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
+import type { RefigApi } from '../../shared/api'
+import { emptyDocument, makeNode, solid, type Document, type Node, type NodeType } from '../../shared/document'
+import { frameAt, hitTest, marqueeHits } from './canvas/hit'
+import { handleAt, handlesOf } from './canvas/overlay'
+import { snap, snapTargets } from './canvas/snap'
+import { fitView, toScreen, toWorld, zoomAt } from './canvas/viewport'
+import { COMMANDS, keyOf } from './commands'
+import { toSvg } from './export/svg'
+import { apply, corners, invert, lineBetween, localMatrix, mul, resizeBox, worldBox } from './model/geometry'
+import { addPage, childrenOf, duplicate, group, insert, moveTo, movePage, patch, remove, removePage, reorder, resizeNode, topLevel, translate, ungroup } from './model/ops'
+import { AUTOSAVE_MS, createEditorStore } from './store'
+import { beginGesture, type Pointer } from './tools'
+
+const near = (a: number, b: number) => expect(a).toBeCloseTo(b, 6)
+function scene() {
+  let doc: Document = emptyDocument()
+  const page = doc.pages[0]
+  const add = (type: NodeType, parentId: string, props: Partial<Node>) => {
+    const n = makeNode(type, { fills: [solid(1, 0, 0)], ...props })
+    doc = insert(doc, n, parentId)
+    return n.id
+  }
+  const frame = add('FRAME', page, { x: 100, y: 100, width: 200, height: 200 })
+  const inner = add('RECTANGLE', frame, { x: 10, y: 10, width: 50, height: 50 })
+  const a = add('RECTANGLE', page, { x: 400, y: 0, width: 100, height: 100 })
+  const b = add('ELLIPSE', page, { x: 450, y: 50, width: 100, height: 100 })
+  return { doc, page, frame, inner, a, b }
+}
+const names = (doc: Document, parent: string) => childrenOf(doc, parent).map((n) => n.id)
+
+test('matrices: a rotated node maps its corners about its centre, and inverts', () => {
+  const n = makeNode('RECTANGLE', { x: 10, y: 20, width: 100, height: 50, rotation: 90 })
+  const m = localMatrix(n), c = apply(m, { x: 50, y: 25 })
+  near(c.x, 60); near(c.y, 45) // the centre doesn't move
+  const p = apply(m, { x: 0, y: 0 })
+  near(p.x, 85); near(p.y, -5)
+  const back = apply(mul(invert(m), m), { x: 3, y: 4 })
+  near(back.x, 3); near(back.y, 4)
+})
+
+test('worldBox follows nesting', () => {
+  const { doc, inner, frame } = scene()
+  expect(worldBox(doc, [inner])).toEqual({ x: 110, y: 110, w: 50, h: 50 })
+  const rotated = patch(doc, [frame], { rotation: 180 })
+  const box = worldBox(rotated, [inner])!
+  near(box.x, 240); near(box.y, 240)
+})
+
+test('resizeBox keeps the opposite edge fixed, flips, and honours Shift/Alt', () => {
+  const n = makeNode('RECTANGLE', { x: 0, y: 0, width: 100, height: 50 })
+  expect(resizeBox(n, 1, 1, { x: 150, y: 80 })).toEqual({ x: 0, y: 0, width: 150, height: 80 })
+  expect(resizeBox(n, -1, 0, { x: 20, y: 999 })).toEqual({ x: 20, y: 0, width: 80, height: 50 })
+  expect(resizeBox(n, 1, 0, { x: -40, y: 0 })).toMatchObject({ x: -40, width: 40 }) // dragged past the left edge
+  expect(resizeBox(n, 1, 1, { x: 200, y: 60 }, { shift: true })).toMatchObject({ width: 200, height: 100 })
+  expect(resizeBox(n, 1, 0, { x: 120, y: 0 }, { alt: true })).toMatchObject({ x: -20, width: 140 })
+  const r = resizeBox({ ...n, rotation: 90 }, 1, 0, { x: 50, y: 125 }) // right edge points down when rotated 90°
+  near(r.width, 150); near(r.height, 50)
+  const line = lineBetween({ x: 0, y: 0 }, { x: 0, y: 10 })
+  near(line.rotation, 90); near(line.width, 10); near(line.x, -5); near(line.y, 5)
+})
+
+test('insert stacks on top; reorder moves within siblings', () => {
+  const { doc, page, frame, a, b } = scene()
+  expect(names(doc, page)).toEqual([frame, a, b])
+  expect(names(reorder(doc, [frame], 'forward'), page)).toEqual([a, frame, b])
+  expect(names(reorder(doc, [b], 'back'), page)).toEqual([b, frame, a])
+  expect(names(reorder(doc, [frame, a], 'front'), page)).toEqual([b, frame, a])
+  expect(names(reorder(doc, [b], 'forward'), page)).toEqual([frame, a, b]) // already on top
+  expect(reorder(doc, [b], 'forward')).toBe(doc)
+})
+
+test('remove takes descendants; pages are not removable through it', () => {
+  const { doc, page, frame, inner } = scene()
+  const next = remove(doc, [frame, page])
+  expect(next.nodes[frame]).toBeUndefined()
+  expect(next.nodes[inner]).toBeUndefined()
+  expect(next.nodes[page]).toBeDefined()
+})
+
+test('moveTo reparents without moving the node on the page, and refuses cycles', () => {
+  const { doc, page, frame, inner, a } = scene()
+  const rotated = patch(doc, [frame], { rotation: 30 })
+  const before = corners(rotated, a)
+  const moved = moveTo(rotated, [a], frame)
+  expect(moved.nodes[a].parentId).toBe(frame)
+  corners(moved, a).forEach((p, i) => { near(p.x, before[i].x); near(p.y, before[i].y) })
+  near(moved.nodes[a].rotation, -30)
+  expect(names(moveTo(doc, [a], frame, { before: inner }), frame)).toEqual([a, inner])
+  expect(moveTo(doc, [frame], frame)).toBe(doc)
+  const nested = moveTo(doc, [a], frame)
+  expect(moveTo(nested, [frame], a)).toBe(nested) // a isn't a container
+  expect(names(moveTo(doc, [inner], page, { after: a }), page).indexOf(inner)).toBe(2)
+})
+
+test('group wraps children, ungroup restores them in place', () => {
+  const { doc, page, frame, a, b } = scene()
+  const g = group(doc, [a, b], 'GROUP')
+  expect(doc.nodes[a].parentId).toBe(page)
+  const box = g.doc.nodes[g.id!]
+  expect(box).toMatchObject({ type: 'GROUP', x: 400, y: 0, width: 150, height: 150 })
+  expect(g.doc.nodes[a]).toMatchObject({ parentId: g.id, x: 0, y: 0 })
+  expect(g.doc.nodes[b]).toMatchObject({ x: 50, y: 50 })
+  expect(names(g.doc, page)).toEqual([frame, g.id])
+
+  const un = ungroup(g.doc, [g.id!])
+  expect(un.ids).toEqual([a, b])
+  expect(un.doc.nodes[g.id!]).toBeUndefined()
+  expect(un.doc.nodes[b]).toMatchObject({ parentId: page, x: 450, y: 50 })
+
+  // resizing a group scales its children
+  const scaled = resizeNode(g.doc, g.id!, { x: 400, y: 0, width: 300, height: 150 })
+  expect(scaled.nodes[b]).toMatchObject({ x: 100, width: 200, height: 100 })
+})
+
+test('duplicate copies subtrees with new ids directly above the original', () => {
+  const { doc, page, frame, inner, a, b } = scene()
+  const d = duplicate(doc, [frame, inner])
+  expect(d.ids).toHaveLength(1) // inner is inside frame, so only frame is duplicated
+  const copy = d.ids[0]
+  expect(names(d.doc, page)).toEqual([frame, copy, a, b])
+  expect(childrenOf(d.doc, copy)).toHaveLength(1)
+  expect(childrenOf(d.doc, copy)[0].id).not.toBe(inner)
+  expect(topLevel(doc, [inner, frame, 'missing'])).toEqual([frame])
+})
+
+test('translate moves by a page delta even inside a rotated parent', () => {
+  const { doc, frame, inner } = scene()
+  const rotated = patch(doc, [frame], { rotation: 90 })
+  const before = worldBox(rotated, [inner])!
+  const after = worldBox(translate(rotated, [inner], { x: 10, y: 0 }), [inner])!
+  near(after.x, before.x + 10); near(after.y, before.y)
+})
+
+test('pages: add, reorder, remove (never the last one)', () => {
+  const { doc, page } = scene()
+  const added = addPage(doc)
+  expect(added.doc.nodes[added.id].name).toBe('Page 2')
+  expect(movePage(added.doc, added.id, 0).pages).toEqual([added.id, page])
+  const removed = removePage(added.doc, page)
+  expect(removed.pages).toEqual([added.id])
+  expect(Object.keys(removed.nodes)).toEqual([added.id])
+  expect(removePage(removed, added.id)).toBe(removed)
+})
+
+test('viewport: zoomAt keeps the point under the cursor; fitView centres', () => {
+  const v = { x: 30, y: -20, zoom: 1.5 }, p = { x: 200, y: 100 }
+  const z = zoomAt(v, p, 4)
+  expect(toWorld(z, p)).toEqual(toWorld(v, p))
+  expect(toScreen(v, toWorld(v, p))).toEqual(p)
+  expect(zoomAt(v, p, 1e9).zoom).toBe(256)
+  const fit = fitView({ x: 0, y: 0, w: 1000, h: 500 }, { w: 596, h: 596 }, 48)
+  expect(fit.zoom).toBe(0.5)
+  expect(toScreen(fit, { x: 500, y: 250 })).toEqual({ x: 298, y: 298 })
+  expect(fitView(null, { w: 100, h: 100 })).toEqual({ zoom: 1, x: 50, y: 50 })
+  expect(fitView({ x: 0, y: 0, w: 10, h: 10 }, { w: 500, h: 500 }, 48, 1).zoom).toBe(1)
+})
+
+test('hit testing: top-most wins, frames expose children, groups answer for theirs, hidden/locked are skipped', () => {
+  const { doc, page, frame, inner, a, b } = scene()
+  expect(hitTest(doc, page, { x: 460, y: 60 })).toBe(a) // inside a's box but outside b's ellipse
+  expect(hitTest(doc, page, { x: 490, y: 90 })).toBe(b)
+  expect(hitTest(doc, page, { x: 120, y: 120 })).toBe(inner)
+  expect(hitTest(doc, page, { x: 250, y: 250 })).toBe(frame)
+  expect(hitTest(doc, page, { x: 0, y: 0 })).toBeNull()
+  expect(hitTest(patch(doc, [b], { locked: true }), page, { x: 490, y: 90 })).toBe(a)
+  expect(hitTest(patch(doc, [inner], { visible: false }), page, { x: 120, y: 120 })).toBe(frame)
+  const g = group(doc, [a, b], 'GROUP')
+  expect(hitTest(g.doc, page, { x: 490, y: 90 })).toBe(g.id)
+  expect(hitTest(g.doc, page, { x: 490, y: 90 }, { deep: true })).toBe(b)
+  expect(hitTest(g.doc, page, { x: 410, y: 140 })).toBeNull() // inside the group's box but on no child
+  const line = insert(doc, makeNode('LINE', { ...lineBetween({ x: 0, y: 300 }, { x: 100, y: 400 }), strokes: [solid(0, 0, 0)] }), page)
+  expect(hitTest(line, page, { x: 51, y: 50 + 300 }, { tolerance: 4 })).not.toBeNull()
+  expect(hitTest(line, page, { x: 80, y: 320 }, { tolerance: 4 })).toBeNull()
+
+  expect(marqueeHits(doc, page, { x: 390, y: -10, w: 300, h: 300 })).toEqual([a, b])
+  expect(marqueeHits(doc, page, { x: 90, y: 90, w: 80, h: 80 })).toEqual([inner]) // frame only partly covered
+  expect(marqueeHits(doc, page, { x: 90, y: 90, w: 300, h: 300 })).toEqual([frame])
+  expect(frameAt(doc, page, { x: 150, y: 150 })).toBe(frame)
+  expect(frameAt(doc, page, { x: 150, y: 150 }, [frame])).toBe(page)
+  expect(frameAt(doc, page, { x: 0, y: 0 })).toBe(page)
+})
+
+test('snapping picks the nearest edge or centre within the threshold', () => {
+  const targets = [{ x: 100, y: 100, w: 100, h: 100 }]
+  expect(snap([97], [300], targets, 5)).toEqual({ dx: 3, dy: 0, guides: { x: 100 } })
+  expect(snap([146, 153], [198], targets, 5)).toEqual({ dx: -3, dy: 2, guides: { x: 150, y: 200 } })
+  expect(snap([94], [], targets, 5)).toEqual({ dx: 0, dy: 0, guides: {} })
+  const { doc, page, frame, inner, a, b } = scene()
+  expect(snapTargets(doc, page, [a])).toHaveLength(2)
+  expect(snapTargets(doc, frame, [inner])).toEqual([worldBox(doc, [frame])]) // the parent frame itself
+  expect(b).toBeTruthy()
+})
+
+test('handles: eight plus rotate for a box, two for a line, none when locked', () => {
+  const { doc, a } = scene(), view = { x: 0, y: 0, zoom: 2 }
+  const hs = handlesOf(doc, a, view)
+  expect(hs).toHaveLength(9)
+  expect(handleAt(hs, { x: 1000, y: 200 })).toMatchObject({ kind: 'resize', hx: 1, hy: 1 })
+  expect(handleAt(hs, { x: 900, y: -22 })?.kind).toBe('rotate')
+  expect(handleAt(hs, { x: 900, y: 100 })).toBeUndefined()
+  expect(handlesOf(patch(doc, [a], { locked: true }), a, view)).toEqual([])
+  expect(handlesOf(patch(doc, [a], { type: 'LINE', height: 0 }), a, view)).toHaveLength(2)
+})
+
+test('keyOf normalises shortcuts; every command key is unique', () => {
+  const ev = (key: string, code: string, mods: Partial<KeyboardEvent> = {}) => keyOf({ key, code, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...mods })
+  expect(ev('z', 'KeyZ', { ctrlKey: true })).toBe('Ctrl+Z')
+  expect(ev('!', 'Digit1', { shiftKey: true })).toBe('Shift+1') // layout-independent digits
+  expect(ev('G', 'KeyG', { ctrlKey: true, altKey: true })).toBe('Ctrl+Alt+G')
+  expect(ev(']', 'BracketRight')).toBe(']')
+  const keys = COMMANDS.flatMap((c) => c.keys ?? [])
+  expect(new Set(keys).size).toBe(keys.length)
+})
+
+test('SVG export escapes text and reflects the selection box', () => {
+  const { doc, page, a } = scene()
+  const withText = insert(doc, makeNode('TEXT', { characters: '<b>&"x"', x: 5, y: 5, width: 50, height: 19, fills: [solid(0, 0, 0)], effects: [{ visible: true, x: 1, y: 2, blur: 4, spread: 0, color: { r: 0, g: 0, b: 0, a: 0.5 } }] }), page)
+  const text = childrenOf(withText, page).at(-1)!.id
+  const svg = toSvg(withText, [a, text], () => undefined)
+  expect(svg).toMatch(/^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" width="495" height="100" viewBox="5 0 495 100">/)
+  expect(svg).toContain('&#60;b&#62;&#38;&#34;x&#34;')
+  expect(svg).not.toContain('<b>')
+  expect(svg).toContain('feGaussianBlur stdDeviation="2"')
+  expect(svg).toContain('fill="rgb(255,0,0)"')
+})
+
+// ── store ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+function fakeApi(over: Partial<RefigApi> = {}) {
+  const saveProject = vi.fn(async (id: string) => ({ id, name: 'P', modifiedAt: '', thumbnail: null }))
+  return { api: { saveProject, addImage: vi.fn(async () => 'h'.repeat(64)), ...over } as unknown as RefigApi, saveProject }
+}
+function open(over: Partial<RefigApi> = {}) {
+  const s = scene(), f = fakeApi(over)
+  const store = createEditorStore({ summary: { id: 'p1', name: 'P', modifiedAt: '', thumbnail: null }, document: s.doc, images: {} }, f.api)
+  return { ...s, ...f, store }
+}
+beforeEach(() => void vi.useFakeTimers())
+afterEach(() => void vi.useRealTimers())
+
+test('store: undo/redo restore document and selection; tagged edits share one step', () => {
+  const { store, a, doc } = open()
+  store.update((d) => patch(d, [a], { x: 1 }), undefined, [a])
+  store.update((d) => patch(d, [a], { x: 2 }), 'gesture1')
+  store.update((d) => patch(d, [a], { x: 3 }), 'gesture1')
+  expect(store.get().doc.nodes[a].x).toBe(3)
+  store.undo()
+  expect(store.get().doc.nodes[a].x).toBe(1)
+  expect(store.get().selection).toEqual([a])
+  store.undo()
+  expect(store.get().doc).toBe(doc)
+  expect(store.canUndo()).toBe(false)
+  store.redo(); store.redo()
+  expect(store.get().doc.nodes[a].x).toBe(3)
+  store.update((d) => remove(d, [a]))
+  expect(store.get().selection).toEqual([]) // selection never points at a deleted node
+  expect(store.canRedo()).toBe(false)
+  store.update((d) => d) // a no-op adds no history
+  store.undo()
+  expect(store.get().doc.nodes[a]).toBeDefined()
+})
+
+test('store: groups refit and empty groups vanish after any edit', () => {
+  const { store, a, b } = open()
+  let gid = ''
+  store.update((d) => { const g = group(d, [a, b], 'GROUP'); gid = g.id!; return g.doc })
+  store.update((d) => patch(d, [b], { x: 200 }))
+  expect(store.get().doc.nodes[gid].width).toBe(300)
+  store.update((d) => remove(d, [a, b]))
+  expect(store.get().doc.nodes[gid]).toBeUndefined()
+})
+
+test('store: autosaves after the debounce, reports failure, keeps the document and retries', async () => {
+  let fail = true
+  const { store, a, saveProject } = open({ saveProject: vi.fn(async () => { if (fail) throw new Error("Error invoking remote method 'refig:saveProject': Error: disk full"); return { id: 'p1', name: 'P', modifiedAt: '', thumbnail: null } }) })
+  expect(saveProject).toBeDefined()
+  const save = store.api.saveProject as ReturnType<typeof vi.fn>
+  store.update((d) => patch(d, [a], { x: 9 }))
+  expect(store.get().save).toBe('dirty')
+  await vi.advanceTimersByTimeAsync(AUTOSAVE_MS - 1)
+  expect(save).not.toHaveBeenCalled()
+  await vi.advanceTimersByTimeAsync(1)
+  expect(save).toHaveBeenCalledTimes(1)
+  expect(store.get()).toMatchObject({ save: 'error', saveError: 'disk full' })
+  expect(store.get().doc.nodes[a].x).toBe(9)
+  expect(store.isDirty()).toBe(true)
+  fail = false
+  await vi.advanceTimersByTimeAsync(5000)
+  expect(store.get().save).toBe('saved')
+  expect(save.mock.calls.at(-1)![1].nodes[a].x).toBe(9)
+  expect(await store.save()).toBe(true) // nothing to do
+  expect(save).toHaveBeenCalledTimes(2)
+})
+
+test('store: an edit made while a save is in flight is saved afterwards', async () => {
+  let release = () => {}
+  const save = vi.fn(() => new Promise<never>((done) => (release = () => done(undefined as never))))
+  const { store, a } = open({ saveProject: save as never })
+  store.update((d) => patch(d, [a], { x: 1 }))
+  const first = store.save()
+  store.update((d) => patch(d, [a], { x: 2 }))
+  expect(store.get().save).toBe('saving')
+  release()
+  await first
+  expect(store.get().save).toBe('dirty')
+  await vi.advanceTimersByTimeAsync(AUTOSAVE_MS)
+  release()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(save).toHaveBeenCalledTimes(2)
+  expect(store.get().save).toBe('saved')
+})
+
+// ── tools ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+const at = (x: number, y: number, mods: Partial<Pointer> = {}): Pointer => ({ screen: { x, y }, world: { x, y }, shift: false, alt: false, ctrl: false, ...mods })
+function drag(store: ReturnType<typeof open>['store'], from: Pointer, ...to: Pointer[]) {
+  const g = beginGesture(store, from)
+  for (const p of to) g?.move(p)
+  g?.up(to.at(-1) ?? from)
+}
+
+test('tools: rectangle drag draws inside the frame under the pointer, then returns to Move', () => {
+  const { store, frame } = open()
+  store.set({ tool: 'rectangle' })
+  drag(store, at(120, 180), at(150, 200), at(170, 240))
+  const s = store.get(), id = s.selection[0]
+  expect(s.tool).toBe('move')
+  expect(s.doc.nodes[id]).toMatchObject({ type: 'RECTANGLE', parentId: frame, x: 20, y: 80, width: 50, height: 60, name: 'Rectangle 1' })
+  store.undo()
+  expect(store.get().doc.nodes[id]).toBeUndefined() // the whole drag is one undo step
+  store.set({ tool: 'ellipse' })
+  drag(store, at(700, 700))
+  expect(store.get().doc.nodes[store.get().selection[0]]).toMatchObject({ type: 'ELLIPSE', x: 700, y: 700, width: 100, height: 100 })
+})
+
+test('tools: click selects, Shift adds, drag moves and reparents on drop, marquee selects', () => {
+  const { store, page, frame, a, b } = open()
+  drag(store, at(410, 10))
+  expect(store.get().selection).toEqual([a])
+  drag(store, at(540, 100, { shift: true }))
+  expect(store.get().selection).toEqual([a, b])
+  drag(store, at(0, 300))
+  expect(store.get().selection).toEqual([])
+
+  drag(store, at(410, 10), at(300, 110), at(160, 210)) // drop a inside the frame
+  expect(store.get().doc.nodes[a]).toMatchObject({ parentId: frame, x: 50, y: 100 })
+  store.undo()
+  expect(store.get().doc.nodes[a]).toMatchObject({ parentId: page, x: 400, y: 0 })
+
+  drag(store, at(600, 300), at(380, -20))
+  expect(store.get().selection).toEqual([a, b])
+  expect(store.get().overlay).toEqual({})
+})
+
+test('tools: moving snaps to a sibling edge and shows a guide while dragging', () => {
+  const { store, a } = open()
+  const g = beginGesture(store, at(410, 10))!
+  g.move(at(410, 163)) // a's top would be at 153; b's bottom edge is at 150
+  expect(store.get().doc.nodes[a].y).toBe(150)
+  expect(store.get().overlay.guides).toEqual({ x: 450, y: 150 })
+  g.up(at(410, 163))
+  expect(store.get().overlay).toEqual({})
+})
+
+test('tools: handles resize and rotate the selected node', () => {
+  const { store, a } = open()
+  store.set({ selection: [a] })
+  drag(store, at(500, 100), at(520, 130), at(700, 300))
+  expect(store.get().doc.nodes[a]).toMatchObject({ x: 400, y: 0, width: 300, height: 300 })
+  drag(store, at(550, -22), at(872, 150, { shift: true }))
+  expect(store.get().doc.nodes[a].rotation).toBe(90)
+})
+
+test('tools: text tool creates a node in edit mode; hand tool pans', () => {
+  const { store, page } = open()
+  store.set({ tool: 'text' })
+  drag(store, at(10, 500))
+  const s = store.get(), id = s.selection[0]
+  expect(s).toMatchObject({ tool: 'move', editingText: id })
+  expect(s.doc.nodes[id]).toMatchObject({ type: 'TEXT', parentId: page, x: 10, y: 500, textAutoWidth: true })
+  store.set({ tool: 'hand', editingText: null })
+  drag(store, at(0, 0), at(30, 40))
+  expect(store.get().view).toMatchObject({ x: 30, y: 40 })
+})

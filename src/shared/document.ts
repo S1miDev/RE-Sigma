@@ -1,0 +1,94 @@
+// The Refig document model. Flat node map with parentId + fractional order, like Figma's NodeChange list.
+export type Color = { r: number; g: number; b: number; a: number } // floats 0–1
+export type Paint =
+  | { type: 'SOLID'; visible: boolean; color: Color }
+  | { type: 'IMAGE'; visible: boolean; hash: string }
+export type DropShadow = { visible: boolean; x: number; y: number; blur: number; spread: number; color: Color }
+
+export const NODE_TYPES = ['PAGE', 'FRAME', 'GROUP', 'RECTANGLE', 'ELLIPSE', 'LINE', 'TEXT'] as const
+export type NodeType = (typeof NODE_TYPES)[number]
+export const STROKE_ALIGNS = ['INSIDE', 'CENTER', 'OUTSIDE'] as const
+export const TEXT_ALIGNS = ['LEFT', 'CENTER', 'RIGHT'] as const
+
+export interface Node {
+  id: string
+  type: NodeType
+  name: string
+  parentId: string | null // null only for PAGE
+  order: string
+  visible: boolean
+  locked: boolean
+  x: number // top-left of the unrotated box, relative to the parent
+  y: number
+  width: number
+  height: number
+  rotation: number // degrees, clockwise, about the box centre
+  opacity: number
+  fills: Paint[]
+  strokes: Paint[]
+  strokeWeight: number
+  strokeAlign: (typeof STROKE_ALIGNS)[number]
+  effects: DropShadow[]
+  cornerRadius: number
+  clipsContent: boolean
+  // TEXT only
+  characters?: string
+  fontFamily?: string
+  fontWeight?: number
+  fontSize?: number
+  lineHeight?: number // px; 0 = auto
+  letterSpacing?: number // px
+  textAlign?: (typeof TEXT_ALIGNS)[number]
+  textAutoWidth?: boolean
+}
+
+export interface Document {
+  formatVersion: 1
+  pages: string[]
+  nodes: Record<string, Node>
+}
+
+export const FORMAT_VERSION = 1
+export const isContainer = (n: Node) => n.type === 'PAGE' || n.type === 'FRAME' || n.type === 'GROUP'
+export const solid = (r: number, g: number, b: number, a = 1): Paint => ({ type: 'SOLID', visible: true, color: { r, g, b, a } })
+
+export function makeNode(type: NodeType, props: Partial<Node> = {}): Node {
+  return {
+    id: crypto.randomUUID(),
+    type,
+    name: type[0] + type.slice(1).toLowerCase(),
+    parentId: null,
+    order: 'O',
+    visible: true,
+    locked: false,
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    rotation: 0,
+    opacity: 1,
+    fills: [],
+    strokes: [],
+    strokeWeight: 1,
+    strokeAlign: 'INSIDE',
+    effects: [],
+    cornerRadius: 0,
+    clipsContent: type === 'FRAME',
+    ...(type === 'TEXT' && {
+      characters: '',
+      fontFamily: 'Inter',
+      fontWeight: 400,
+      fontSize: 16,
+      lineHeight: 0,
+      letterSpacing: 0,
+      textAlign: 'LEFT' as const,
+      textAutoWidth: true,
+    }),
+    ...props,
+  }
+}
+
+export function emptyDocument(): Document {
+  const page = makeNode('PAGE', { name: 'Page 1', fills: [solid(0.96, 0.96, 0.96)] })
+  return { formatVersion: 1, pages: [page.id], nodes: { [page.id]: page } }
+}

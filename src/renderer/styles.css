@@ -1,0 +1,40 @@
+@import 'tailwindcss';
+
+/* Neutral dark greys and blue accent, after Figma's editor chrome. */
+@theme {
+  --color-canvas: #1e1e1e;
+  --color-panel: #2c2c2c;
+  --color-raised: #383838;
+  --color-hover: #444444;
+  --color-line: #444444;
+  --color-accent: #0d99ff;
+  --color-ink: #ffffff;
+  --color-dim: #b3b3b3;
+  --color-danger: #f24822;
+  --font-sans: 'Inter Variable', system-ui, sans-serif;
+}
+
+html {
+  color-scheme: dark; /* dark scrollbars, selects and pickers */
+}
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font: 12px/16px var(--font-sans);
+  user-select: none;
+}
+input,
+textarea {
+  user-select: text;
+}
+:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+}
