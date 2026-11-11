@@ -62,6 +62,5 @@ The Electron binary had to be fetched by hand on this machine (slow network); `n
 
 - Project folder is not a git repository.
 - `out/` also holds research output (`message.json`, `schema.txt`) next to the build output; the packager only takes `out/main`, `out/preload`, `out/renderer`.
-- `research/kiwi.mjs` duplicates `src/main/format/kiwi.ts`; it is kept for its dump CLI.
 - Research Chrome profile (`%TEMP%\rea-chrome-profile`) is still signed in to Figma.
 - The installer is unsigned: Windows SmartScreen warns on first run.

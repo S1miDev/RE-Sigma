@@ -76,7 +76,7 @@ test('closing the window right after an edit still saves it', async () => {
 
 test('imports a Figma .fig file and reports what was omitted', async () => {
   const page = await launch()
-  await answerDialogs([path.resolve('e2e', 'Untitled.fig')])
+  await answerDialogs([path.resolve('research', 'fixtures', 'Untitled.fig')])
   await page.getByRole('button', { name: 'Import' }).first().click()
   const results = page.getByRole('dialog', { name: 'Import results' })
   await expect(results).toContainText(/items omitted: .*VECTOR ×\d+/)
