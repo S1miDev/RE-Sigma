@@ -1,8 +1,8 @@
 // .refig = ZIP { meta.json, document.json, thumbnail.png?, images/<sha256> }. See docs/project-format.md.
 import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from 'fflate'
 import {
-  FORMAT_VERSION, NODE_TYPES, STROKE_ALIGNS, TEXT_ALIGNS,
-  type Color, type Document, type DropShadow, type Node, type Paint,
+  FILL_RULES, FORMAT_VERSION, NODE_TYPES, STROKE_ALIGNS, TEXT_ALIGNS,
+  type Color, type Document, type DropShadow, type Node, type Paint, type VectorPath,
 } from '../../shared/document'
 
 export interface Meta {
@@ -86,6 +86,11 @@ const shadows = (x: unknown, at: string): DropShadow[] =>
     blur: num(s, 'blur', at, 0), spread: num(s, 'spread', at), color: color(s.color, `${at}.color`),
   }))
 
+// Path data ends up inside SVG attributes on export, so only path commands and numbers are allowed.
+const PATH_DATA = /^[MLQCZ0-9eE.+\- ]*$/
+const vectorPaths = (x: unknown, at: string): VectorPath[] =>
+  list(x, at).map((p, i) => ({ d: PATH_DATA.test(str(p, 'd', `${at}.${i}`, 5_000_000)) ? (p.d as string) : fail(`${at}.${i}.d`), rule: oneOf(p, 'rule', `${at}.${i}`, FILL_RULES) }))
+
 function validateNode(id: string, n: unknown): Node {
   const at = `nodes.${id}`
   if (!NODE_ID.test(id) || !isObj(n) || n.id !== id) return fail(at)
@@ -120,6 +125,10 @@ function validateNode(id: string, n: unknown): Node {
       textAlign: oneOf(n, 'textAlign', at, TEXT_ALIGNS),
       textAutoWidth: bool(n, 'textAutoWidth', at),
     })
+  if (type === 'VECTOR') {
+    const v = isObj(n.vector) ? n.vector : fail(`${at}.vector`)
+    node.vector = { w: num(v, 'w', `${at}.vector`, 0), h: num(v, 'h', `${at}.vector`, 0), fill: vectorPaths(v.fill, `${at}.vector.fill`), stroke: vectorPaths(v.stroke, `${at}.vector.stroke`) }
+  }
   return node
 }
 

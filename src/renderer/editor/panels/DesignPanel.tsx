@@ -8,7 +8,7 @@ import { useEditor, useStore } from '../store'
 
 const FONTS = ['Inter', 'Arial', 'Georgia', 'Times New Roman', 'Courier New', 'Verdana', 'Segoe UI', 'Tahoma', 'Trebuchet MS']
 const WEIGHTS: [number, string][] = [[100, 'Thin'], [200, 'Extra Light'], [300, 'Light'], [400, 'Regular'], [500, 'Medium'], [600, 'Semi Bold'], [700, 'Bold'], [800, 'Extra Bold'], [900, 'Black']]
-const TYPE_LABEL: Record<Node['type'], string> = { PAGE: 'Page', FRAME: 'Frame', GROUP: 'Group', RECTANGLE: 'Rectangle', ELLIPSE: 'Ellipse', LINE: 'Line', TEXT: 'Text' }
+const TYPE_LABEL: Record<Node['type'], string> = { PAGE: 'Page', FRAME: 'Frame', GROUP: 'Group', RECTANGLE: 'Rectangle', ELLIPSE: 'Ellipse', LINE: 'Line', TEXT: 'Text', VECTOR: 'Vector' }
 const Row = ({ children }: { children: React.ReactNode }) => <div className="flex items-center gap-1.5">{children}</div>
 
 export function DesignPanel({ report }: { report(e: unknown): void }) {
@@ -75,7 +75,7 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
         <Paints title="Stroke" field="strokes" nodes={nodes} report={report}>
           <Row>
             <NumberField label="Stroke weight" prefix="≡" className="flex-1" min={0} value={common('strokeWeight')} onChange={(strokeWeight) => edit({ strokeWeight }, 'stroke-weight')} />
-            {none('LINE', 'TEXT') ? (
+            {none('LINE', 'TEXT', 'VECTOR') ? (
               <Select aria-label="Stroke align" className="flex-1" value={common('strokeAlign') ?? ''} onChange={(e) => edit({ strokeAlign: e.target.value as Node['strokeAlign'] }, 'stroke-align')}>
                 {common('strokeAlign') === null && <option value="" disabled>Mixed</option>}
                 {STROKE_ALIGNS.map((a) => <option key={a} value={a}>{a[0] + a.slice(1).toLowerCase()}</option>)}

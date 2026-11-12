@@ -1,7 +1,7 @@
 // Pure document operations: (doc, …) → new doc. Documents are immutable; unchanged nodes keep their identity.
 import { isContainer, makeNode, solid, type Document, type Node } from '../../../shared/document'
 import { orderBetween } from '../../../shared/order'
-import { apply, bounds, boxCorners, invert, localMatrix, worldMatrix, worldRotation, type Pt } from './geometry'
+import { apply, bounds, boxCorners, invert, localMatrix, worldBox, worldMatrix, worldRotation, type Pt } from './geometry'
 
 const byOrder = (a: Node, b: Node) => (a.order < b.order ? -1 : a.order > b.order ? 1 : 0)
 const indexes = new WeakMap<Document, Map<string, Node[]>>()
@@ -68,6 +68,35 @@ export function translate(doc: Document, ids: string[], d: Pt): Document {
     const m = invert(worldMatrix(doc, n.parentId)) // only the linear part matters for a delta
     return { x: n.x + m[0] * d.x + m[2] * d.y, y: n.y + m[1] * d.x + m[3] * d.y }
   })
+}
+
+const shift = (axis: 'x' | 'y', by: number): Pt => (axis === 'x' ? { x: by, y: 0 } : { x: 0, y: by })
+
+/** Aligns nodes to the edge/centre (to = 0 | 0.5 | 1) of their shared bounds; a lone node aligns to its parent (not a page). */
+export function align(doc: Document, ids: string[], axis: 'x' | 'y', to: 0 | 0.5 | 1): Document {
+  const top = topLevel(doc, ids).filter((id) => !doc.nodes[id].locked), size = axis === 'x' ? 'w' : 'h'
+  const parent = top.length === 1 ? doc.nodes[doc.nodes[top[0]].parentId ?? ''] : undefined
+  const ref = top.length > 1 ? worldBox(doc, top) : parent && parent.type !== 'PAGE' ? worldBox(doc, [parent.id]) : null
+  if (!ref) return doc
+  return top.reduce((d, id) => {
+    const b = worldBox(doc, [id])!
+    return translate(d, [id], shift(axis, ref[axis] + ref[size] * to - (b[axis] + b[size] * to)))
+  }, doc)
+}
+
+/** Spaces three or more nodes evenly along an axis; the outermost two stay put. */
+export function distribute(doc: Document, ids: string[], axis: 'x' | 'y'): Document {
+  const size = axis === 'x' ? 'w' : 'h'
+  const items = topLevel(doc, ids).filter((id) => !doc.nodes[id].locked).map((id) => ({ id, b: worldBox(doc, [id])! })).sort((p, q) => p.b[axis] - q.b[axis])
+  if (items.length < 3) return doc
+  const end = Math.max(...items.map(({ b }) => b[axis] + b[size]))
+  const gap = (end - items[0].b[axis] - items.reduce((sum, { b }) => sum + b[size], 0)) / (items.length - 1)
+  let at = items[0].b[axis] + items[0].b[size] + gap
+  return items.slice(1, -1).reduce((d, { id, b }) => {
+    const next = translate(d, [id], shift(axis, at - b[axis]))
+    at += b[size] + gap
+    return next
+  }, doc)
 }
 
 /**

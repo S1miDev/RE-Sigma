@@ -5,10 +5,13 @@ export type Paint =
   | { type: 'IMAGE'; visible: boolean; hash: string }
 export type DropShadow = { visible: boolean; x: number; y: number; blur: number; spread: number; color: Color }
 
-export const NODE_TYPES = ['PAGE', 'FRAME', 'GROUP', 'RECTANGLE', 'ELLIPSE', 'LINE', 'TEXT'] as const
+export const NODE_TYPES = ['PAGE', 'FRAME', 'GROUP', 'RECTANGLE', 'ELLIPSE', 'LINE', 'TEXT', 'VECTOR'] as const
 export type NodeType = (typeof NODE_TYPES)[number]
 export const STROKE_ALIGNS = ['INSIDE', 'CENTER', 'OUTSIDE'] as const
 export const TEXT_ALIGNS = ['LEFT', 'CENTER', 'RIGHT'] as const
+export const FILL_RULES = ['nonzero', 'evenodd'] as const
+/** SVG path data using only absolute M L Q C Z. */
+export type VectorPath = { d: string; rule: (typeof FILL_RULES)[number] }
 
 export interface Node {
   id: string
@@ -40,6 +43,8 @@ export interface Node {
   letterSpacing?: number // px
   textAlign?: (typeof TEXT_ALIGNS)[number]
   textAutoWidth?: boolean
+  // VECTOR only: paths drawn at w×h, scaled to the node's size. `stroke` is the stroke already outlined (filled with the stroke paint).
+  vector?: { w: number; h: number; fill: VectorPath[]; stroke: VectorPath[] }
 }
 
 export interface Document {

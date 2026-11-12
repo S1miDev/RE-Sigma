@@ -2,13 +2,17 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { createHash } from 'node:crypto'
 import type { Omitted } from '../../shared/api'
-import { makeNode, type Color, type Document, type DropShadow, type Node, type NodeType, type Paint } from '../../shared/document'
+import { makeNode, type Color, type Document, type DropShadow, type Node, type NodeType, type Paint, type VectorPath } from '../../shared/document'
 import { orderBetween } from '../../shared/order'
 import { readCanvas } from './kiwi'
 import { FormatError, safeUnzip, validateDocument } from './refig'
 
 const FIG_ENTRIES = /^(canvas\.fig|meta\.json|thumbnail\.png|images\/([0-9a-f]{40})?)$/
-const TYPES: Record<string, NodeType> = { FRAME: 'FRAME', ROUNDED_RECTANGLE: 'RECTANGLE', RECTANGLE: 'RECTANGLE', ELLIPSE: 'ELLIPSE', LINE: 'LINE', TEXT: 'TEXT' }
+// Components (SYMBOL) and sections are plain containers; instances are expanded from their component.
+const TYPES: Record<string, NodeType> = { FRAME: 'FRAME', GROUP: 'GROUP', SECTION: 'FRAME', SYMBOL: 'FRAME', INSTANCE: 'FRAME', ROUNDED_RECTANGLE: 'RECTANGLE', RECTANGLE: 'RECTANGLE', ELLIPSE: 'ELLIPSE', LINE: 'LINE', TEXT: 'TEXT',
+  // Figma stores ready-made outlines for these, so they all become plain paths (a boolean's operands are baked in).
+  VECTOR: 'VECTOR', STAR: 'VECTOR', REGULAR_POLYGON: 'VECTOR', BOOLEAN_OPERATION: 'VECTOR' }
+const PATH_ARGS = [0, 2, 2, 4, 6] // floats after each command byte: close, move, line, quad, cubic
 const WEIGHTS: Record<string, number> = { thin: 100, extralight: 200, light: 300, regular: 400, medium: 500, semibold: 600, bold: 700, extrabold: 800, black: 900 }
 
 const key = (g: any) => `${g.sessionID}:${g.localID}`
@@ -23,9 +27,11 @@ export function importFig(bytes: Uint8Array): { document: Document; images: Reco
     if (!files['canvas.fig']) throw new FormatError('Not a Figma file (no canvas.fig inside)')
     canvas = files['canvas.fig']
   }
-  let changes: any[]
+  let changes: any[], blobs: any[]
   try {
-    changes = readCanvas(canvas).message.nodeChanges ?? []
+    const { message } = readCanvas(canvas)
+    changes = message.nodeChanges ?? []
+    blobs = message.blobs ?? []
   } catch (e) {
     throw new FormatError(`Can't read this Figma file: ${e instanceof Error ? e.message : e}`)
   }
@@ -39,6 +45,8 @@ export function importFig(bytes: Uint8Array): { document: Document; images: Reco
   const childrenOf = (c: any): any[] =>
     (kids.get(key(c.guid)) ?? []).sort((a, b) => (a.parentIndex.position < b.parentIndex.position ? -1 : a.parentIndex.position > b.parentIndex.position ? 1 : 0))
 
+  const byGuid = new Map(changes.filter((c) => c.guid).map((c) => [key(c.guid), c]))
+  const expanding = new Set<string>() // components being expanded, so an instance inside its own component can't recurse forever
   const omitted: Omitted = {}
   const omit = (what: string) => (omitted[what] = (omitted[what] ?? 0) + 1)
   const images: Record<string, Uint8Array> = {} // sha256 → bytes
@@ -61,6 +69,23 @@ export function importFig(bytes: Uint8Array): { document: Document; images: Reco
         ? [{ visible: e.visible !== false, x: n0(e.offset?.x), y: n0(e.offset?.y), blur: Math.max(0, n0(e.radius)), spread: n0(e.spread), color: color(e.color) }]
         : (omit(`${e.type} effect`), []),
     )
+
+  /** Figma geometry blob → SVG path data. Stops at the first unknown command or truncated argument. */
+  const geometry = (list: any[] | undefined): VectorPath[] =>
+    (list ?? []).flatMap((g): VectorPath[] => {
+      const b = blobs[g?.commandsBlob]?.bytes
+      if (!(b instanceof Uint8Array)) return []
+      const view = new DataView(b.buffer, b.byteOffset, b.byteLength)
+      let d = ''
+      for (let i = 0; i < b.length; ) {
+        const cmd = b[i++], argc = PATH_ARGS[cmd]
+        if (argc === undefined || i + argc * 4 > b.length) break
+        const args = Array.from({ length: argc }, (_, k) => Math.round(n0(view.getFloat32(i + k * 4, true)) * 1000) / 1000)
+        i += argc * 4
+        d += 'ZMLQC'[cmd] + args.join(' ')
+      }
+      return d ? [{ d, rule: g.windingRule === 'ODD' ? 'evenodd' : 'nonzero' }] : []
+    })
 
   function omitTree(c: any) {
     omit(String(c.type))
@@ -106,9 +131,20 @@ export function importFig(bytes: Uint8Array): { document: Document; images: Reco
         textAutoWidth: c.textAutoResize === 'WIDTH_AND_HEIGHT',
       })
     }
+    if (type === 'VECTOR') node.vector = { w, h, fill: geometry(c.fillGeometry), stroke: geometry(c.strokeGeometry) }
     nodes[node.id] = node
-    if (type === 'FRAME' || type === 'GROUP') convertChildren(c, node.id)
-    else childrenOf(c).forEach(omitTree)
+    if (type === 'VECTOR') return // a boolean's operands are already merged into its geometry
+    if (type === 'FRAME' || type === 'GROUP') {
+      // An instance stores no children of its own: draw its component's. Overrides aren't applied.
+      const symbol = c.type === 'INSTANCE' && c.symbolData?.symbolID ? key(c.symbolData.symbolID) : null
+      if (c.symbolData?.symbolOverrides?.length) omit('INSTANCE override')
+      if (!symbol) convertChildren(c, node.id)
+      else if (byGuid.has(symbol) && !expanding.has(symbol)) {
+        expanding.add(symbol)
+        convertChildren(byGuid.get(symbol), node.id)
+        expanding.delete(symbol)
+      }
+    } else childrenOf(c).forEach(omitTree)
   }
   // Figma's position strings can end in the lowest character, so fresh keys are generated instead of reusing them.
   function convertChildren(c: any, parentId: string) {

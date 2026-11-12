@@ -8,7 +8,7 @@ import { fitView, toScreen, toWorld, zoomAt } from './canvas/viewport'
 import { COMMANDS, keyOf } from './commands'
 import { toSvg } from './export/svg'
 import { apply, corners, invert, lineBetween, localMatrix, mul, resizeBox, worldBox } from './model/geometry'
-import { addPage, childrenOf, duplicate, group, insert, moveTo, movePage, patch, remove, removePage, reorder, resizeNode, topLevel, translate, ungroup } from './model/ops'
+import { addPage, align, childrenOf, distribute, duplicate, group, insert, moveTo, movePage, patch, remove, removePage, reorder, resizeNode, topLevel, translate, ungroup } from './model/ops'
 import { AUTOSAVE_MS, createEditorStore } from './store'
 import { beginGesture, type Pointer } from './tools'
 
@@ -380,4 +380,21 @@ test('tools: text tool creates a node in edit mode; hand tool pans', () => {
   store.set({ tool: 'hand', editingText: null })
   drag(store, at(0, 0), at(30, 40))
   expect(store.get().view).toMatchObject({ x: 30, y: 40 })
+})
+
+test('align: several nodes meet at the shared edge, a lone node aligns to its parent frame', () => {
+  const { doc, a, b, inner } = scene()
+  const left = align(doc, [a, b], 'x', 0)
+  near(left.nodes[b].x, 400)
+  const centred = align(doc, [inner], 'x', 0.5) // frame x 100..300, inner is 50 wide
+  near(centred.nodes[inner].x, 75)
+  expect(align(doc, [a], 'x', 0)).toBe(doc) // lone node on a page: nothing to align to
+})
+
+test('distribute: middle node moves so the gaps are equal', () => {
+  const { doc, page } = scene()
+  let d = doc
+  const ids = [0, 30, 300].map((x) => { const n = makeNode('RECTANGLE', { x, y: 0, width: 100, height: 10 }); d = insert(d, n, page); return n.id })
+  const out = distribute(d, ids, 'x')
+  near(out.nodes[ids[1]].x, 150) // span 0..400, 300 of box width, 100 free / 2 gaps = 50
 })

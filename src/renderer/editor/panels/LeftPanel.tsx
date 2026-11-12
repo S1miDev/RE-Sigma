@@ -5,7 +5,7 @@ import { zoomToFit } from '../commands'
 import { addPage, childrenOf, moveTo, movePage, patch, removePage } from '../model/ops'
 import { useEditor, useStore } from '../store'
 
-const TYPE_ICON: Record<Node['type'], IconName> = { PAGE: 'page', FRAME: 'frame', GROUP: 'group', RECTANGLE: 'rectangle', ELLIPSE: 'ellipse', LINE: 'line', TEXT: 'text' }
+const TYPE_ICON: Record<Node['type'], IconName> = { PAGE: 'page', FRAME: 'frame', GROUP: 'group', RECTANGLE: 'rectangle', ELLIPSE: 'ellipse', LINE: 'line', TEXT: 'text', VECTOR: 'vector' }
 
 /** Inline rename field: Enter or blur commits a non-empty name, Escape cancels. */
 function RenameInput({ label, value, onDone }: { label: string; value: string; onDone(name: string | null): void }) {

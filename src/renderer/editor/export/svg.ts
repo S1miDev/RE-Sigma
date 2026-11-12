@@ -13,7 +13,13 @@ export function toSvg(doc: Document, ids: string[], imageUrl: (hash: string) => 
   const box = worldBox(doc, ids) ?? { x: 0, y: 0, w: 1, h: 1 }
   let defs = '', uid = 0
 
+  /** A VECTOR's fill or outlined-stroke paths, scaled to the node's size; strokes keep their width under the scale. */
+  const vec = (n: Node, which: 'fill' | 'stroke', attrs: string): string => {
+    const v = n.vector!, scale = `scale(${f(v.w ? n.width / v.w : 1)} ${f(v.h ? n.height / v.h : 1)})`
+    return v[which].map((p) => `<path d="${esc(p.d)}" fill-rule="${p.rule}" transform="${scale}" vector-effect="non-scaling-stroke" ${attrs}/>`).join('')
+  }
   const shape = (n: Node, grow: number, attrs: string): string => {
+    if (n.type === 'VECTOR') return vec(n, 'fill', attrs) // shortcut: ignores grow, so shadow spread and stroke align don't apply to vectors
     const w = Math.max(0, n.width + grow * 2), h = Math.max(0, n.height + grow * 2)
     if (n.type === 'ELLIPSE') return `<ellipse cx="${f(n.width / 2)}" cy="${f(n.height / 2)}" rx="${f(w / 2)}" ry="${f(h / 2)}" ${attrs}/>`
     if (n.type === 'LINE') return `<line x1="0" y1="0" x2="${f(n.width)}" y2="0" ${attrs}/>`
@@ -45,6 +51,7 @@ export function toSvg(doc: Document, ids: string[], imageUrl: (hash: string) => 
           const body =
             n.type === 'TEXT' ? text(n, paint)
             : n.type === 'LINE' ? shape(n, 0, `fill="none" stroke="${rgb(s.color)}" stroke-opacity="${f(s.color.a)}" stroke-width="${f(n.strokeWeight + s.spread * 2)}"`)
+            : n.type === 'VECTOR' ? vec(n, 'fill', paint) + vec(n, 'stroke', paint)
             : shape(n, s.spread, paint)
           out += `<g transform="translate(${f(s.x)} ${f(s.y)})" filter="url(#${id})">${body}</g>`
         }
@@ -65,6 +72,7 @@ export function toSvg(doc: Document, ids: string[], imageUrl: (hash: string) => 
       if (p.type !== 'SOLID') continue
       const paint = `fill="none" stroke="${rgb(p.color)}" stroke-opacity="${f(p.color.a)}" stroke-width="${f(n.strokeWeight)}"`
       if (n.type === 'TEXT') out += text(n, paint)
+      else if (n.type === 'VECTOR' && n.vector!.stroke.length) out += vec(n, 'stroke', `fill="${rgb(p.color)}" fill-opacity="${f(p.color.a)}"`)
       else out += shape(n, n.type === 'LINE' || n.strokeAlign === 'CENTER' ? 0 : n.strokeAlign === 'INSIDE' ? -n.strokeWeight / 2 : n.strokeWeight / 2, paint)
     }
     return `<g transform="matrix(${localMatrix(n).map(f).join(' ')})"${n.opacity < 1 ? ` opacity="${f(n.opacity)}"` : ''}>${out}</g>`

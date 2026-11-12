@@ -26,6 +26,10 @@ export function hitTest(doc: Document, pageId: string, p: Pt, opts: { deep?: boo
       } else if (n.type === 'LINE') {
         const reach = Math.max(n.strokeWeight / 2, tol)
         if (Math.abs(q.y) <= reach && q.x >= -reach && q.x <= n.width + reach) return n.id
+      } else if (n.type === 'VECTOR') {
+        // box test with slack, so flat vectors (straight lines, 0 high) stay clickable
+        const reach = Math.max(n.strokeWeight / 2, tol)
+        if (q.x >= -reach && q.x <= n.width + reach && q.y >= -reach && q.y <= n.height + reach) return n.id
       } else if (inside) return n.id
     }
     return null

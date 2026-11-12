@@ -89,8 +89,14 @@ test('imports the Figma fixture, mapping supported layers and counting the rest'
   const types = new Set(nodes.map((n) => n.type))
   for (const t of ['FRAME', 'GROUP', 'RECTANGLE', 'ELLIPSE', 'LINE', 'TEXT'] as const) expect(types.has(t)).toBe(true)
   expect(nodes.find((n) => n.type === 'TEXT' && n.characters === 'Hello world')).toMatchObject({ fontFamily: 'Inter' })
-  expect(omitted.VECTOR).toBeGreaterThan(0)
-  expect(omitted.INSTANCE).toBeGreaterThan(0)
+  // vectors, stars, polygons and booleans become paths from Figma's own outlines
+  for (const t of ['VECTOR', 'STAR', 'REGULAR_POLYGON', 'BOOLEAN_OPERATION']) expect(omitted[t]).toBeUndefined()
+  expect(nodes.find((n) => n.name === 'Polygon')?.vector).toEqual({ w: 100, h: 100, fill: [{ d: 'M50 0L93.301 75L6.699 75L50 0Z', rule: 'nonzero' }], stroke: [] })
+  expect(validateDocument(JSON.parse(JSON.stringify(doc)))).toEqual(doc)
+  const poly = nodes.find((n) => n.name === 'Polygon')!
+  expect(() => validateDocument({ ...doc, nodes: { ...doc.nodes, [poly.id]: { ...poly, vector: { ...poly.vector, fill: [{ d: 'M0 0"/><script>', rule: 'nonzero' }] } } } })).toThrow()
+  expect(omitted.INSTANCE).toBeUndefined() // instances are expanded from their component
+  expect(omitted.SYMBOL).toBeUndefined()
   expect(omitted.VARIABLE).toBeUndefined() // lives on the internal canvas
   // children keep Figma's stacking order
   const probe = doc.pages[1]

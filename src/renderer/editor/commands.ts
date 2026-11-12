@@ -3,7 +3,7 @@
 import { makeNode, type Node } from '../../shared/document'
 import { fitView, toWorld, zoomAt } from './canvas/viewport'
 import { apply, worldBox, worldMatrix, worldRotation, type Pt } from './model/geometry'
-import { childrenOf, cloneTree, descendants, duplicate, group, nextName, pageOf, patch, put, remove, reorder, topLevel, translate, ungroup } from './model/ops'
+import { align, childrenOf, cloneTree, distribute, descendants, duplicate, group, nextName, pageOf, patch, put, remove, reorder, topLevel, translate, ungroup } from './model/ops'
 import { orderBetween } from '../../shared/order'
 import type { EditorState, EditorStore, Tool } from './store'
 
@@ -72,6 +72,8 @@ const toggle = (field: 'visible' | 'locked') => (st: EditorStore) => {
   const { doc, selection } = st.get(), all = selection.every((id) => doc.nodes[id]?.[field])
   st.update((d) => patch(d, selection, { [field]: !all }))
 }
+const alignment = (id: string, label: string, key: string, axis: 'x' | 'y', to: 0 | 0.5 | 1): Command =>
+  ({ id, label, group: 'Arrange', keys: [key], enabled: has, run: (st) => st.update((d) => align(d, st.get().selection, axis, to)) })
 /** Zoom to fit the whole page (never past 100 % on open, any zoom on request). */
 export const zoomToFit = (st: EditorStore, maxZoom?: number) => {
   const s = st.get()
@@ -110,6 +112,10 @@ export const COMMANDS: Command[] = [
   { id: 'send-backward', label: 'Send backward', group: 'Arrange', keys: ['['], enabled: has, run: (st) => st.update((d) => reorder(d, st.get().selection, 'backward')) },
   { id: 'bring-front', label: 'Bring to front', group: 'Arrange', keys: ['Ctrl+]'], enabled: has, run: (st) => st.update((d) => reorder(d, st.get().selection, 'front')) },
   { id: 'send-back', label: 'Send to back', group: 'Arrange', keys: ['Ctrl+['], enabled: has, run: (st) => st.update((d) => reorder(d, st.get().selection, 'back')) },
+  alignment('align-left', 'Align left', 'Alt+A', 'x', 0), alignment('align-hcenter', 'Align horizontal centres', 'Alt+H', 'x', 0.5), alignment('align-right', 'Align right', 'Alt+D', 'x', 1),
+  alignment('align-top', 'Align top', 'Alt+W', 'y', 0), alignment('align-vcenter', 'Align vertical centres', 'Alt+V', 'y', 0.5), alignment('align-bottom', 'Align bottom', 'Alt+S', 'y', 1),
+  { id: 'distribute-h', label: 'Distribute horizontal spacing', group: 'Arrange', keys: ['Ctrl+Alt+H'], enabled: (s) => topLevel(s.doc, s.selection).length > 2, run: (st) => st.update((d) => distribute(d, st.get().selection, 'x')) },
+  { id: 'distribute-v', label: 'Distribute vertical spacing', group: 'Arrange', keys: ['Ctrl+Alt+V'], enabled: (s) => topLevel(s.doc, s.selection).length > 2, run: (st) => st.update((d) => distribute(d, st.get().selection, 'y')) },
 
   tool('move', 'Move', 'V'), tool('hand', 'Hand', 'H'), tool('frame', 'Frame', 'F'), tool('rectangle', 'Rectangle', 'R'),
   tool('ellipse', 'Ellipse', 'O'), tool('line', 'Line', 'L'), tool('text', 'Text', 'T'),

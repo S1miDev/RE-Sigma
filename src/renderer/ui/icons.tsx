@@ -6,6 +6,7 @@ const PATHS = {
   rectangle: 'M3 3h10v10H3z',
   ellipse: 'M8 2.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11z',
   line: 'M3 13L13 3',
+  vector: 'M3 13C3 7 7 3 13 3M2 12h2v2H2zM12 2h2v2h-2z',
   text: 'M3.5 4V3h9v1M8 3v10M6.5 13h3',
   group: 'M2 4V2h2M12 2h2v2M14 12v2h-2M4 14H2v-2M5 5h4v4H5zM8 8h3v3H8z',
   page: 'M4 2h5l3 3v9H4zM9 2v3h3',

@@ -47,7 +47,7 @@ Every node has all of these fields:
 | Field | Type | Meaning |
 |---|---|---|
 | `id` | string | Same as its key in `nodes` |
-| `type` | `PAGE` `FRAME` `GROUP` `RECTANGLE` `ELLIPSE` `LINE` `TEXT` | |
+| `type` | `PAGE` `FRAME` `GROUP` `RECTANGLE` `ELLIPSE` `LINE` `TEXT` `VECTOR` | |
 | `name` | string | Layer name |
 | `parentId` | string or `null` | `null` for a `PAGE`; otherwise the id of a `PAGE`, `FRAME` or `GROUP` |
 | `order` | string | Fractional z-order key among siblings. Compared as plain strings; a greater key is drawn on top |
@@ -77,6 +77,16 @@ A `PAGE` uses `fills[0]` as its background colour. A `GROUP`'s box always wraps 
 | `letterSpacing` | number | px |
 | `textAlign` | `LEFT` `CENTER` `RIGHT` | |
 | `textAutoWidth` | boolean | `true`: the box is as wide as the text. `false`: text wraps at `width` |
+
+`VECTOR` nodes also have `vector`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `w`, `h` | number ≥ 0 | Size the paths were drawn at; they are scaled to the node's `width` × `height` (no scaling on a 0 axis) |
+| `fill` | VectorPath[] | Filled with `fills`; at most 32 |
+| `stroke` | VectorPath[] | The stroke already outlined, filled with `strokes`. When empty, `fill` paths are stroked with `strokeWeight`, centred |
+
+A VectorPath is `{ d, rule }`: `d` is SVG path data using only `M L Q C Z`, numbers, spaces, `.`, `+`, `-`, `e`/`E`; `rule` is `nonzero` or `evenodd`.
 
 ### Paint
 
