@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { RefigApi } from '../../shared/api'
-import { emptyDocument, makeNode, solid, type AutoLayout, type Document, type Node, type NodeType } from '../../shared/document'
+import { emptyDocument, makeNode, solid, type AutoLayout, type Constraint, type Document, type Node, type NodeType } from '../../shared/document'
 import { frameAt, hitTest, marqueeHits } from './canvas/hit'
 import { handleAt, handlesOf } from './canvas/overlay'
 import { snap, snapTargets } from './canvas/snap'
@@ -469,4 +469,46 @@ test('auto layout: Shift+A wraps the selection; dragging a child reorders it; dr
   expect(store.get().doc.nodes[b].x).toBe(0)
   store.undo()
   expect(childrenOf(store.get().doc, f).map((k) => k.id)).toEqual([a, b])
+})
+
+// ── constraints ──────────────────────────────────────────────────────────────────────────────────────────────────────
+function pinned(h: Constraint, v: Constraint = 'MIN', parent: Partial<Node> = {}) {
+  let doc: Document = emptyDocument()
+  const f = makeNode('FRAME', { x: 0, y: 0, width: 200, height: 100, ...parent })
+  doc = insert(doc, f, doc.pages[0])
+  const k = makeNode('RECTANGLE', { x: 20, y: 10, width: 40, height: 30, constraints: { h, v } })
+  doc = insert(doc, k, f.id)
+  return { doc, f: f.id, k: k.id }
+}
+
+test('constraints: children follow a frame resize per axis', () => {
+  const grow = (h: Constraint, v: Constraint = 'MIN') => { const p = pinned(h, v); return boxOf(resizeNode(p.doc, p.f, { x: 0, y: 0, width: 300, height: 200 }), p.k) }
+  expect(grow('MIN')).toEqual([20, 10, 40, 30])
+  expect(grow('MAX')).toEqual([120, 10, 40, 30])
+  expect(grow('CENTER')).toEqual([70, 10, 40, 30])
+  expect(grow('STRETCH')).toEqual([20, 10, 140, 30])
+  expect(grow('SCALE')).toEqual([30, 10, 60, 30])
+  expect(grow('MIN', 'MAX')).toEqual([20, 110, 40, 30])
+  expect(grow('MIN', 'SCALE')).toEqual([20, 20, 40, 60])
+  const shrink = pinned('STRETCH')
+  expect(resizeNode(shrink.doc, shrink.f, { x: 0, y: 0, width: 100, height: 100 }).nodes[shrink.k].width).toBe(0) // never negative
+})
+
+test('constraints: nested frames cascade; auto-layout frames ignore them; dragging the left edge keeps MIN glued to it', () => {
+  const p = pinned('STRETCH')
+  let d = patch(p.doc, [p.k], { type: 'FRAME' })
+  const inner = makeNode('RECTANGLE', { x: 0, y: 0, width: 10, height: 10, constraints: { h: 'MAX', v: 'MIN' } })
+  d = insert(d, inner, p.k)
+  d = resizeNode(d, p.f, { x: 0, y: 0, width: 300, height: 100 })
+  expect(d.nodes[inner.id].x).toBe(100)
+  const l = pinned('MAX', 'MIN', { layout: { mode: 'HORIZONTAL', gap: 0, padding: [0, 0, 0, 0], align: 'MIN', hugW: false, hugH: false } })
+  expect(resizeNode(l.doc, l.f, { x: 0, y: 0, width: 300, height: 100 }).nodes[l.k].x).toBe(20)
+  const m = pinned('MIN')
+  const { store } = open()
+  store.update(() => m.doc)
+  store.set({ pageId: m.doc.pages[0], selection: [m.f] })
+  drag(store, at(0, 50), at(-50, 50)) // left handle
+  const s = store.get().doc
+  expect(s.nodes[m.f]).toMatchObject({ x: -50, width: 250 })
+  expect(worldBox(s, [m.k])!.x).toBe(-30) // moved with the left edge
 })

@@ -21,6 +21,9 @@ export type AutoLayout = {
   hugW: boolean
   hugH: boolean
 }
+/** How a child follows its frame's resize on one axis: pinned to the start (MIN) or end (MAX), both edges (STRETCH), centred, or scaled. */
+export const CONSTRAINTS = ['MIN', 'MAX', 'STRETCH', 'CENTER', 'SCALE'] as const
+export type Constraint = (typeof CONSTRAINTS)[number]
 /** SVG path data using only absolute M L Q C Z. */
 export type VectorPath = { d: string; rule: (typeof FILL_RULES)[number] }
 
@@ -48,6 +51,7 @@ export interface Node {
   layout?: AutoLayout // FRAME only
   fillW?: boolean // child of an auto-layout frame: stretch to fill it along this axis
   fillH?: boolean
+  constraints?: { h: Constraint; v: Constraint } // absent = MIN/MIN
   // TEXT only
   characters?: string
   fontFamily?: string

@@ -6,7 +6,7 @@ Workflow per feature: plan -> implement -> unit tests (npm test) -> typecheck (n
 
 Status legend: [done] [in progress] [todo]
 
- 1. [done] Auto layout
+ 1. [done] Auto layout (commit 2082d34)
        Frame `layout` {mode, gap, padding, align, hugW, hugH}; child `fillW`/`fillH`.
        Engine: autoLayout() in src/renderer/editor/model/ops.ts, run from normalize() in store.ts.
        Shift+A add (wraps selection), Alt+Shift+A remove; Design panel "Auto layout" section;
@@ -15,7 +15,14 @@ Status legend: [done] [in progress] [todo]
        .fig stackMode import (imported positions are already baked).
        Known limits (shortcut: comments): rotated children use their unrotated box;
        fill-inside-hug nesting deeper than one level may lag one edit.
- 2. [todo] Constraints (pin left/right/center/scale when a parent frame resizes)
+ 2. [done] Constraints (commit: see `git log --grep "Add constraints"`)
+       Node `constraints` {h, v} of MIN/MAX/STRETCH/CENTER/SCALE; absent = MIN/MIN.
+       Applied in setBox() in model/ops.ts whenever a FRAME without auto layout changes size
+       (handles, panel, auto-layout fill); cascades into nested frames.
+       Design panel "Constraints" section (two selects); imported from .fig
+       (horizontalConstraint/verticalConstraint); saved in .refig.
+       Skipped: Ctrl-drag to resize ignoring constraints, the visual constraint widget.
+       Known limit (shortcut: comment): rotated children follow by their unrotated box.
  3. [todo] Components + instances (main component, overrides, detach)
  4. [todo] Variants / component sets
  5. [todo] Gradient fills (linear, radial, angular, diamond)
@@ -47,5 +54,8 @@ Status legend: [done] [in progress] [todo]
 31. [todo] Assets panel
 32. [todo] Outline text; font embedding in SVG/PDF export
 
-Next step: #2 Constraints. Plan first; it must cooperate with auto layout
-(children of a layout frame ignore constraints; constraints apply on frame resize in resizeNode).
+Next step: #3 Components + instances. Plan first. Today .fig import expands instances into
+plain FRAMEs (src/main/format/fig.ts); the editor has no component concept yet.
+
+Known unrelated issue: e2e test "imports a Figma .fig file and reports what was omitted"
+fails on main too. It expects VECTOR in the omitted list, but VECTORs import now.

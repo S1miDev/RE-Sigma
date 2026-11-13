@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import type { ExportKind } from '../../../shared/api'
-import { LAYOUT_ALIGNS, solid, STROKE_ALIGNS, TEXT_ALIGNS, type AutoLayout, type DropShadow, type Node, type Paint } from '../../../shared/document'
+import { CONSTRAINTS, LAYOUT_ALIGNS, solid, STROKE_ALIGNS, TEXT_ALIGNS, type AutoLayout, type Constraint, type DropShadow, type Node, type Paint } from '../../../shared/document'
 import { Button, ColorField, IconButton, NumberField, PanelSection, Select, type IconName } from '../../ui'
 import { exportSelection } from '../export'
 import { addAutoLayout, patch, resizeNode } from '../model/ops'
@@ -74,6 +74,24 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
           </Row>
         )}
       </PanelSection>
+
+      {nodes.every((n) => { const p = doc.nodes[n.parentId ?? '']; return p?.type === 'FRAME' && !p.layout }) && (
+        <PanelSection title="Constraints">
+          <Row>
+            {(['h', 'v'] as const).map((axis) => {
+              const values = new Set(nodes.map((n) => n.constraints?.[axis] ?? 'MIN')), value = values.size === 1 ? [...values][0] : ''
+              const names = axis === 'h' ? { MIN: 'Left', MAX: 'Right', STRETCH: 'Left & right', CENTER: 'Center', SCALE: 'Scale' } : { MIN: 'Top', MAX: 'Bottom', STRETCH: 'Top & bottom', CENTER: 'Center', SCALE: 'Scale' }
+              return (
+                <Select key={axis} aria-label={axis === 'h' ? 'Horizontal constraint' : 'Vertical constraint'} className="flex-1" value={value}
+                  onChange={(e) => store.update((d) => patch(d, ids, (n) => ({ constraints: { h: 'MIN', v: 'MIN', ...n.constraints, [axis]: e.target.value as Constraint } })), `panel:constraint-${axis}:${ids.join()}`)}>
+                  {!value && <option value="" disabled>Mixed</option>}
+                  {CONSTRAINTS.map((c) => <option key={c} value={c}>{names[c]}</option>)}
+                </Select>
+              )
+            })}
+          </Row>
+        </PanelSection>
+      )}
 
       {nodes.length === 1 && first.type === 'FRAME' && <AutoLayoutSection node={first} edit={edit} />}
 

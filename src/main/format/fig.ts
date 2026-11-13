@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { createHash } from 'node:crypto'
 import type { Omitted } from '../../shared/api'
-import { makeNode, type Color, type Document, type DropShadow, type Node, type NodeType, type Paint, type VectorPath } from '../../shared/document'
+import { CONSTRAINTS, makeNode, type Color, type Constraint, type Document, type DropShadow, type Node, type NodeType, type Paint, type VectorPath } from '../../shared/document'
 import { orderBetween } from '../../shared/order'
 import { readCanvas } from './kiwi'
 import { FormatError, safeUnzip, validateDocument } from './refig'
@@ -19,6 +19,7 @@ const key = (g: any) => `${g.sessionID}:${g.localID}`
 const clamp = (v: unknown, lo = 0, hi = 1) => Math.min(hi, Math.max(lo, typeof v === 'number' && Number.isFinite(v) ? v : lo))
 const n0 = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
 const hex = (b: Uint8Array) => Buffer.from(b).toString('hex')
+const constraint = (v: unknown): Constraint => (CONSTRAINTS.includes(v as Constraint) ? (v as Constraint) : 'MIN')
 
 export function importFig(bytes: Uint8Array): { document: Document; images: Record<string, Uint8Array>; thumbnail?: Uint8Array; omitted: Omitted } {
   let canvas = bytes, files: Record<string, Uint8Array> = {}
@@ -116,6 +117,8 @@ export function importFig(bytes: Uint8Array): { document: Document; images: Reco
       cornerRadius: Math.max(0, n0(c.cornerRadius ?? c.rectangleTopLeftCornerRadius)),
       clipsContent: type === 'FRAME' && !c.frameMaskDisabled,
     })
+    const ch = constraint(c.horizontalConstraint), cv = constraint(c.verticalConstraint)
+    if (ch !== 'MIN' || cv !== 'MIN') node.constraints = { h: ch, v: cv }
     if (type === 'TEXT') {
       const size = clamp(c.fontSize ?? 12, 0.1, 10_000)
       const units = (v: any, auto: number) => (!v ? auto : v.units === 'PIXELS' ? n0(v.value) : v.units === 'RAW' ? n0(v.value) * size : (n0(v.value) / 100) * size)

@@ -105,6 +105,7 @@ test('imports the Figma fixture, mapping supported layers and counting the rest'
   expect(validateDocument(JSON.parse(JSON.stringify(doc)))).toEqual(doc)
   const poly = nodes.find((n) => n.name === 'Polygon')!
   expect(() => validateDocument({ ...doc, nodes: { ...doc.nodes, [poly.id]: { ...poly, vector: { ...poly.vector, fill: [{ d: 'M0 0"/><script>', rule: 'nonzero' }] } } } })).toThrow()
+  expect(nodes.filter((n) => n.constraints).map((n) => n.constraints!.h).sort()).toEqual(['CENTER', 'MAX', 'SCALE', 'STRETCH']) // Figma's constraints survive import
   expect(omitted.INSTANCE).toBeUndefined() // instances are expanded from their component
   expect(omitted.SYMBOL).toBeUndefined()
   expect(omitted.VARIABLE).toBeUndefined() // lives on the internal canvas
@@ -115,4 +116,12 @@ test('imports the Figma fixture, mapping supported layers and counting the rest'
   // a raw canvas.fig (no zip wrapper) also imports
   expect(importFig(fixture('canvas.fig')).document.pages).toHaveLength(4)
   expect(() => importFig(strToU8('junk'))).toThrow()
+})
+
+test('validateDocument keeps constraints and rejects unknown ones', () => {
+  const { doc, text } = sampleDoc()
+  const d = structuredClone(doc)
+  d.nodes[text.id].constraints = { h: 'STRETCH', v: 'CENTER' }
+  expect(validateDocument(JSON.parse(JSON.stringify(d)))).toEqual(d)
+  expect(() => validateDocument({ ...d, nodes: { ...d.nodes, [text.id]: { ...d.nodes[text.id], constraints: { h: 'LEFT', v: 'MIN' } } } })).toThrow(/constraints/)
 })

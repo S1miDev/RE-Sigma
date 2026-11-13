@@ -1,5 +1,5 @@
 // Pure document operations: (doc, …) → new doc. Documents are immutable; unchanged nodes keep their identity.
-import { isContainer, makeNode, solid, type Document, type Node } from '../../../shared/document'
+import { isContainer, makeNode, solid, type Constraint, type Document, type Node } from '../../../shared/document'
 import { orderBetween } from '../../../shared/order'
 import { apply, bounds, boxCorners, invert, localMatrix, worldBox, worldMatrix, worldRotation, type Pt } from './geometry'
 
@@ -142,6 +142,15 @@ export function fitGroups(doc: Document): Document {
 }
 
 type Rect = { x: number; y: number; width: number; height: number }
+/** A child's [position, size] on one axis after its parent goes from size `from` to `to`. */
+function follow(c: Constraint, p: number, s: number, from: number, to: number): [number, number] {
+  const d = to - from
+  if (c === 'MAX') return [p + d, s]
+  if (c === 'CENTER') return [p + d / 2, s]
+  if (c === 'STRETCH') return [p, Math.max(0, s + d)]
+  if (c === 'SCALE') return from ? [(p * to) / from, (s * to) / from] : [p, s]
+  return [p, s]
+}
 /** Sets a node's box. Resizing a group scales its children with it. */
 function setBox(doc: Document, id: string, box: Rect): Document {
   const n = doc.nodes[id]
@@ -149,6 +158,14 @@ function setBox(doc: Document, id: string, box: Rect): Document {
     // shortcut: a rotated child is scaled along the group's axes, not sheared; exact only for unrotated children.
     const sx = box.width / n.width, sy = box.height / n.height
     for (const k of childrenOf(doc, id)) doc = setBox(doc, k.id, { x: k.x * sx, y: k.y * sy, width: k.width * sx, height: k.height * sy })
+  } else if (n.type === 'FRAME' && !n.layout && (box.width !== n.width || box.height !== n.height)) {
+    // shortcut: rotated children follow constraints by their unrotated box; fine until that matters.
+    for (const k of childrenOf(doc, id)) {
+      if (!k.constraints) continue
+      const [x, width] = follow(k.constraints.h, k.x, k.width, n.width, box.width)
+      const [y, height] = follow(k.constraints.v, k.y, k.height, n.height, box.height)
+      if (x !== k.x || y !== k.y || width !== k.width || height !== k.height) doc = setBox(doc, k.id, { x, y, width, height })
+    }
   }
   return patch(doc, [id], { ...box, ...(n.type === 'TEXT' && box.width !== n.width && { textAutoWidth: false }) })
 }

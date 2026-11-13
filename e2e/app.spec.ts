@@ -142,6 +142,34 @@ test('Shift+A puts two rectangles in an auto-layout frame whose gap is editable'
   await page.screenshot({ path: 'test-results/auto-layout.png' })
 })
 
+test('a rectangle pinned right follows its frame when the frame is widened', async () => {
+  const page = await launch()
+  await page.getByRole('button', { name: 'New project' }).first().click()
+  await expect(page.getByRole('toolbar', { name: 'Tools' })).toBeVisible()
+  const box = (await page.getByLabel('Canvas').boundingBox())!
+  const draw = async (key: string, x0: number, y0: number, x1: number, y1: number) => {
+    await page.keyboard.press(key)
+    await page.mouse.move(box.x + x0, box.y + y0)
+    await page.mouse.down()
+    await page.mouse.move(box.x + x1, box.y + y1, { steps: 5 })
+    await page.mouse.up()
+  }
+  await draw('f', 100, 100, 500, 400)
+  await draw('r', 150, 150, 250, 250)
+  await page.getByLabel('Horizontal constraint').selectOption('MAX')
+  await expect(page.getByLabel('Horizontal constraint')).toHaveValue('MAX')
+  const x = Number(await page.getByLabel('X', { exact: true }).inputValue())
+  await page.mouse.click(box.x + 450, box.y + 350) // empty part of the frame
+  const w = page.getByLabel('Width', { exact: true })
+  await expect(w).toHaveValue('400') // the panel now shows the frame
+  await w.fill('500')
+  await w.press('Enter')
+  await expect(w).toHaveValue('500')
+  await page.getByRole('treeitem', { name: 'Rectangle 1' }).click()
+  await expect(page.getByLabel('X', { exact: true })).toHaveValue(String(x + 100))
+  await page.screenshot({ path: 'test-results/constraints.png' })
+})
+
 test('the page has no Node access and only the contract API', async () => {
   const page = await launch()
   const seen = await page.evaluate(() => ({

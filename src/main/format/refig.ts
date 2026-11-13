@@ -1,7 +1,7 @@
 // .refig = ZIP { meta.json, document.json, thumbnail.png?, images/<sha256> }. See docs/project-format.md.
 import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from 'fflate'
 import {
-  FILL_RULES, FORMAT_VERSION, LAYOUT_ALIGNS, LAYOUT_MODES, NODE_TYPES, STROKE_ALIGNS, TEXT_ALIGNS,
+  CONSTRAINTS, FILL_RULES, FORMAT_VERSION, LAYOUT_ALIGNS, LAYOUT_MODES, NODE_TYPES, STROKE_ALIGNS, TEXT_ALIGNS,
   type AutoLayout, type Color, type Document, type DropShadow, type Node, type Paint, type VectorPath,
 } from '../../shared/document'
 
@@ -113,6 +113,10 @@ function validateNode(id: string, n: unknown): Node {
     effects: shadows(n.effects, `${at}.effects`),
     cornerRadius: num(n, 'cornerRadius', at, 0),
     clipsContent: bool(n, 'clipsContent', at),
+  }
+  if (n.constraints !== undefined) {
+    const c = isObj(n.constraints) ? n.constraints : fail(`${at}.constraints`)
+    node.constraints = { h: oneOf(c, 'h', `${at}.constraints`, CONSTRAINTS), v: oneOf(c, 'v', `${at}.constraints`, CONSTRAINTS) }
   }
   if (n.fillW !== undefined) node.fillW = bool(n, 'fillW', at)
   if (n.fillH !== undefined) node.fillH = bool(n, 'fillH', at)
