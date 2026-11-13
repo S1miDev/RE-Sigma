@@ -8,6 +8,7 @@ import type { Guides } from './canvas/snap'
 import { fitText } from './canvas/text'
 import type { View } from './canvas/viewport'
 import type { Box } from './model/geometry'
+import { syncInstances } from './model/components'
 import { autoLayout, fitGroups, put } from './model/ops'
 
 export type Tool = 'move' | 'hand' | 'frame' | 'rectangle' | 'ellipse' | 'line' | 'text'
@@ -40,6 +41,8 @@ function fitTexts(prev: Document, next: Document): Document {
 /** Text boxes follow their content, groups wrap their children and auto-layout frames place theirs, whatever edit was made. */
 function normalize(prev: Document, next: Document): Document {
   if (next === prev) return prev
+  // instances sync first, while `next` still holds exactly what the user changed (their overrides)
+  next = syncInstances(prev, next)
   // auto layout can change a text box's width (fill), so text is measured again and laid out once more
   return autoLayout(fitTexts(prev, autoLayout(fitGroups(fitTexts(prev, next)))))
 }

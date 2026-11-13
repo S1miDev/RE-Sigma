@@ -128,7 +128,7 @@ function Layers() {
             ) : (
               <span className="w-4 shrink-0" />
             )}
-            <Icon name={TYPE_ICON[n.type]} className="text-dim" />
+            {n.component || n.instanceOf ? <Icon name={n.component ? 'component' : 'instance'} className="text-[#9747ff]" /> : <Icon name={TYPE_ICON[n.type]} className="text-dim" />}
             {renaming === n.id ? (
               <RenameInput label="Layer name" value={n.name} onDone={(name) => { setRenaming(null); if (name) store.update((d) => patch(d, [n.id], { name })) }} />
             ) : (

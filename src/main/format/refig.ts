@@ -1,7 +1,7 @@
 // .refig = ZIP { meta.json, document.json, thumbnail.png?, images/<sha256> }. See docs/project-format.md.
 import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from 'fflate'
 import {
-  CONSTRAINTS, FILL_RULES, FORMAT_VERSION, LAYOUT_ALIGNS, LAYOUT_MODES, NODE_TYPES, STROKE_ALIGNS, TEXT_ALIGNS,
+  CONSTRAINTS, FILL_RULES, FORMAT_VERSION, LAYOUT_ALIGNS, LAYOUT_MODES, NODE_TYPES, OVERRIDABLE, STROKE_ALIGNS, TEXT_ALIGNS,
   type AutoLayout, type Color, type Document, type DropShadow, type Node, type Paint, type VectorPath,
 } from '../../shared/document'
 
@@ -118,6 +118,11 @@ function validateNode(id: string, n: unknown): Node {
     const c = isObj(n.constraints) ? n.constraints : fail(`${at}.constraints`)
     node.constraints = { h: oneOf(c, 'h', `${at}.constraints`, CONSTRAINTS), v: oneOf(c, 'v', `${at}.constraints`, CONSTRAINTS) }
   }
+  if (type === 'FRAME' && n.component !== undefined) node.component = bool(n, 'component', at)
+  if (type === 'FRAME' && n.instanceOf !== undefined) node.instanceOf = str(n, 'instanceOf', at, 64)
+  if (n.ref !== undefined) node.ref = str(n, 'ref', at, 64)
+  if (n.overrides !== undefined)
+    node.overrides = Array.isArray(n.overrides) && n.overrides.every((k) => OVERRIDABLE.includes(k)) ? [...new Set(n.overrides as string[])] : fail(`${at}.overrides`)
   if (n.fillW !== undefined) node.fillW = bool(n, 'fillW', at)
   if (n.fillH !== undefined) node.fillH = bool(n, 'fillH', at)
   if (type === 'FRAME' && n.layout !== undefined) {

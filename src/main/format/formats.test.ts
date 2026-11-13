@@ -125,3 +125,15 @@ test('validateDocument keeps constraints and rejects unknown ones', () => {
   expect(validateDocument(JSON.parse(JSON.stringify(d)))).toEqual(d)
   expect(() => validateDocument({ ...d, nodes: { ...d.nodes, [text.id]: { ...d.nodes[text.id], constraints: { h: 'LEFT', v: 'MIN' } } } })).toThrow(/constraints/)
 })
+
+test('validateDocument keeps component links and rejects unknown override fields', () => {
+  const { doc, frame, text } = sampleDoc()
+  const d = structuredClone(doc)
+  d.nodes[frame.id] = { ...d.nodes[frame.id], instanceOf: 'main-id' }
+  d.nodes[text.id] = { ...d.nodes[text.id], ref: 'main-text', overrides: ['fills', 'characters'] }
+  expect(validateDocument(JSON.parse(JSON.stringify(d)))).toEqual(d)
+  const main = structuredClone(doc)
+  main.nodes[frame.id].component = true
+  expect(validateDocument(main).nodes[frame.id].component).toBe(true)
+  expect(() => validateDocument({ ...d, nodes: { ...d.nodes, [text.id]: { ...d.nodes[text.id], overrides: ['id'] } } })).toThrow(/overrides/)
+})

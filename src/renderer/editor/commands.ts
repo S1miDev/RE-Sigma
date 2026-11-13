@@ -5,6 +5,7 @@ import { fitView, toWorld, zoomAt } from './canvas/viewport'
 import { apply, worldBox, worldMatrix, worldRotation, type Pt } from './model/geometry'
 import { addAutoLayout, align, childrenOf, cloneTree, distribute, descendants, duplicate, group, nextName, pageOf, patch, put, remove, reorder, topLevel, translate, ungroup } from './model/ops'
 import { orderBetween } from '../../shared/order'
+import { detach, makeComponent, resetOverrides } from './model/components'
 import type { EditorState, EditorStore, Tool } from './store'
 
 /** Things only the Editor component can do. */
@@ -107,6 +108,11 @@ export const COMMANDS: Command[] = [
   { id: 'frame-selection', label: 'Frame selection', group: 'Object', keys: ['Ctrl+Alt+G'], enabled: has, run: (st) => wrap(st, 'FRAME') },
   { id: 'add-auto-layout', label: 'Add auto layout', group: 'Object', keys: ['Shift+A'], enabled: has, run: addLayout },
   { id: 'remove-auto-layout', label: 'Remove auto layout', group: 'Object', keys: ['Alt+Shift+A'], enabled: (s) => s.selection.some((id) => s.doc.nodes[id]?.layout), run: (st) => st.update((d) => patch(d, st.get().selection.filter((id) => d.nodes[id]?.layout), { layout: undefined })) },
+  { id: 'create-component', label: 'Create component', group: 'Object', keys: ['Ctrl+Alt+K'], enabled: has, run: createComponent },
+  { id: 'create-instance', label: 'Create instance', group: 'Object', enabled: (s) => !!lone(s)?.component, run: createInstance },
+  { id: 'go-to-main', label: 'Go to main component', group: 'Object', enabled: (s) => !!s.doc.nodes[lone(s)?.instanceOf ?? ''], run: goToMain },
+  { id: 'reset-instance', label: 'Reset overrides', group: 'Object', enabled: (s) => !!lone(s)?.instanceOf, run: (st) => st.update((d) => resetOverrides(d, st.get().selection[0])) },
+  { id: 'detach-instance', label: 'Detach instance', group: 'Object', keys: ['Ctrl+Alt+B'], enabled: (s) => s.selection.some((id) => s.doc.nodes[id]?.instanceOf), run: (st) => st.update((d) => st.get().selection.filter((id) => d.nodes[id]?.instanceOf).reduce(detach, d)) },
   { id: 'toggle-visible', label: 'Show/Hide selection', group: 'Object', keys: ['Ctrl+Shift+H'], enabled: has, run: toggle('visible') },
   { id: 'toggle-lock', label: 'Lock/Unlock selection', group: 'Object', keys: ['Ctrl+Shift+L'], enabled: has, run: toggle('locked') },
 
@@ -133,6 +139,33 @@ function wrap(st: EditorStore, type: 'GROUP' | 'FRAME') {
     return r.doc
   })
   if (id) st.set({ selection: [id] })
+}
+
+const lone = (s: EditorState) => (s.selection.length === 1 ? s.doc.nodes[s.selection[0]] : undefined)
+
+/** A lone frame becomes a component; anything else is wrapped in a new frame first. */
+function createComponent(st: EditorStore) {
+  const { doc, selection } = st.get(), ids = topLevel(doc, selection), only = ids.length === 1 ? doc.nodes[ids[0]] : null
+  if (only?.type === 'FRAME' && !only.component && !only.instanceOf) return st.update((d) => makeComponent(d, only.id))
+  let id: string | null = null
+  st.update((d) => {
+    const r = group(d, ids, 'FRAME')
+    id = r.id
+    return id ? makeComponent(r.doc, id) : d
+  })
+  if (id) st.set({ selection: [id] })
+}
+/** Places an instance of the selected main component just to its right. */
+function createInstance(st: EditorStore) {
+  const main = lone(st.get())!
+  const node = makeNode('FRAME', { name: main.name, instanceOf: main.id, x: main.x + main.width + 40, y: main.y, width: main.width, height: main.height, rotation: main.rotation })
+  st.update((d) => put(d, [{ ...node, parentId: main.parentId, order: orderBetween(main.order, childrenOf(d, main.parentId!).find((k) => k.order > main.order)?.order) }]), undefined, [node.id])
+}
+function goToMain(st: EditorStore) {
+  const { doc } = st.get(), main = doc.nodes[lone(st.get())!.instanceOf!]
+  st.set({ pageId: pageOf(doc, main.id)!, selection: [main.id] })
+  const s = st.get()
+  st.set({ view: fitView(worldBox(s.doc, [main.id]), s.size) })
 }
 
 /** A single frame gets auto layout; anything else is wrapped in a new auto-layout frame first. */

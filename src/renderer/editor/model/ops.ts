@@ -105,8 +105,9 @@ export function distribute(doc: Document, ids: string[], axis: 'x' | 'y'): Docum
  */
 export function moveTo(doc: Document, ids: string[], parentId: string, at: { before?: string; after?: string } = {}): Document {
   const parent = doc.nodes[parentId]
-  if (!parent || !isContainer(parent)) return doc
-  const moving = topLevel(doc, ids).filter((id) => id !== parentId && !isAncestor(doc, id, parentId))
+  // an instance's content comes from its main component: nothing moves into it, its own nodes don't move out
+  if (!parent || !isContainer(parent) || parent.instanceOf || parent.ref) return doc
+  const moving = topLevel(doc, ids).filter((id) => id !== parentId && !isAncestor(doc, id, parentId) && !doc.nodes[id].ref)
   if (!moving.length) return doc
   const siblings = childrenOf(doc, parentId).filter((n) => !moving.includes(n.id))
   const i = siblings.findIndex((n) => n.id === (at.before ?? at.after))
@@ -143,7 +144,7 @@ export function fitGroups(doc: Document): Document {
 
 type Rect = { x: number; y: number; width: number; height: number }
 /** A child's [position, size] on one axis after its parent goes from size `from` to `to`. */
-function follow(c: Constraint, p: number, s: number, from: number, to: number): [number, number] {
+export function follow(c: Constraint, p: number, s: number, from: number, to: number): [number, number] {
   const d = to - from
   if (c === 'MAX') return [p + d, s]
   if (c === 'CENTER') return [p + d / 2, s]
@@ -255,7 +256,7 @@ export function ungroup(doc: Document, ids: string[]): { doc: Document; ids: str
   const freed: string[] = []
   for (const id of topLevel(doc, ids)) {
     const g = doc.nodes[id]
-    if (g.type !== 'GROUP' && g.type !== 'FRAME') continue
+    if ((g.type !== 'GROUP' && g.type !== 'FRAME') || g.instanceOf) continue // an instance's children can't leave it; detach it first
     const kids = childrenOf(doc, id).map((k) => k.id)
     doc = remove(moveTo(doc, kids, g.parentId!, { before: id }), [id])
     freed.push(...kids)

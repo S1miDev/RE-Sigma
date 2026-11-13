@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import type { ExportKind } from '../../../shared/api'
 import { CONSTRAINTS, LAYOUT_ALIGNS, solid, STROKE_ALIGNS, TEXT_ALIGNS, type AutoLayout, type Constraint, type DropShadow, type Node, type Paint } from '../../../shared/document'
 import { Button, ColorField, IconButton, NumberField, PanelSection, Select, type IconName } from '../../ui'
+import { COMMANDS } from '../commands'
 import { exportSelection } from '../export'
 import { addAutoLayout, patch, resizeNode } from '../model/ops'
 import { useEditor, useStore } from '../store'
@@ -93,6 +94,7 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
         </PanelSection>
       )}
 
+      {nodes.length === 1 && (first.component || first.instanceOf) && <ComponentSection node={first} />}
       {nodes.length === 1 && first.type === 'FRAME' && <AutoLayoutSection node={first} edit={edit} />}
 
       {all('TEXT') && <TextSection nodes={nodes} edit={edit} common={common} />}
@@ -115,6 +117,28 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
         <ExportControls onDone={() => {}} onError={report} />
       </PanelSection>
     </div>
+  )
+}
+
+/** Main component: make instances. Instance: where it comes from, and the way back out. */
+function ComponentSection({ node }: { node: Node }) {
+  const store = useStore(), doc = useEditor((s) => s.doc)
+  const run = (id: string) => COMMANDS.find((c) => c.id === id)!.run(store, { back() {}, openExport() {} })
+  if (node.component) return (
+    <PanelSection title="Component">
+      <Button onClick={() => run('create-instance')}>Create instance</Button>
+    </PanelSection>
+  )
+  const main = doc.nodes[node.instanceOf!]
+  return (
+    <PanelSection title="Instance">
+      <p className="text-dim">{main ? `Instance of ${main.name}` : 'Main component was deleted'}</p>
+      <Row>
+        {main && <Button className="flex-1" onClick={() => run('go-to-main')}>Go to main</Button>}
+        <Button className="flex-1" onClick={() => run('reset-instance')}>Reset</Button>
+        <Button className="flex-1" onClick={() => run('detach-instance')}>Detach</Button>
+      </Row>
+    </PanelSection>
   )
 }
 

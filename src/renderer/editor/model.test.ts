@@ -8,7 +8,8 @@ import { fitView, toScreen, toWorld, zoomAt } from './canvas/viewport'
 import { COMMANDS, keyOf } from './commands'
 import { toSvg } from './export/svg'
 import { apply, corners, invert, lineBetween, localMatrix, mul, resizeBox, worldBox } from './model/geometry'
-import { addAutoLayout, addPage, align, autoLayout, childrenOf, distribute, duplicate, group, insert, moveTo, movePage, patch, remove, removePage, reorder, resizeNode, topLevel, translate, ungroup } from './model/ops'
+import { addAutoLayout, addPage, align, autoLayout, childrenOf, distribute, duplicate, group, insert, moveTo, movePage, patch, put, remove, removePage, reorder, resizeNode, topLevel, translate, ungroup } from './model/ops'
+import { syncInstances } from './model/components'
 import { AUTOSAVE_MS, createEditorStore } from './store'
 import { beginGesture, type Pointer } from './tools'
 
@@ -511,4 +512,117 @@ test('constraints: nested frames cascade; auto-layout frames ignore them; draggi
   const s = store.get().doc
   expect(s.nodes[m.f]).toMatchObject({ x: -50, width: 250 })
   expect(worldBox(s, [m.k])!.x).toBe(-30) // moved with the left edge
+})
+
+// ── components ───────────────────────────────────────────────────────────────────────────────────────────────────────
+const red = solid(1, 0, 0), green = solid(0, 1, 0), blue = solid(0, 0, 1)
+const run = (store: ReturnType<typeof open>['store'], id: string) => COMMANDS.find((c) => c.id === id)!.run(store, { back() {}, openExport() {} })
+/** A main component (100×50) with one rectangle, and an instance of it made with "Create instance". */
+function components() {
+  let doc: Document = emptyDocument()
+  const page = doc.pages[0]
+  const m = makeNode('FRAME', { name: 'Button', x: 0, y: 0, width: 100, height: 50, component: true })
+  const r = makeNode('RECTANGLE', { name: 'Bg', x: 10, y: 10, width: 20, height: 20, fills: [red] })
+  doc = insert(insert(doc, m, page), r, m.id)
+  const store = createEditorStore({ summary: { id: 'p1', name: 'P', modifiedAt: '', thumbnail: null }, document: doc, images: {} }, fakeApi().api)
+  store.set({ selection: [m.id] })
+  run(store, 'create-instance')
+  const i = store.get().selection[0]
+  const copy = () => childrenOf(store.get().doc, i)[0]
+  return { store, page, m: m.id, r: r.id, i, copy }
+}
+
+test('components: an instance mirrors its main, and follows edits, added and removed children', () => {
+  const { store, m, r, i, copy } = components()
+  expect(store.get().doc.nodes[i]).toMatchObject({ instanceOf: m, name: 'Button', x: 140, width: 100, height: 50 })
+  expect(copy()).toMatchObject({ ref: r, name: 'Bg', x: 10, fills: [red] })
+  expect(copy().id).not.toBe(r)
+  store.update((d) => patch(d, [r], { fills: [green] }))
+  expect(copy().fills).toEqual([green])
+  const extra = makeNode('ELLIPSE', { x: 50, y: 10, width: 10, height: 10 })
+  store.update((d) => insert(d, extra, m))
+  expect(childrenOf(store.get().doc, i).map((k) => k.ref)).toEqual([r, extra.id])
+  store.update((d) => remove(d, [extra.id]))
+  expect(childrenOf(store.get().doc, i).map((k) => k.ref)).toEqual([r])
+  store.update((d) => resizeNode(d, m, { x: 0, y: 0, width: 120, height: 50 }))
+  expect(store.get().doc.nodes[i].width).toBe(120)
+  const s = store.get().doc
+  expect(syncInstances(s, s)).toBe(s) // a settled document doesn't change
+})
+
+test('components: overrides survive main edits to the same field; reset and detach', () => {
+  const { store, m, r, i, copy } = components()
+  store.update((d) => patch(d, [copy().id], { fills: [blue] }))
+  expect(copy().overrides).toEqual(['fills'])
+  store.update((d) => patch(d, [r], { fills: [green], x: 30 }))
+  expect(copy()).toMatchObject({ fills: [blue], x: 30 })
+  store.set({ selection: [i] })
+  run(store, 'reset-instance')
+  expect(copy()).toMatchObject({ fills: [green] })
+  expect(copy().overrides).toBeUndefined()
+  run(store, 'detach-instance')
+  store.update((d) => patch(d, [r], { fills: [red] }))
+  expect(copy().fills).toEqual([green])
+  expect(store.get().doc.nodes[i].instanceOf).toBeUndefined()
+  expect(copy().ref).toBeUndefined()
+  expect(store.get().doc.nodes[m].component).toBe(true)
+})
+
+test('components: a resized instance applies the main child constraints without recording them as overrides', () => {
+  const { store, r, i, copy } = components()
+  store.update((d) => patch(d, [r], { constraints: { h: 'MAX', v: 'MIN' } }))
+  store.update((d) => resizeNode(d, i, { x: 140, y: 0, width: 150, height: 50 }))
+  expect(copy().x).toBe(60)
+  expect(copy().overrides).toBeUndefined()
+  expect(store.get().doc.nodes[i].overrides).toEqual(['width'])
+  store.update((d) => patch(d, [r], { y: 15 }))
+  expect(copy()).toMatchObject({ x: 60, y: 15 })
+})
+
+test('components: nested instances sync; an instance inside its own main does not recurse', () => {
+  const { store, m, r, i } = components()
+  let outer = ''
+  store.update((d) => {
+    const a = makeNode('FRAME', { name: 'Card', x: 0, y: 300, width: 200, height: 100, component: true })
+    const nested = makeNode('FRAME', { instanceOf: m, x: 10, y: 10 })
+    outer = a.id
+    return insert(insert(d, a, store.get().pageId), nested, a.id)
+  })
+  store.set({ selection: [outer] })
+  run(store, 'create-instance')
+  const cardInstance = store.get().selection[0], doc = () => store.get().doc
+  const nestedCopy = childrenOf(doc(), cardInstance)[0]
+  expect(nestedCopy.instanceOf).toBe(m)
+  expect(childrenOf(doc(), nestedCopy.id)[0]).toMatchObject({ ref: r, fills: [red] })
+  store.update((d) => patch(d, [r], { fills: [green] }))
+  expect(childrenOf(doc(), childrenOf(doc(), cardInstance)[0].id)[0].fills).toEqual([green])
+
+  const loop = makeNode('FRAME', { instanceOf: m, x: 0, y: 0 })
+  store.update((d) => put(d, [{ ...loop, parentId: m, order: 'z' }]))
+  expect(childrenOf(doc(), loop.id)).toEqual([])
+  expect(childrenOf(doc(), i).length).toBe(2) // the plain instance now mirrors the (empty) nested one too
+})
+
+test('components: instances take no new children, their nodes stay put, copies out stop mirroring, orphans keep content', () => {
+  const { store, page, m, i, copy } = components()
+  const d0 = store.get().doc
+  expect(moveTo(d0, [copy().id], page)).toBe(d0)
+  const loose = makeNode('RECTANGLE', { x: 150, y: 10, width: 5, height: 5 })
+  const d1 = insert(d0, loose, page)
+  expect(moveTo(d1, [loose.id], i)).toBe(d1)
+  expect(frameAt(d0, page, { x: 160, y: 20 })).toBe(page)
+  store.update((d) => put(d, [{ ...copy(), id: 'pasted', parentId: page, order: 'z' }]))
+  expect(store.get().doc.nodes.pasted.ref).toBeUndefined()
+  store.update((d) => remove(d, [m]))
+  expect(copy()).toMatchObject({ name: 'Bg', fills: [red] })
+})
+
+test('components: Ctrl+Alt+K wraps a selection into a component', () => {
+  const { store, a, b } = open()
+  store.set({ selection: [a, b] })
+  expect(keyOf({ key: 'k', code: 'KeyK', ctrlKey: true, metaKey: false, altKey: true, shiftKey: false })).toBe('Ctrl+Alt+K')
+  run(store, 'create-component')
+  const c = store.get().doc.nodes[store.get().selection[0]]
+  expect(c).toMatchObject({ type: 'FRAME', component: true, name: 'Component 1' })
+  expect(childrenOf(store.get().doc, c.id).map((k) => k.id)).toEqual([a, b])
 })

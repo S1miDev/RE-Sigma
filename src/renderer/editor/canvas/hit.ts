@@ -57,7 +57,7 @@ export function marqueeHits(doc: Document, pageId: string, box: Box): string[] {
 export function frameAt(doc: Document, pageId: string, p: Pt, exclude: string[] = []): string {
   const find = (parentId: string): string => {
     for (const n of childrenOf(doc, parentId).toReversed()) {
-      if (n.type !== 'FRAME' || !n.visible || n.locked || exclude.includes(n.id)) continue
+      if (n.type !== 'FRAME' || !n.visible || n.locked || n.instanceOf || exclude.includes(n.id)) continue // instances take no new children
       const q = apply(invert(worldMatrix(doc, n.id)), p)
       if (q.x >= 0 && q.x <= n.width && q.y >= 0 && q.y <= n.height) return find(n.id)
     }

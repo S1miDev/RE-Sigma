@@ -6,6 +6,7 @@ import type { Guides } from './snap'
 import { toScreen, type View } from './viewport'
 
 const ACCENT = '#0d99ff'
+const COMPONENT = '#9747ff' // components and instances are labelled purple, as in Figma
 export interface Handle { kind: 'resize' | 'rotate'; hx: number; hy: number; at: Pt }
 
 /** Handles of one selected node, in screen coordinates. Lines and text resize along their width only. */
@@ -35,7 +36,7 @@ export function drawOverlay(
   for (const n of childrenOf(doc, s.pageId)) {
     if (n.type !== 'FRAME' || !n.visible) continue
     const p = toScreen(view, corners(doc, n.id)[0])
-    ctx.fillStyle = s.selection.includes(n.id) ? ACCENT : '#8c8c8c'
+    ctx.fillStyle = n.component || n.instanceOf ? COMPONENT : s.selection.includes(n.id) ? ACCENT : '#8c8c8c'
     ctx.fillText(n.name, p.x, p.y - 6)
   }
 

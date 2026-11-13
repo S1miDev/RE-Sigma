@@ -52,6 +52,11 @@ export interface Node {
   fillW?: boolean // child of an auto-layout frame: stretch to fill it along this axis
   fillH?: boolean
   constraints?: { h: Constraint; v: Constraint } // absent = MIN/MIN
+  // Components (FRAME only for the first two). An instance's subtree mirrors its main component's.
+  component?: boolean // a main component
+  instanceOf?: string // an instance root: the main component's id
+  ref?: string // a node inside an instance: the id of the node it mirrors in the main component
+  overrides?: string[] // fields an instance node keeps from itself (OVERRIDABLE)
   // TEXT only
   characters?: string
   fontFamily?: string
@@ -70,6 +75,13 @@ export interface Document {
   pages: string[]
   nodes: Record<string, Node>
 }
+
+/** Fields an instance node can override; everything else (ids, tree position, component links) is never copied from the main. */
+export const OVERRIDABLE = [
+  'name', 'visible', 'locked', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'fills', 'strokes', 'strokeWeight', 'strokeAlign', 'effects',
+  'cornerRadius', 'clipsContent', 'layout', 'fillW', 'fillH', 'constraints', 'characters', 'fontFamily', 'fontWeight', 'fontSize', 'lineHeight',
+  'letterSpacing', 'textAlign', 'textAutoWidth', 'vector',
+] as const satisfies readonly (keyof Node)[]
 
 export const FORMAT_VERSION = 1
 export const isContainer = (n: Node) => n.type === 'PAGE' || n.type === 'FRAME' || n.type === 'GROUP'

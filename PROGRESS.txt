@@ -15,7 +15,7 @@ Status legend: [done] [in progress] [todo]
        .fig stackMode import (imported positions are already baked).
        Known limits (shortcut: comments): rotated children use their unrotated box;
        fill-inside-hug nesting deeper than one level may lag one edit.
- 2. [done] Constraints (commit: see `git log --grep "Add constraints"`)
+ 2. [done] Constraints (commit c48ac2a)
        Node `constraints` {h, v} of MIN/MAX/STRETCH/CENTER/SCALE; absent = MIN/MIN.
        Applied in setBox() in model/ops.ts whenever a FRAME without auto layout changes size
        (handles, panel, auto-layout fill); cascades into nested frames.
@@ -23,7 +23,22 @@ Status legend: [done] [in progress] [todo]
        (horizontalConstraint/verticalConstraint); saved in .refig.
        Skipped: Ctrl-drag to resize ignoring constraints, the visual constraint widget.
        Known limit (shortcut: comment): rotated children follow by their unrotated box.
- 3. [todo] Components + instances (main component, overrides, detach)
+ 3. [done] Components + instances (commit: see `git log --grep "Add components"`)
+       FRAME flags: `component` (main), `instanceOf` (instance root); nodes inside an instance
+       carry `ref` (mirrored main node id) and `overrides` (field names, OVERRIDABLE in document.ts).
+       Engine: syncInstances() in src/renderer/editor/model/components.ts, first step of normalize()
+       in store.ts. It records overrides from what the user changed, rebuilds every instance from
+       its main (reusing ids by ref), applies main-child constraints when the instance is resized.
+       Commands: Create component Ctrl+Alt+K, Create instance, Go to main component,
+       Reset overrides, Detach instance Ctrl+Alt+B. Design panel Component/Instance section;
+       purple labels and component/instance icons in the layers panel.
+       Guards: moveTo refuses moves into/out of instances; frameAt skips instances; ungroup skips them.
+       Skipped: .fig import keeping the component link (imported instances stay plain frames),
+       Ctrl+D/paste of a main making an instance (they copy the main), swap instance,
+       Alt-drag to create an instance, component properties.
+       Known limits: deleting a node inside an instance does nothing (the sync recreates it);
+       every edit re-syncs all instances (shortcut: comment, cache when documents get large);
+       a new field on Node must be added to OVERRIDABLE or it won't reach instances.
  4. [todo] Variants / component sets
  5. [todo] Gradient fills (linear, radial, angular, diamond)
  6. [todo] Pen tool + vector node editing
@@ -54,8 +69,9 @@ Status legend: [done] [in progress] [todo]
 31. [todo] Assets panel
 32. [todo] Outline text; font embedding in SVG/PDF export
 
-Next step: #3 Components + instances. Plan first. Today .fig import expands instances into
-plain FRAMEs (src/main/format/fig.ts); the editor has no component concept yet.
+Next step: #4 Variants / component sets. Plan first. Build on components.ts: a component set is
+a frame holding main components named "Prop=Value, …"; an instance switches variant by changing
+its instanceOf (overrides kept where the ref still exists).
 
 Known unrelated issue: e2e test "imports a Figma .fig file and reports what was omitted"
 fails on main too. It expects VECTOR in the omitted list, but VECTORs import now.

@@ -170,6 +170,27 @@ test('a rectangle pinned right follows its frame when the frame is widened', asy
   await page.screenshot({ path: 'test-results/constraints.png' })
 })
 
+test('an instance follows its main component', async () => {
+  const page = await launch()
+  await page.getByRole('button', { name: 'New project' }).first().click()
+  await drawRectangle(page)
+  await page.keyboard.press('Control+Alt+K')
+  await expect(page.getByRole('treeitem', { name: 'Component 1' })).toBeVisible()
+  await page.getByRole('button', { name: 'Create instance' }).click()
+  await expect(page.getByRole('region', { name: 'Instance' })).toContainText('Instance of Component 1')
+  // edit the rectangle inside the main: select it on the canvas (frame children are hit directly)
+  const box = (await page.getByLabel('Canvas').boundingBox())!
+  await page.mouse.click(box.x + 300, box.y + 220)
+  await expect(page.getByRole('region', { name: 'Rectangle' })).toBeVisible()
+  await page.getByLabel('Opacity', { exact: true }).fill('40')
+  await page.getByLabel('Opacity', { exact: true }).press('Enter')
+  await page.keyboard.press('Escape')
+  await page.mouse.click(box.x + 300 + 260, box.y + 220) // same spot in the instance, 40px right of a 220px main
+  await expect(page.getByRole('region', { name: 'Rectangle' })).toBeVisible()
+  await expect(page.getByLabel('Opacity', { exact: true })).toHaveValue('40')
+  await page.screenshot({ path: 'test-results/components.png' })
+})
+
 test('the page has no Node access and only the contract API', async () => {
   const page = await launch()
   const seen = await page.evaluate(() => ({
