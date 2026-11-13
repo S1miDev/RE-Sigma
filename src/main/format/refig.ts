@@ -1,7 +1,7 @@
 // .refig = ZIP { meta.json, document.json, thumbnail.png?, images/<sha256> }. See docs/project-format.md.
 import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from 'fflate'
 import {
-  CONSTRAINTS, FILL_RULES, FORMAT_VERSION, GRADIENT_KINDS, LAYOUT_ALIGNS, LAYOUT_MODES, NODE_TYPES, OVERRIDABLE, STROKE_ALIGNS, TEXT_ALIGNS,
+  CONSTRAINTS, FILL_RULES, FORMAT_VERSION, GRADIENT_KINDS, isContainer, LAYOUT_ALIGNS, LAYOUT_MODES, NODE_TYPES, OVERRIDABLE, STROKE_ALIGNS, TEXT_ALIGNS,
   type AutoLayout, type Color, type Document, type DropShadow, type Node, type Paint, type VectorPath,
 } from '../../shared/document'
 
@@ -96,6 +96,13 @@ const shadows = (x: unknown, at: string): DropShadow[] =>
     blur: num(s, 'blur', at, 0), spread: num(s, 'spread', at), color: color(s.color, `${at}.color`),
   }))
 
+/** False for anything but a positive integer; a version newer than this app's throws, with a message for the user. */
+function knownVersion(v: unknown): boolean {
+  if (!Number.isInteger(v) || (v as number) < 1) return false
+  if ((v as number) > FORMAT_VERSION) throw new FormatError('This project was made by a newer version of Refig')
+  return true
+}
+
 // Path data ends up inside SVG attributes on export, so only path commands and numbers are allowed.
 const PATH_DATA = /^[MLQCZ0-9eE.+\- ]*$/
 const vectorPaths = (x: unknown, at: string): VectorPath[] =>
@@ -166,8 +173,7 @@ function validateNode(id: string, n: unknown): Node {
 /** Checks shape, references, parents and cycles. Returns a clean copy with unknown fields dropped. */
 export function validateDocument(x: unknown): Document {
   if (!isObj(x)) return fail('not an object')
-  if (!Number.isInteger(x.formatVersion) || (x.formatVersion as number) < 1) return fail('formatVersion')
-  if ((x.formatVersion as number) > FORMAT_VERSION) throw new FormatError('This project was made by a newer version of Refig')
+  if (!knownVersion(x.formatVersion)) return fail('formatVersion')
   // 1 → 2 only added gradient paints, so version 1 needs no migration; future migrations go here.
   if (!isObj(x.nodes)) return fail('nodes')
   const nodes: Record<string, Node> = {}
@@ -187,7 +193,7 @@ export function validateDocument(x: unknown): Document {
     for (let c: Node = n; !rooted.has(c.id); ) {
       chain.push(c.id)
       const p = c.parentId !== null && Object.hasOwn(nodes, c.parentId) ? nodes[c.parentId] : undefined
-      if (!p || !(p.type === 'PAGE' || p.type === 'FRAME' || p.type === 'GROUP')) return fail(`nodes.${c.id}.parentId`)
+      if (!p || !isContainer(p)) return fail(`nodes.${c.id}.parentId`)
       if (chain.includes(p.id)) return fail(`nodes.${c.id} (parent cycle)`)
       c = p
     }
@@ -198,8 +204,7 @@ export function validateDocument(x: unknown): Document {
 
 export function validateMeta(x: unknown): Meta {
   const bad = () => new FormatError('Invalid project file: meta.json')
-  if (!isObj(x) || x.format !== 'refig' || !Number.isInteger(x.formatVersion) || (x.formatVersion as number) < 1) throw bad()
-  if ((x.formatVersion as number) > FORMAT_VERSION) throw new FormatError('This project was made by a newer version of Refig')
+  if (!isObj(x) || x.format !== 'refig' || !knownVersion(x.formatVersion)) throw bad()
   const s = (k: string, max = 200) => {
     const v = x[k]
     if (typeof v !== 'string' || v.length > max) throw bad()

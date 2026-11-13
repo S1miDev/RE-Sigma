@@ -18,20 +18,15 @@ export function childrenOf(doc: Document, parentId: string): Node[] {
   return index.get(parentId) ?? []
 }
 export const descendants = (doc: Document, id: string): Node[] => childrenOf(doc, id).flatMap((c) => [c, ...descendants(doc, c.id)])
-export function pageOf(doc: Document, id: string): string | null {
-  let n: Node | undefined = doc.nodes[id]
-  while (n && n.type !== 'PAGE') n = n.parentId ? doc.nodes[n.parentId] : undefined
-  return n?.id ?? null
+/** The node and then each of its ancestors, up to its page. Empty for a missing id. */
+export function lineage(doc: Document, id: string | null | undefined): Node[] {
+  const out: Node[] = []
+  for (let n = id ? doc.nodes[id] : undefined; n; n = n.parentId ? doc.nodes[n.parentId] : undefined) out.push(n)
+  return out
 }
-export function isAncestor(doc: Document, ancestor: string, id: string): boolean {
-  for (let n = doc.nodes[id]; n?.parentId; n = doc.nodes[n.parentId]) if (n.parentId === ancestor) return true
-  return false
-}
-function depth(doc: Document, id: string) {
-  let d = 0
-  for (let n = doc.nodes[id]; n?.parentId; n = doc.nodes[n.parentId]) d++
-  return d
-}
+export const pageOf = (doc: Document, id: string): string | null => lineage(doc, id).find((n) => n.type === 'PAGE')?.id ?? null
+export const isAncestor = (doc: Document, ancestor: string, id: string) => lineage(doc, id).slice(1).some((n) => n.id === ancestor)
+export const depth = (doc: Document, id: string) => Math.max(0, lineage(doc, id).length - 1)
 /** Existing non-page ids with no selected ancestor, in document (z) order. */
 export function topLevel(doc: Document, ids: string[]): string[] {
   const set = new Set(ids.filter((id) => doc.nodes[id] && doc.nodes[id].type !== 'PAGE'))
@@ -51,7 +46,13 @@ export function nextName(doc: Document, base: string): string {
   return `${base} ${max + 1}`
 }
 
-const topOrder = (doc: Document, parentId: string) => orderBetween(childrenOf(doc, parentId).at(-1)?.order)
+/** An order key on top of a parent's children. */
+export const topOrder = (doc: Document, parentId: string) => orderBetween(childrenOf(doc, parentId).at(-1)?.order)
+/** An order key directly above a node, below its next sibling. */
+export function orderAbove(doc: Document, n: Node): string {
+  const siblings = childrenOf(doc, n.parentId!)
+  return orderBetween(n.order, siblings[siblings.findIndex((s) => s.id === n.id) + 1]?.order)
+}
 
 /** Adds a node on top of its parent's children. */
 export const insert = (doc: Document, node: Node, parentId: string): Document => put(doc, [{ ...node, parentId, order: topOrder(doc, parentId) }])
@@ -241,12 +242,8 @@ export function layoutSlot(doc: Document, frameId: string, p: Pt, exclude: strin
 export function group(doc: Document, ids: string[], type: 'GROUP' | 'FRAME'): { doc: Document; id: string | null } {
   const items = topLevel(doc, ids)
   if (!items.length) return { doc, id: null }
-  const top = doc.nodes[items.at(-1)!], parentId = top.parentId!
-  const siblings = childrenOf(doc, parentId)
-  const box = makeNode(type, {
-    name: nextName(doc, type === 'GROUP' ? 'Group' : 'Frame'), parentId, clipsContent: false,
-    order: orderBetween(top.order, siblings[siblings.indexOf(top) + 1]?.order),
-  })
+  const top = doc.nodes[items.at(-1)!]
+  const box = makeNode(type, { name: nextName(doc, type === 'GROUP' ? 'Group' : 'Frame'), parentId: top.parentId, clipsContent: false, order: orderAbove(doc, top) })
   doc = fit(moveTo(put(doc, [box]), items, box.id), box.id)
   return { doc, id: box.id }
 }
@@ -273,8 +270,8 @@ export function cloneTree(root: Node, kids: (id: string) => Node[], parentId: st
 export function duplicate(doc: Document, ids: string[]): { doc: Document; ids: string[] } {
   const out: string[] = []
   for (const id of topLevel(doc, ids)) {
-    const n = doc.nodes[id], siblings = childrenOf(doc, n.parentId!)
-    const copies = cloneTree(n, (i) => childrenOf(doc, i), n.parentId!, orderBetween(n.order, siblings[siblings.indexOf(n) + 1]?.order))
+    const n = doc.nodes[id]
+    const copies = cloneTree(n, (i) => childrenOf(doc, i), n.parentId!, orderAbove(doc, n))
     doc = put(doc, copies)
     out.push(copies[0].id)
   }

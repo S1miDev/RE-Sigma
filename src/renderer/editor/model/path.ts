@@ -1,6 +1,6 @@
 // Editable paths: a VECTOR's path data as anchors with Bézier handles, and back.
 import type { Node } from '../../../shared/document'
-import { apply, bounds, boxAt, localMatrix, type Pt } from './geometry'
+import { apply, bounds, boxAt, fmt, localMatrix, type Pt } from './geometry'
 
 /** A point on a path. `in`/`out` are its Bézier handles, in the same coordinates as the point. */
 export type Anchor = { x: number; y: number; in?: Pt; out?: Pt }
@@ -49,7 +49,7 @@ export function parsePath(d: string): Sub[] {
   return subs
 }
 
-const f = (v: number) => String(Math.round(v * 1000) / 1000)
+const f = fmt
 const seg = (a: Anchor, b: Anchor) => (a.out || b.in ? `C${f((a.out ?? a).x)} ${f((a.out ?? a).y)} ${f((b.in ?? b).x)} ${f((b.in ?? b).y)} ${f(b.x)} ${f(b.y)}` : `L${f(b.x)} ${f(b.y)}`)
 
 /** Subpaths → path data with M L C Z only. */

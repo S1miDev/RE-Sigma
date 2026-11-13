@@ -1,14 +1,14 @@
 // Gradient paints for the canvas renderer. Every kind is drawn in canonical gradient space (see gradientMatrix),
 // mapped onto the node's box, so rotated, skewed and elliptical gradients from Figma come out right.
-import { gradientMatrix, type Gradient } from '../../../shared/document'
-import { css } from './render'
+import { gradientMatrix, sortedStops, type Gradient } from '../../../shared/document'
+import { css } from './color'
 
 type Pt = { x: number; y: number }
 type Part = { style: CanvasGradient; clip?: Pt[] } // clip: a polygon in the same space as the style
 const FAR = 1e4 // reaches past any box in canonical space
 
 function addStops(g: Gradient, grad: CanvasGradient) {
-  for (const s of [...g.stops].sort((a, b) => a.pos - b.pos)) grad.addColorStop(Math.min(1, Math.max(0, s.pos)), css(s.color))
+  for (const s of sortedStops(g.stops)) grad.addColorStop(Math.min(1, Math.max(0, s.pos)), css(s.color))
   return grad
 }
 /** A linear gradient whose value is 0 at `at` and grows by 1 per unit along `grad` (the value's gradient vector). */

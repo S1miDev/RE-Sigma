@@ -2,6 +2,7 @@
 import { dialog, ipcMain, type BrowserWindow } from 'electron'
 import fs from 'node:fs'
 import { API_KEYS, type RefigApi } from '../shared/api'
+import { imageType } from '../shared/image'
 import { svgToPdf } from './export'
 import { UUID } from './format/refig'
 import { sanitizeName, type ProjectStore } from './projects'
@@ -13,7 +14,7 @@ const bad = (what: string): never => {
 const id = (v: unknown) => (typeof v === 'string' && UUID.test(v) ? v : bad('id'))
 const text = (v: unknown, max: number, what: string) => (typeof v === 'string' && v.length <= max ? v : bad(what))
 const bytes = (v: unknown, max: number, what: string) => (v instanceof Uint8Array && v.byteLength <= max ? v : bad(what))
-const isPng = (b: Uint8Array) => b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47
+const isPng = (b: Uint8Array) => imageType(b) === 'image/png'
 
 type Handlers = { [K in keyof RefigApi]: (...args: unknown[]) => ReturnType<RefigApi[K]> | Awaited<ReturnType<RefigApi[K]>> }
 

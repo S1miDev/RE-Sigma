@@ -1,13 +1,12 @@
 // SVG serializer for documents. Mirrors canvas/render.ts: same shapes, paint order, stroke alignment and shadows.
-import { gradientMatrix, type Color, type Document, type Gradient, type Node, type Paint } from '../../../shared/document'
+import { gradientMatrix, sortedStops, type Color, type Document, type Gradient, type Node, type Paint } from '../../../shared/document'
+import { rgb } from '../canvas/color'
 import { gradientImage } from '../canvas/gradient'
 import { fontOf, layoutText, lineX } from '../canvas/text'
-import { localMatrix, worldBox, worldMatrix } from '../model/geometry'
+import { fmt as f, localMatrix, worldBox, worldMatrix } from '../model/geometry'
 import { childrenOf } from '../model/ops'
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
-const f = (v: number) => String(Math.round(v * 1000) / 1000)
-const rgb = (c: Color) => `rgb(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)})`
 
 /** `imageUrl` maps an image hash to a data URL. The result's size is the nodes' bounding box on the page. */
 export function toSvg(doc: Document, ids: string[], imageUrl: (hash: string) => string | undefined): string {
@@ -45,7 +44,7 @@ export function toSvg(doc: Document, ids: string[], imageUrl: (hash: string) => 
    * (½, ½) with radius ½. Vector paths carry their own scale, so their user space is the vector's box, not the node's.
    */
   const gradientDef = (g: Gradient, m: number[], n: Node, along?: [number, number, number, number]): string => {
-    const id = `g${++uid}`, stops = [...g.stops].sort((a, b) => a.pos - b.pos)
+    const id = `g${++uid}`, stops = sortedStops(g.stops)
       .map((s) => `<stop offset="${f(Math.min(1, Math.max(0, s.pos)))}" stop-color="${rgb(s.color)}" stop-opacity="${f(s.color.a)}"/>`).join('')
     const [w, h] = n.type === 'VECTOR' ? [n.vector!.w, n.vector!.h] : [n.width, n.height]
     const common = `id="${id}" gradientUnits="userSpaceOnUse" gradientTransform="${space(m, w, h)}"`
@@ -62,7 +61,7 @@ export function toSvg(doc: Document, ids: string[], imageUrl: (hash: string) => 
   const painted = (n: Node, p: Exclude<Paint, { type: 'IMAGE' }>, prop: 'fill' | 'stroke', draw: (attrs: string) => string, raster: boolean): string => {
     const color = (c: Color) => draw(`${prop}="${rgb(c)}" ${prop}-opacity="${f(c.a)}"`)
     if (p.type === 'SOLID') return color(p.color)
-    const first = [...p.stops].sort((a, b) => a.pos - b.pos)[0].color, m = gradientMatrix(p)
+    const first = sortedStops(p.stops)[0].color, m = gradientMatrix(p)
     if (!m) return color(first) // degenerate handles
     if (p.kind === 'LINEAR' || p.kind === 'RADIAL') return draw(`${prop}="${gradientDef(p, m, n)}"`)
     if (p.kind === 'DIAMOND') {

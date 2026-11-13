@@ -1,6 +1,6 @@
 // Components: an instance's subtree mirrors its main component's, except for the fields each instance node overrides.
 import { OVERRIDABLE, type Document, type Node } from '../../../shared/document'
-import { addAutoLayout, childrenOf, duplicate, follow, group, nextName, put, remove, topLevel } from './ops'
+import { addAutoLayout, childrenOf, depth, duplicate, follow, group, lineage, nextName, put, remove, topLevel } from './ops'
 
 type Key = (typeof OVERRIDABLE)[number]
 /** An instance root's own place in the document; never taken from the main. */
@@ -8,10 +8,7 @@ const ROOT_OWN: readonly Key[] = ['name', 'visible', 'locked', 'x', 'y', 'rotati
 const GEOMETRY: readonly Key[] = ['x', 'y', 'width', 'height']
 
 /** The nearest instance root at or above a node, or null. */
-export function instanceRoot(doc: Document, id: string): string | null {
-  for (let n: Node | undefined = doc.nodes[id]; n; n = n.parentId ? doc.nodes[n.parentId] : undefined) if (n.instanceOf) return n.id
-  return null
-}
+export const instanceRoot = (doc: Document, id: string): string | null => lineage(doc, id).find((n) => n.instanceOf)?.id ?? null
 /** True for an instance root or anything inside one. */
 export const inInstance = (doc: Document, id: string) => instanceRoot(doc, id) !== null
 
@@ -72,15 +69,10 @@ function ownedBy(doc: Document, rootId: string): Node[] {
   walk(rootId)
   return out
 }
-const depth = (doc: Document, id: string) => { let d = 0; for (let n = doc.nodes[id]; n?.parentId; n = doc.nodes[n.parentId]) d++; return d }
-
 /** An instance can't expand its own main, or a main already being expanded above it (A contains B contains A). */
 function expandable(doc: Document, root: Node): boolean {
   const main = doc.nodes[root.instanceOf!]
-  if (!main?.component) return false
-  for (let n = root.parentId ? doc.nodes[root.parentId] : undefined; n; n = n.parentId ? doc.nodes[n.parentId] : undefined)
-    if (n.id === main.id || n.instanceOf === main.id) return false
-  return true
+  return !!main?.component && !lineage(doc, root.parentId).some((n) => n.id === main.id || n.instanceOf === main.id)
 }
 
 function rebuild(doc: Document, rootId: string): Document {
@@ -191,12 +183,8 @@ export function addVariant(doc: Document, setId: string): { doc: Document; id: s
 
 /** Layer names from a main component down to one of its nodes. */
 function namePath(doc: Document, mainId: string, id: string): string[] | null {
-  const path: string[] = []
-  for (let n: Node | undefined = doc.nodes[id]; n; n = n.parentId ? doc.nodes[n.parentId] : undefined) {
-    if (n.id === mainId) return path.reverse()
-    path.push(n.name)
-  }
-  return null
+  const up = lineage(doc, id), i = up.findIndex((n) => n.id === mainId)
+  return i < 0 ? null : up.slice(0, i).map((n) => n.name).reverse()
 }
 function atPath(doc: Document, mainId: string, path: string[]): string | undefined {
   let id: string | undefined = mainId

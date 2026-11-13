@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import type { ExportKind } from '../../../shared/api'
 import {
-  colorAt, CONSTRAINTS, convertPaint, gradientAngle, LAYOUT_ALIGNS, rotateGradient, solid, STROKE_ALIGNS, TEXT_ALIGNS,
+  colorAt, CONSTRAINTS, convertPaint, gradientAngle, LAYOUT_ALIGNS, rotateGradient, solid, STROKE_ALIGNS, TEXT_ALIGNS, typeLabel,
   type AutoLayout, type Constraint, type Document, type DropShadow, type GradientStop, type Node, type Paint, type PaintKind,
 } from '../../../shared/document'
 import { Button, ColorField, IconButton, NumberField, PanelSection, Select, type IconName } from '../../ui'
@@ -13,7 +13,6 @@ import { useEditor, useStore } from '../store'
 
 const FONTS = ['Inter', 'Arial', 'Georgia', 'Times New Roman', 'Courier New', 'Verdana', 'Segoe UI', 'Tahoma', 'Trebuchet MS']
 const WEIGHTS: [number, string][] = [[100, 'Thin'], [200, 'Extra Light'], [300, 'Light'], [400, 'Regular'], [500, 'Medium'], [600, 'Semi Bold'], [700, 'Bold'], [800, 'Extra Bold'], [900, 'Black']]
-const TYPE_LABEL: Record<Node['type'], string> = { PAGE: 'Page', FRAME: 'Frame', GROUP: 'Group', RECTANGLE: 'Rectangle', ELLIPSE: 'Ellipse', LINE: 'Line', TEXT: 'Text', VECTOR: 'Vector' }
 const Row = ({ children }: { children: React.ReactNode }) => <div className="flex items-center gap-1.5">{children}</div>
 
 export function DesignPanel({ report }: { report(e: unknown): void }) {
@@ -49,7 +48,7 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
 
   return (
     <div className="min-h-0 flex-1 overflow-auto">
-      <PanelSection title={nodes.length === 1 ? TYPE_LABEL[first.type] : `${nodes.length} layers selected`}>
+      <PanelSection title={nodes.length === 1 ? typeLabel(first.type) : `${nodes.length} layers selected`}>
         <Row>
           <NumberField label="X" prefix="X" className="flex-1" value={common('x')} onChange={(x) => edit({ x }, 'x')} />
           <NumberField label="Y" prefix="Y" className="flex-1" value={common('y')} onChange={(y) => edit({ y }, 'y')} />

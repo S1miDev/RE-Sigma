@@ -7,6 +7,8 @@ export type Box = { x: number; y: number; w: number; h: number }
 export type Mat = [number, number, number, number, number, number]
 
 export const IDENTITY: Mat = [1, 0, 0, 1, 0, 0]
+/** A coordinate as text, rounded to 3 decimals (path data, SVG attributes). */
+export const fmt = (v: number) => String(Math.round(v * 1000) / 1000)
 export const rad = (deg: number) => (deg * Math.PI) / 180
 export const deg = (r: number) => (r * 180) / Math.PI
 export const apply = (m: Mat, p: Pt): Pt => ({ x: m[0] * p.x + m[2] * p.y + m[4], y: m[1] * p.x + m[3] * p.y + m[5] })

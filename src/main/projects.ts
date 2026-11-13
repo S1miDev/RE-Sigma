@@ -4,6 +4,7 @@ import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import type { ConflictChoice, ImportResult, Omitted, OpenedProject, ProjectSummary } from '../shared/api'
 import { emptyDocument, FORMAT_VERSION } from '../shared/document'
+import { imageType } from '../shared/image'
 import { importFig } from './format/fig'
 import { FormatError, readRefig, readRefigMeta, validateDocument, writeRefig, type Meta, type RefigFile } from './format/refig'
 
@@ -35,15 +36,6 @@ export function writeAtomic(file: string, bytes: Uint8Array) {
     fs.rmSync(tmp, { force: true })
     throw e
   }
-}
-
-export function imageType(b: Uint8Array): string | null {
-  const at = (s: string, o = 0) => [...s].every((c, i) => b[o + i] === c.charCodeAt(0))
-  if (at('\x89PNG')) return 'image/png'
-  if (at('\xff\xd8\xff')) return 'image/jpeg'
-  if (at('GIF8')) return 'image/gif'
-  if (at('RIFF') && at('WEBP', 8)) return 'image/webp'
-  return null
 }
 
 interface Entry { path: string; meta: Meta; thumbnail?: Uint8Array; reid?: boolean }

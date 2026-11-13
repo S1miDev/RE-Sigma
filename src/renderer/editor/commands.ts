@@ -3,8 +3,7 @@
 import { makeNode, type Node } from '../../shared/document'
 import { fitView, toWorld, zoomAt } from './canvas/viewport'
 import { apply, worldBox, worldMatrix, worldRotation, type Pt } from './model/geometry'
-import { addAutoLayout, align, childrenOf, cloneTree, distribute, descendants, duplicate, group, nextName, pageOf, patch, put, remove, reorder, topLevel, translate, ungroup } from './model/ops'
-import { orderBetween } from '../../shared/order'
+import { addAutoLayout, align, childrenOf, cloneTree, distribute, descendants, duplicate, group, insert, nextName, orderAbove, pageOf, patch, put, remove, reorder, topLevel, topOrder, translate, ungroup } from './model/ops'
 import { addVariant, combineAsVariants, detach, makeComponent, resetOverrides, setOf, variantsOf } from './model/components'
 import type { EditorState, EditorStore, Tool } from './store'
 import { deletePoint, finishPen, setTool } from './tools'
@@ -48,7 +47,7 @@ export async function paste(store: EditorStore) {
       const home = root.node.parentId && doc.nodes[root.node.parentId] && pageOf(doc, root.node.parentId) === pageId
       const parentId = home ? root.node.parentId! : pageId
       const placed = home ? root.node : { ...root.node, x: root.centre.x - root.node.width / 2, y: root.centre.y - root.node.height / 2, rotation: root.rotation }
-      const copies = cloneTree(placed, kids, parentId, orderBetween(childrenOf(doc, parentId).at(-1)?.order))
+      const copies = cloneTree(placed, kids, parentId, topOrder(doc, parentId))
       doc = put(doc, copies)
       created.push(copies[0].id)
     }
@@ -64,7 +63,7 @@ export async function pasteImage(store: EditorStore, file: Blob) {
   const { view, size, pageId } = store.get(), width = bitmap?.width ?? 200, height = bitmap?.height ?? 200
   const c = toWorld(view, { x: size.w / 2, y: size.h / 2 })
   const node = makeNode('RECTANGLE', { name: nextName(store.get().doc, 'Image'), x: c.x - width / 2, y: c.y - height / 2, width, height, fills: [{ type: 'IMAGE', visible: true, hash }] })
-  store.update((doc) => put(doc, [{ ...node, parentId: pageId, order: orderBetween(childrenOf(doc, pageId).at(-1)?.order) }]), undefined, [node.id])
+  store.update((doc) => insert(doc, node, pageId), undefined, [node.id])
 }
 
 const has = (s: EditorState) => s.selection.length > 0
@@ -172,13 +171,12 @@ function createComponent(st: EditorStore) {
   })
   if (id) st.set({ selection: [id] })
 }
-/** Places an instance of the selected main component just to its right. */
 /** Places an instance of the selected main component (a set's first variant for a set) just right of it, or of its set. */
 function createInstance(st: EditorStore) {
   const { doc } = st.get(), picked = lone(st.get())!
   const main = picked.componentSet ? variantsOf(doc, picked.id)[0] : picked, at = setOf(doc, main.id) ?? main
   const node = makeNode('FRAME', { name: at.name, instanceOf: main.id, x: at.x + at.width + 40, y: at.y, width: main.width, height: main.height, rotation: at.rotation })
-  st.update((d) => put(d, [{ ...node, parentId: at.parentId, order: orderBetween(at.order, childrenOf(d, at.parentId!).find((k) => k.order > at.order)?.order) }]), undefined, [node.id])
+  st.update((d) => put(d, [{ ...node, parentId: at.parentId, order: orderAbove(d, at) }]), undefined, [node.id])
 }
 const setSelected = (s: EditorState) => { const n = lone(s); return n?.componentSet ? n : n && setOf(s.doc, n.id) }
 function goToMain(st: EditorStore) {

@@ -132,27 +132,32 @@ export function gradientMatrix(g: Gradient): [number, number, number, number, nu
   return [ex[0], ex[1], ey[0], ey[1], ox, oy]
 }
 export type PaintKind = 'SOLID' | Gradient['kind']
+/** A gradient's stops by position (they are stored in edit order). */
+export const sortedStops = (stops: GradientStop[]) => [...stops].sort((a, b) => a.pos - b.pos)
 /** Switches a solid or gradient paint to another kind. Gradients keep their stops; solid keeps the first stop's colour. */
 export function convertPaint(p: Exclude<Paint, { type: 'IMAGE' }>, kind: PaintKind): Paint {
-  const first = p.type === 'SOLID' ? p.color : [...p.stops].sort((a, b) => a.pos - b.pos)[0].color
+  const first = p.type === 'SOLID' ? p.color : sortedStops(p.stops)[0].color
   if (kind === 'SOLID') return { type: 'SOLID', visible: p.visible, color: first }
   const g = gradient(kind, first, p.visible)
   return p.type === 'GRADIENT' ? { ...g, stops: p.stops } : g
 }
 /** The colour of a gradient at `pos`, interpolated between its stops. */
 export function colorAt(stops: GradientStop[], pos: number): Color {
-  const s = [...stops].sort((a, b) => a.pos - b.pos), i = s.findIndex((x) => x.pos >= pos)
+  const s = sortedStops(stops), i = s.findIndex((x) => x.pos >= pos)
   if (i <= 0) return (i === 0 ? s[0] : s.at(-1)!).color
   const a = s[i - 1], b = s[i], t = b.pos === a.pos ? 0 : (pos - a.pos) / (b.pos - a.pos)
   const mix = (k: keyof Color) => a.color[k] + (b.color[k] - a.color[k]) * t
   return { r: mix('r'), g: mix('g'), b: mix('b'), a: mix('a') }
 }
 
+/** "Rectangle" for RECTANGLE: a node type as people read it. */
+export const typeLabel = (type: NodeType) => type[0] + type.slice(1).toLowerCase()
+
 export function makeNode(type: NodeType, props: Partial<Node> = {}): Node {
   return {
     id: crypto.randomUUID(),
     type,
-    name: type[0] + type.slice(1).toLowerCase(),
+    name: typeLabel(type),
     parentId: null,
     order: 'O',
     visible: true,

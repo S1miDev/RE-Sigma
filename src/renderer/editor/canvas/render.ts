@@ -1,13 +1,13 @@
 // Canvas 2D renderer for documents. Used for the editor canvas, PNG export and thumbnails.
-import type { Color, Document, DropShadow, Node } from '../../../shared/document'
+import type { Document, DropShadow, Node } from '../../../shared/document'
 import { worldBox, worldMatrix, localMatrix } from '../model/geometry'
 import { childrenOf } from '../model/ops'
+import { css } from './color'
 import { fillGradient, paintGradient } from './gradient'
 import { fontOf, layoutText, lineX } from './text'
 import { fitView, type View } from './viewport'
 
 export type Images = (hash: string) => ImageBitmap | undefined
-export const css = (c: Color) => `rgba(${Math.round(c.r * 255)}, ${Math.round(c.g * 255)}, ${Math.round(c.b * 255)}, ${c.a})`
 const EMPTY_PAGE = '#f5f5f5'
 const visible = <T extends { visible: boolean }>(list: T[]) => list.filter((p) => p.visible)
 

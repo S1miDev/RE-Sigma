@@ -1,10 +1,11 @@
+import { imageType } from '../shared/image'
+
 /** A message fit for the user. Strips the wrapper Electron adds to errors that cross IPC. */
 export const errorText = (e: unknown) =>
   (e instanceof Error ? e.message : String(e)).replace(/^Error invoking remote method '[^']+': (\w*Error: )?/, '')
 
 export function dataUrl(bytes: Uint8Array): string {
-  const is = (s: string, o = 0) => [...s].every((c, i) => bytes[o + i] === c.charCodeAt(0))
-  const type = is('\x89PNG') ? 'image/png' : is('\xff\xd8') ? 'image/jpeg' : is('GIF8') ? 'image/gif' : is('WEBP', 8) ? 'image/webp' : 'application/octet-stream'
+  const type = imageType(bytes) ?? 'application/octet-stream'
   let bin = ''
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
   return `data:${type};base64,${btoa(bin)}`
