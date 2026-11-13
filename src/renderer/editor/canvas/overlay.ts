@@ -36,7 +36,7 @@ export function drawOverlay(
   for (const n of childrenOf(doc, s.pageId)) {
     if (n.type !== 'FRAME' || !n.visible) continue
     const p = toScreen(view, corners(doc, n.id)[0])
-    ctx.fillStyle = n.component || n.instanceOf ? COMPONENT : s.selection.includes(n.id) ? ACCENT : '#8c8c8c'
+    ctx.fillStyle = n.component || n.componentSet || n.instanceOf ? COMPONENT : s.selection.includes(n.id) ? ACCENT : '#8c8c8c'
     ctx.fillText(n.name, p.x, p.y - 6)
   }
 

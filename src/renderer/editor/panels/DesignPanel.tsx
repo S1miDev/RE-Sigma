@@ -1,8 +1,9 @@
 import { useRef, useState } from 'react'
 import type { ExportKind } from '../../../shared/api'
-import { CONSTRAINTS, LAYOUT_ALIGNS, solid, STROKE_ALIGNS, TEXT_ALIGNS, type AutoLayout, type Constraint, type DropShadow, type Node, type Paint } from '../../../shared/document'
+import { CONSTRAINTS, LAYOUT_ALIGNS, solid, STROKE_ALIGNS, TEXT_ALIGNS, type AutoLayout, type Constraint, type Document, type DropShadow, type Node, type Paint } from '../../../shared/document'
 import { Button, ColorField, IconButton, NumberField, PanelSection, Select, type IconName } from '../../ui'
 import { COMMANDS } from '../commands'
+import { setOf, setVariant, variantProps, variantsOf } from '../model/components'
 import { exportSelection } from '../export'
 import { addAutoLayout, patch, resizeNode } from '../model/ops'
 import { useEditor, useStore } from '../store'
@@ -94,7 +95,7 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
         </PanelSection>
       )}
 
-      {nodes.length === 1 && (first.component || first.instanceOf) && <ComponentSection node={first} />}
+      {nodes.length === 1 && (first.component || first.componentSet || first.instanceOf) && <ComponentSection node={first} />}
       {nodes.length === 1 && first.type === 'FRAME' && <AutoLayoutSection node={first} edit={edit} />}
 
       {all('TEXT') && <TextSection nodes={nodes} edit={edit} common={common} />}
@@ -120,19 +121,51 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
   )
 }
 
+/** Each variant property of a set with its values, in variant order. */
+function propertyValues(doc: Document, setId: string): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const v of variantsOf(doc, setId)) for (const [k, val] of Object.entries(variantProps(v.name))) if (!(out[k] ??= []).includes(val)) out[k].push(val)
+  return out
+}
+
 /** Main component: make instances. Instance: where it comes from, and the way back out. */
 function ComponentSection({ node }: { node: Node }) {
   const store = useStore(), doc = useEditor((s) => s.doc)
   const run = (id: string) => COMMANDS.find((c) => c.id === id)!.run(store, { back() {}, openExport() {} })
+  if (node.componentSet) {
+    const props = propertyValues(doc, node.id)
+    return (
+      <PanelSection title="Variants">
+        {Object.entries(props).map(([prop, values]) => <p key={prop}><span className="text-dim">{prop}:</span> {values.join(', ')}</p>)}
+        <Row>
+          <Button className="flex-1" onClick={() => run('add-variant')}>Add variant</Button>
+          <Button className="flex-1" onClick={() => run('create-instance')}>Create instance</Button>
+        </Row>
+      </PanelSection>
+    )
+  }
   if (node.component) return (
     <PanelSection title="Component">
-      <Button onClick={() => run('create-instance')}>Create instance</Button>
+      <Row>
+        {setOf(doc, node.id) ? <Button className="flex-1" onClick={() => run('add-variant')}>Add variant</Button> : <Button className="flex-1" onClick={() => run('combine-variants')}>Combine as variants</Button>}
+        <Button className="flex-1" onClick={() => run('create-instance')}>Create instance</Button>
+      </Row>
     </PanelSection>
   )
-  const main = doc.nodes[node.instanceOf!]
+  const main = doc.nodes[node.instanceOf!], set = main && setOf(doc, main.id)
+  const current = main ? variantProps(main.name) : {}
   return (
     <PanelSection title="Instance">
-      <p className="text-dim">{main ? `Instance of ${main.name}` : 'Main component was deleted'}</p>
+      <p className="text-dim">{main ? `Instance of ${set ? `${set.name} / ` : ''}${main.name}` : 'Main component was deleted'}</p>
+      {set && Object.entries(propertyValues(doc, set.id)).map(([prop, values]) => (
+        <Row key={prop}>
+          <span className="w-20 shrink-0 truncate text-dim">{prop}</span>
+          <Select aria-label={`Variant ${prop}`} className="flex-1" value={current[prop] ?? ''} onChange={(e) => store.update((d) => setVariant(d, node.id, prop, e.target.value))}>
+            {current[prop] === undefined && <option value="" disabled>—</option>}
+            {values.map((v) => <option key={v}>{v}</option>)}
+          </Select>
+        </Row>
+      ))}
       <Row>
         {main && <Button className="flex-1" onClick={() => run('go-to-main')}>Go to main</Button>}
         <Button className="flex-1" onClick={() => run('reset-instance')}>Reset</Button>

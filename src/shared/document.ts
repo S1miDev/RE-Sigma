@@ -54,6 +54,7 @@ export interface Node {
   constraints?: { h: Constraint; v: Constraint } // absent = MIN/MIN
   // Components (FRAME only for the first two). An instance's subtree mirrors its main component's.
   component?: boolean // a main component
+  componentSet?: boolean // a frame holding variants: main components named "Prop=Value, Prop2=Value"
   instanceOf?: string // an instance root: the main component's id
   ref?: string // a node inside an instance: the id of the node it mirrors in the main component
   overrides?: string[] // fields an instance node keeps from itself (OVERRIDABLE)

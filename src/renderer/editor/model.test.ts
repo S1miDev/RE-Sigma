@@ -9,7 +9,7 @@ import { COMMANDS, keyOf } from './commands'
 import { toSvg } from './export/svg'
 import { apply, corners, invert, lineBetween, localMatrix, mul, resizeBox, worldBox } from './model/geometry'
 import { addAutoLayout, addPage, align, autoLayout, childrenOf, distribute, duplicate, group, insert, moveTo, movePage, patch, put, remove, removePage, reorder, resizeNode, topLevel, translate, ungroup } from './model/ops'
-import { syncInstances } from './model/components'
+import { setVariant, syncInstances, variantProps, variantsOf } from './model/components'
 import { AUTOSAVE_MS, createEditorStore } from './store'
 import { beginGesture, type Pointer } from './tools'
 
@@ -625,4 +625,69 @@ test('components: Ctrl+Alt+K wraps a selection into a component', () => {
   const c = store.get().doc.nodes[store.get().selection[0]]
   expect(c).toMatchObject({ type: 'FRAME', component: true, name: 'Component 1' })
   expect(childrenOf(store.get().doc, c.id).map((k) => k.id)).toEqual([a, b])
+})
+
+// ── variants ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+test('variants: names parse into properties', () => {
+  expect(variantProps('Size=Large, State = Hover')).toEqual({ Size: 'Large', State: 'Hover' })
+  expect(variantProps('Button')).toEqual({})
+  expect(variantProps('A=1,broken,B=2')).toEqual({ A: '1', B: '2' })
+})
+
+test('variants: combine wraps mains in a laid-out set; add variant copies the last one', () => {
+  const { store, m } = components()
+  store.set({ selection: [m] })
+  run(store, 'combine-variants')
+  const set = store.get().selection[0], doc = () => store.get().doc
+  expect(doc().nodes[set]).toMatchObject({ componentSet: true, name: 'Button', layout: { mode: 'HORIZONTAL', gap: 20, padding: [20, 20, 20, 20] } })
+  expect(doc().nodes[m].name).toBe('Property 1=Button')
+  run(store, 'add-variant')
+  const v2 = store.get().selection[0]
+  expect(doc().nodes[v2]).toMatchObject({ component: true, parentId: set, name: 'Property 1=Variant 2', x: 20 + 100 + 20 })
+  expect(variantsOf(doc(), set).map((v) => v.id)).toEqual([m, v2])
+  expect(doc().nodes[set].width).toBe(20 + 100 + 20 + 100 + 20)
+  store.set({ selection: [set] })
+  run(store, 'create-instance')
+  const fresh = doc().nodes[store.get().selection[0]]
+  expect(fresh).toMatchObject({ instanceOf: m, name: 'Button', parentId: store.get().pageId })
+})
+
+test('variants: an instance switches variant, keeping overrides on layers with the same name and dropping missing ones', () => {
+  const { store, m, i, copy } = components()
+  store.set({ selection: [m] })
+  run(store, 'combine-variants')
+  run(store, 'add-variant')
+  const v2 = store.get().selection[0], doc = () => store.get().doc
+  const v2bg = childrenOf(doc(), v2)[0].id
+  store.update((d) => patch(d, [v2bg], { fills: [green], cornerRadius: 8 }))
+  const icon = makeNode('ELLIPSE', { name: 'Icon', x: 50, y: 10, width: 10, height: 10 })
+  store.update((d) => insert(d, icon, m))
+  expect(childrenOf(doc(), i)).toHaveLength(2)
+  store.update((d) => patch(d, [copy().id], { opacity: 0.5 }))
+
+  store.update((d) => setVariant(d, i, 'Property 1', 'Variant 2'))
+  expect(doc().nodes[i].instanceOf).toBe(v2)
+  expect(childrenOf(doc(), i)).toHaveLength(1) // v2 has no Icon
+  expect(copy()).toMatchObject({ ref: v2bg, fills: [green], cornerRadius: 8, opacity: 0.5 })
+  store.update((d) => setVariant(d, i, 'Property 1', 'Button'))
+  expect(childrenOf(doc(), i).map((k) => k.name)).toEqual(['Bg', 'Icon'])
+  expect(copy()).toMatchObject({ fills: [red], opacity: 0.5 })
+  expect(setVariant(doc(), i, 'Property 1', 'Missing')).toBe(doc())
+})
+
+test('variants: switching one property keeps the others when such a variant exists', () => {
+  const { store, m, i } = components()
+  store.update((d) => patch(d, [m], { name: 'Size=S, Tone=Light' }))
+  store.set({ selection: [m] })
+  run(store, 'combine-variants')
+  const set = store.get().selection[0]
+  for (const name of ['Size=L, Tone=Light', 'Size=S, Tone=Dark', 'Size=L, Tone=Dark']) {
+    store.set({ selection: [set] }); run(store, 'add-variant')
+    store.update((d) => patch(d, [store.get().selection[0]], { name }))
+  }
+  const byName = (name: string) => variantsOf(store.get().doc, set).find((v) => v.name === name)!.id
+  store.update((d) => setVariant(d, i, 'Tone', 'Dark'))
+  expect(store.get().doc.nodes[i].instanceOf).toBe(byName('Size=S, Tone=Dark'))
+  store.update((d) => setVariant(d, i, 'Size', 'L'))
+  expect(store.get().doc.nodes[i].instanceOf).toBe(byName('Size=L, Tone=Dark'))
 })

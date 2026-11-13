@@ -23,7 +23,7 @@ Status legend: [done] [in progress] [todo]
        (horizontalConstraint/verticalConstraint); saved in .refig.
        Skipped: Ctrl-drag to resize ignoring constraints, the visual constraint widget.
        Known limit (shortcut: comment): rotated children follow by their unrotated box.
- 3. [done] Components + instances (commit: see `git log --grep "Add components"`)
+ 3. [done] Components + instances (commit b6f0801)
        FRAME flags: `component` (main), `instanceOf` (instance root); nodes inside an instance
        carry `ref` (mirrored main node id) and `overrides` (field names, OVERRIDABLE in document.ts).
        Engine: syncInstances() in src/renderer/editor/model/components.ts, first step of normalize()
@@ -39,7 +39,17 @@ Status legend: [done] [in progress] [todo]
        Known limits: deleting a node inside an instance does nothing (the sync recreates it);
        every edit re-syncs all instances (shortcut: comment, cache when documents get large);
        a new field on Node must be added to OVERRIDABLE or it won't reach instances.
- 4. [todo] Variants / component sets
+ 4. [done] Variants / component sets (commit: see `git log --grep "Add variants"`)
+       FRAME flag `componentSet`; variants are its child main components, properties in the
+       layer name ("Size=L, Tone=Dark"). Code: variantProps, combineAsVariants, addVariant,
+       setVariant in src/renderer/editor/model/components.ts.
+       Commands: Combine as variants, Add variant; Create instance on a set uses its first variant.
+       Design panel: set shows its properties; an instance of a variant gets one select per property.
+       Switching keeps the other properties when that variant exists; layers match by name path,
+       so overrides carry over and layers the new variant lacks disappear.
+       New sets get auto layout (row, gap 20, padding 20) so variants never overlap.
+       Skipped: property editor on the set (rename the variant layer instead), boolean/text/
+       instance-swap component properties, dashed set border, .fig import of sets.
  5. [todo] Gradient fills (linear, radial, angular, diamond)
  6. [todo] Pen tool + vector node editing
  7. [todo] Pencil (freehand) tool
@@ -69,9 +79,9 @@ Status legend: [done] [in progress] [todo]
 31. [todo] Assets panel
 32. [todo] Outline text; font embedding in SVG/PDF export
 
-Next step: #4 Variants / component sets. Plan first. Build on components.ts: a component set is
-a frame holding main components named "Prop=Value, …"; an instance switches variant by changing
-its instanceOf (overrides kept where the ref still exists).
+Next step: #5 Gradient fills. Plan first. Paint union is in src/shared/document.ts; touch points:
+canvas render.ts, export svg.ts, DesignPanel Paints, refig.ts validation, fig.ts import
+(gradients are currently dropped and counted as omitted).
 
 Known unrelated issue: e2e test "imports a Figma .fig file and reports what was omitted"
 fails on main too. It expects VECTOR in the omitted list, but VECTORs import now.

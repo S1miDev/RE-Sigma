@@ -5,7 +5,7 @@ import { fitView, toWorld, zoomAt } from './canvas/viewport'
 import { apply, worldBox, worldMatrix, worldRotation, type Pt } from './model/geometry'
 import { addAutoLayout, align, childrenOf, cloneTree, distribute, descendants, duplicate, group, nextName, pageOf, patch, put, remove, reorder, topLevel, translate, ungroup } from './model/ops'
 import { orderBetween } from '../../shared/order'
-import { detach, makeComponent, resetOverrides } from './model/components'
+import { addVariant, combineAsVariants, detach, makeComponent, resetOverrides, setOf, variantsOf } from './model/components'
 import type { EditorState, EditorStore, Tool } from './store'
 
 /** Things only the Editor component can do. */
@@ -109,7 +109,9 @@ export const COMMANDS: Command[] = [
   { id: 'add-auto-layout', label: 'Add auto layout', group: 'Object', keys: ['Shift+A'], enabled: has, run: addLayout },
   { id: 'remove-auto-layout', label: 'Remove auto layout', group: 'Object', keys: ['Alt+Shift+A'], enabled: (s) => s.selection.some((id) => s.doc.nodes[id]?.layout), run: (st) => st.update((d) => patch(d, st.get().selection.filter((id) => d.nodes[id]?.layout), { layout: undefined })) },
   { id: 'create-component', label: 'Create component', group: 'Object', keys: ['Ctrl+Alt+K'], enabled: has, run: createComponent },
-  { id: 'create-instance', label: 'Create instance', group: 'Object', enabled: (s) => !!lone(s)?.component, run: createInstance },
+  { id: 'create-instance', label: 'Create instance', group: 'Object', enabled: (s) => !!lone(s)?.component || (!!lone(s)?.componentSet && variantsOf(s.doc, lone(s)!.id).length > 0), run: createInstance },
+  { id: 'combine-variants', label: 'Combine as variants', group: 'Object', enabled: (s) => s.selection.length > 0 && s.selection.every((id) => s.doc.nodes[id]?.component && !setOf(s.doc, id)), run: (st) => { let id: string | null = null; st.update((d) => { const r = combineAsVariants(d, st.get().selection); id = r.id; return r.doc }); if (id) st.set({ selection: [id] }) } },
+  { id: 'add-variant', label: 'Add variant', group: 'Object', enabled: (s) => !!setSelected(s), run: (st) => { let id: string | null = null; st.update((d) => { const r = addVariant(d, setSelected(st.get())!.id); id = r.id; return r.doc }); if (id) st.set({ selection: [id] }) } },
   { id: 'go-to-main', label: 'Go to main component', group: 'Object', enabled: (s) => !!s.doc.nodes[lone(s)?.instanceOf ?? ''], run: goToMain },
   { id: 'reset-instance', label: 'Reset overrides', group: 'Object', enabled: (s) => !!lone(s)?.instanceOf, run: (st) => st.update((d) => resetOverrides(d, st.get().selection[0])) },
   { id: 'detach-instance', label: 'Detach instance', group: 'Object', keys: ['Ctrl+Alt+B'], enabled: (s) => s.selection.some((id) => s.doc.nodes[id]?.instanceOf), run: (st) => st.update((d) => st.get().selection.filter((id) => d.nodes[id]?.instanceOf).reduce(detach, d)) },
@@ -156,11 +158,14 @@ function createComponent(st: EditorStore) {
   if (id) st.set({ selection: [id] })
 }
 /** Places an instance of the selected main component just to its right. */
+/** Places an instance of the selected main component (a set's first variant for a set) just right of it, or of its set. */
 function createInstance(st: EditorStore) {
-  const main = lone(st.get())!
-  const node = makeNode('FRAME', { name: main.name, instanceOf: main.id, x: main.x + main.width + 40, y: main.y, width: main.width, height: main.height, rotation: main.rotation })
-  st.update((d) => put(d, [{ ...node, parentId: main.parentId, order: orderBetween(main.order, childrenOf(d, main.parentId!).find((k) => k.order > main.order)?.order) }]), undefined, [node.id])
+  const { doc } = st.get(), picked = lone(st.get())!
+  const main = picked.componentSet ? variantsOf(doc, picked.id)[0] : picked, at = setOf(doc, main.id) ?? main
+  const node = makeNode('FRAME', { name: at.name, instanceOf: main.id, x: at.x + at.width + 40, y: at.y, width: main.width, height: main.height, rotation: at.rotation })
+  st.update((d) => put(d, [{ ...node, parentId: at.parentId, order: orderBetween(at.order, childrenOf(d, at.parentId!).find((k) => k.order > at.order)?.order) }]), undefined, [node.id])
 }
+const setSelected = (s: EditorState) => { const n = lone(s); return n?.componentSet ? n : n && setOf(s.doc, n.id) }
 function goToMain(st: EditorStore) {
   const { doc } = st.get(), main = doc.nodes[lone(st.get())!.instanceOf!]
   st.set({ pageId: pageOf(doc, main.id)!, selection: [main.id] })

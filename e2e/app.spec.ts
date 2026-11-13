@@ -191,6 +191,31 @@ test('an instance follows its main component', async () => {
   await page.screenshot({ path: 'test-results/components.png' })
 })
 
+test('an instance switches to another variant', async () => {
+  const page = await launch()
+  await page.getByRole('button', { name: 'New project' }).first().click()
+  await drawRectangle(page)
+  await page.keyboard.press('Control+Alt+K')
+  await page.getByRole('button', { name: 'Combine as variants' }).click()
+  await page.getByRole('button', { name: 'Add variant' }).click()
+  await expect(page.getByRole('treeitem', { name: 'Property 1=Variant 2' })).toBeVisible()
+  const opacity = page.getByLabel('Opacity', { exact: true })
+  await page.getByRole('treeitem', { name: 'Property 1=Variant 2' }).getByRole('treeitem', { name: 'Rectangle 1' }).click()
+  await opacity.fill('40')
+  await opacity.press('Enter')
+  // select the set by its own row (a treeitem also contains its children's rows)
+  await page.getByRole('treeitem', { name: 'Component 1' }).locator('div').first().click()
+  await page.getByRole('button', { name: 'Create instance' }).click()
+  const instance = page.getByRole('region', { name: 'Instance' })
+  await expect(instance).toContainText('Instance of Component 1 / Property 1=Component 1')
+  await page.getByLabel('Variant Property 1').selectOption('Variant 2')
+  await expect(instance).toContainText('Property 1=Variant 2')
+  await page.screenshot({ path: 'test-results/variants.png' })
+  // the instance (top-most row) now shows variant 2's rectangle
+  await page.getByRole('treeitem', { name: 'Component 1' }).first().getByRole('treeitem', { name: 'Rectangle 1' }).click()
+  await expect(opacity).toHaveValue('40')
+})
+
 test('the page has no Node access and only the contract API', async () => {
   const page = await launch()
   const seen = await page.evaluate(() => ({

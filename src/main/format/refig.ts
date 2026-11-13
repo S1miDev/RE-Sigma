@@ -118,6 +118,7 @@ function validateNode(id: string, n: unknown): Node {
     const c = isObj(n.constraints) ? n.constraints : fail(`${at}.constraints`)
     node.constraints = { h: oneOf(c, 'h', `${at}.constraints`, CONSTRAINTS), v: oneOf(c, 'v', `${at}.constraints`, CONSTRAINTS) }
   }
+  if (type === 'FRAME' && n.componentSet !== undefined) node.componentSet = bool(n, 'componentSet', at)
   if (type === 'FRAME' && n.component !== undefined) node.component = bool(n, 'component', at)
   if (type === 'FRAME' && n.instanceOf !== undefined) node.instanceOf = str(n, 'instanceOf', at, 64)
   if (n.ref !== undefined) node.ref = str(n, 'ref', at, 64)

@@ -137,3 +137,11 @@ test('validateDocument keeps component links and rejects unknown override fields
   expect(validateDocument(main).nodes[frame.id].component).toBe(true)
   expect(() => validateDocument({ ...d, nodes: { ...d.nodes, [text.id]: { ...d.nodes[text.id], overrides: ['id'] } } })).toThrow(/overrides/)
 })
+
+test('validateDocument keeps component sets', () => {
+  const { doc, frame } = sampleDoc()
+  const d = structuredClone(doc)
+  d.nodes[frame.id].componentSet = true
+  expect(validateDocument(JSON.parse(JSON.stringify(d)))).toEqual(d)
+  expect(() => validateDocument({ ...d, nodes: { ...d.nodes, [frame.id]: { ...d.nodes[frame.id], componentSet: 'yes' } } })).toThrow(/componentSet/)
+})
