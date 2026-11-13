@@ -289,18 +289,18 @@ function Paints({ title, field, nodes, report, children }: { title: string; fiel
             const name = `${title} ${i + 1}`
             return (
               <div key={i} className="flex flex-col gap-1.5">
+                {/* the type gets its own line so the colour field below keeps the full width */}
                 <Row>
-                  {p.type !== 'IMAGE' && (
-                    <Select aria-label={`${name} type`} className="w-20" value={p.type === 'SOLID' ? 'SOLID' : p.kind} onChange={(e) => set(at(i, convertPaint(p, e.target.value as PaintKind)))}>
+                  {p.type !== 'IMAGE' ? (
+                    <Select aria-label={`${name} type`} className="flex-1" value={p.type === 'SOLID' ? 'SOLID' : p.kind} onChange={(e) => set(at(i, convertPaint(p, e.target.value as PaintKind)))}>
                       {PAINT_KINDS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
                     </Select>
-                  )}
-                  {p.type === 'SOLID' ? <ColorField label={name} color={p.color} onChange={(color) => set(at(i, { ...p, color }), `color${i}`)} />
-                    : p.type === 'GRADIENT' ? <NumberField label={`${name} angle`} prefix="∠" className="flex-1" min={-180} max={180} value={Math.round(gradientAngle(p))} onChange={(deg) => set(at(i, rotateGradient(p, deg)), `angle${i}`)} />
-                    : <span className="flex h-6 flex-1 items-center rounded bg-raised px-1.5 text-dim">Image</span>}
+                  ) : <span className="flex h-6 flex-1 items-center rounded bg-raised px-1.5 text-dim">Image</span>}
                   <IconButton label={p.visible ? `Hide ${title.toLowerCase()} ${i + 1}` : `Show ${title.toLowerCase()} ${i + 1}`} icon={p.visible ? 'eye' : 'eyeOff'} aria-pressed={!p.visible} onClick={() => set(at(i, { ...p, visible: !p.visible }))} />
                   <IconButton label={`Remove ${title.toLowerCase()} ${i + 1}`} icon="minus" onClick={() => set(paints.filter((_, j) => j !== i))} />
                 </Row>
+                {p.type === 'SOLID' && <Row><ColorField label={name} color={p.color} onChange={(color) => set(at(i, { ...p, color }), `color${i}`)} /></Row>}
+                {p.type === 'GRADIENT' && <Row><NumberField label={`${name} angle`} prefix="∠" className="flex-1" min={-180} max={180} value={Math.round(gradientAngle(p))} onChange={(deg) => set(at(i, rotateGradient(p, deg)), `angle${i}`)} /></Row>}
                 {p.type === 'GRADIENT' && (
                   <div className="flex flex-col gap-1.5">
                     {p.stops.map((s, k) => {
