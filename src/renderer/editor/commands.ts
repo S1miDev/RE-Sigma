@@ -1,6 +1,6 @@
 // Every editor command in one table. The main menu, the toolbar and the keyboard handler all read from it,
 // so a menu item can't exist without doing something.
-import { makeNode, type Node } from '../../shared/document'
+import { makeNode, type Document, type Node } from '../../shared/document'
 import { fitView, toWorld, zoomAt } from './canvas/viewport'
 import { apply, worldBox, worldMatrix, worldRotation, type Pt } from './model/geometry'
 import { addAutoLayout, align, childrenOf, cloneTree, distribute, descendants, duplicate, group, insert, nextName, orderAbove, pageOf, patch, put, remove, reorder, topLevel, topOrder, translate, ungroup } from './model/ops'
@@ -40,19 +40,18 @@ export async function paste(store: EditorStore) {
   if (!clip) return
   for (const [hash, bytes] of clip.images) if (!store.imageBytes(hash)) await store.addImage(bytes)
   const kids = (id: string) => clip.nodes.filter((n) => n.parentId === id)
-  const created: string[] = []
   store.update((doc) => {
-    const { pageId } = store.get()
+    const { pageId } = store.get(), ids: string[] = []
     for (const root of clip.roots) {
       const home = root.node.parentId && doc.nodes[root.node.parentId] && pageOf(doc, root.node.parentId) === pageId
       const parentId = home ? root.node.parentId! : pageId
       const placed = home ? root.node : { ...root.node, x: root.centre.x - root.node.width / 2, y: root.centre.y - root.node.height / 2, rotation: root.rotation }
       const copies = cloneTree(placed, kids, parentId, topOrder(doc, parentId))
       doc = put(doc, copies)
-      created.push(copies[0].id)
+      ids.push(copies[0].id)
     }
-    return doc
-  }, undefined, created)
+    return { doc, ids }
+  })
 }
 
 /** Places an image (from the system clipboard) as a rectangle with an image fill, centred in the viewport. */
@@ -63,7 +62,7 @@ export async function pasteImage(store: EditorStore, file: Blob) {
   const { view, size, pageId } = store.get(), width = bitmap?.width ?? 200, height = bitmap?.height ?? 200
   const c = toWorld(view, { x: size.w / 2, y: size.h / 2 })
   const node = makeNode('RECTANGLE', { name: nextName(store.get().doc, 'Image'), x: c.x - width / 2, y: c.y - height / 2, width, height, fills: [{ type: 'IMAGE', visible: true, hash }] })
-  store.update((doc) => insert(doc, node, pageId), undefined, [node.id])
+  store.update((doc) => ({ doc: insert(doc, node, pageId), ids: [node.id] }))
 }
 
 const has = (s: EditorState) => s.selection.length > 0
@@ -92,7 +91,7 @@ export const COMMANDS: Command[] = [
   { id: 'copy', label: 'Copy', group: 'Edit', keys: ['Ctrl+C'], enabled: has, run: copy },
   // Ctrl+V itself arrives as a DOM paste event (so images on the system clipboard can be read); see Editor.
   { id: 'paste', label: 'Paste', group: 'Edit', keys: ['Ctrl+V'], enabled: () => clipboard !== null, run: (st) => void paste(st) },
-  { id: 'duplicate', label: 'Duplicate', group: 'Edit', keys: ['Ctrl+D'], enabled: has, run: (st) => { let ids: string[] = []; st.update((d) => { const r = duplicate(d, st.get().selection); ids = r.ids; return r.doc }); st.set({ selection: ids }) } },
+  { id: 'duplicate', label: 'Duplicate', group: 'Edit', keys: ['Ctrl+D'], enabled: has, run: (st) => st.update((d) => duplicate(d, st.get().selection)) },
   // while editing points, Delete removes the selected point rather than the layer
   { id: 'delete', label: 'Delete', group: 'Edit', keys: ['Delete', 'Backspace'], enabled: (s) => (s.vectorEdit ? !!s.vectorEdit.sel : has(s)), run: (st) => (st.get().vectorEdit ? deletePoint(st) : st.update((d) => remove(d, st.get().selection))) },
   { id: 'select-all', label: 'Select all', group: 'Edit', keys: ['Ctrl+A'], run: (st) => { const s = st.get(); st.set({ selection: childrenOf(s.doc, s.pageId).filter((n) => n.visible && !n.locked).map((n) => n.id) }) } },
@@ -104,15 +103,15 @@ export const COMMANDS: Command[] = [
   { id: 'zoom-selection', label: 'Zoom to selection', group: 'View', keys: ['Shift+2'], enabled: has, run: (st) => { const s = st.get(); st.set({ view: fitView(worldBox(s.doc, s.selection), s.size) }) } },
   { id: 'toggle-ui', label: 'Show/Hide UI', group: 'View', keys: ['Ctrl+\\'], run: (st) => st.set({ uiHidden: !st.get().uiHidden }) },
 
-  { id: 'group', label: 'Group selection', group: 'Object', keys: ['Ctrl+G'], enabled: has, run: (st) => wrap(st, 'GROUP') },
-  { id: 'ungroup', label: 'Ungroup', group: 'Object', keys: ['Ctrl+Shift+G'], enabled: (s) => s.selection.some((id) => ['GROUP', 'FRAME'].includes(s.doc.nodes[id]?.type)), run: (st) => { let ids: string[] = []; st.update((d) => { const r = ungroup(d, st.get().selection); ids = r.ids; return r.doc }); if (ids.length) st.set({ selection: ids }) } },
-  { id: 'frame-selection', label: 'Frame selection', group: 'Object', keys: ['Ctrl+Alt+G'], enabled: has, run: (st) => wrap(st, 'FRAME') },
-  { id: 'add-auto-layout', label: 'Add auto layout', group: 'Object', keys: ['Shift+A'], enabled: has, run: addLayout },
+  { id: 'group', label: 'Group selection', group: 'Object', keys: ['Ctrl+G'], enabled: has, run: (st) => st.update((d) => group(d, st.get().selection, 'GROUP')) },
+  { id: 'ungroup', label: 'Ungroup', group: 'Object', keys: ['Ctrl+Shift+G'], enabled: (s) => s.selection.some((id) => ['GROUP', 'FRAME'].includes(s.doc.nodes[id]?.type)), run: (st) => st.update((d) => ungroup(d, st.get().selection)) },
+  { id: 'frame-selection', label: 'Frame selection', group: 'Object', keys: ['Ctrl+Alt+G'], enabled: has, run: (st) => st.update((d) => group(d, st.get().selection, 'FRAME')) },
+  { id: 'add-auto-layout', label: 'Add auto layout', group: 'Object', keys: ['Shift+A'], enabled: has, run: (st) => onFrame(st, (n) => !n.layout, addAutoLayout) },
   { id: 'remove-auto-layout', label: 'Remove auto layout', group: 'Object', keys: ['Alt+Shift+A'], enabled: (s) => s.selection.some((id) => s.doc.nodes[id]?.layout), run: (st) => st.update((d) => patch(d, st.get().selection.filter((id) => d.nodes[id]?.layout), { layout: undefined })) },
-  { id: 'create-component', label: 'Create component', group: 'Object', keys: ['Ctrl+Alt+K'], enabled: has, run: createComponent },
+  { id: 'create-component', label: 'Create component', group: 'Object', keys: ['Ctrl+Alt+K'], enabled: has, run: (st) => onFrame(st, (n) => !n.component && !n.instanceOf, makeComponent) },
   { id: 'create-instance', label: 'Create instance', group: 'Object', enabled: (s) => !!lone(s)?.component || (!!lone(s)?.componentSet && variantsOf(s.doc, lone(s)!.id).length > 0), run: createInstance },
-  { id: 'combine-variants', label: 'Combine as variants', group: 'Object', enabled: (s) => s.selection.length > 0 && s.selection.every((id) => s.doc.nodes[id]?.component && !setOf(s.doc, id)), run: (st) => { let id: string | null = null; st.update((d) => { const r = combineAsVariants(d, st.get().selection); id = r.id; return r.doc }); if (id) st.set({ selection: [id] }) } },
-  { id: 'add-variant', label: 'Add variant', group: 'Object', enabled: (s) => !!setSelected(s), run: (st) => { let id: string | null = null; st.update((d) => { const r = addVariant(d, setSelected(st.get())!.id); id = r.id; return r.doc }); if (id) st.set({ selection: [id] }) } },
+  { id: 'combine-variants', label: 'Combine as variants', group: 'Object', enabled: (s) => s.selection.length > 0 && s.selection.every((id) => s.doc.nodes[id]?.component && !setOf(s.doc, id)), run: (st) => st.update((d) => combineAsVariants(d, st.get().selection)) },
+  { id: 'add-variant', label: 'Add variant', group: 'Object', enabled: (s) => !!setSelected(s), run: (st) => st.update((d) => addVariant(d, setSelected(st.get())!.id)) },
   { id: 'go-to-main', label: 'Go to main component', group: 'Object', enabled: (s) => !!s.doc.nodes[lone(s)?.instanceOf ?? ''], run: goToMain },
   { id: 'reset-instance', label: 'Reset overrides', group: 'Object', enabled: (s) => !!lone(s)?.instanceOf, run: (st) => st.update((d) => resetOverrides(d, st.get().selection[0])) },
   { id: 'detach-instance', label: 'Detach instance', group: 'Object', keys: ['Ctrl+Alt+B'], enabled: (s) => s.selection.some((id) => s.doc.nodes[id]?.instanceOf), run: (st) => st.update((d) => st.get().selection.filter((id) => d.nodes[id]?.instanceOf).reduce(detach, d)) },
@@ -147,36 +146,23 @@ export const COMMANDS: Command[] = [
   } },
 ]
 
-function wrap(st: EditorStore, type: 'GROUP' | 'FRAME') {
-  let id: string | null = null
-  st.update((d) => {
-    const r = group(d, st.get().selection, type)
-    id = r.id
-    return r.doc
-  })
-  if (id) st.set({ selection: [id] })
-}
-
 const lone = (s: EditorState) => (s.selection.length === 1 ? s.doc.nodes[s.selection[0]] : undefined)
 
-/** A lone frame becomes a component; anything else is wrapped in a new frame first. */
-function createComponent(st: EditorStore) {
+/** A lone frame that `takes` the change gets it directly; anything else is wrapped in a new frame first, which gets it and is selected. */
+function onFrame(st: EditorStore, takes: (frame: Node) => boolean, change: (doc: Document, id: string) => Document) {
   const { doc, selection } = st.get(), ids = topLevel(doc, selection), only = ids.length === 1 ? doc.nodes[ids[0]] : null
-  if (only?.type === 'FRAME' && !only.component && !only.instanceOf) return st.update((d) => makeComponent(d, only.id))
-  let id: string | null = null
+  if (only?.type === 'FRAME' && takes(only)) return st.update((d) => change(d, only.id))
   st.update((d) => {
     const r = group(d, ids, 'FRAME')
-    id = r.id
-    return id ? makeComponent(r.doc, id) : d
+    return r.ids.length ? { doc: change(r.doc, r.ids[0]), ids: r.ids } : d
   })
-  if (id) st.set({ selection: [id] })
 }
 /** Places an instance of the selected main component (a set's first variant for a set) just right of it, or of its set. */
 function createInstance(st: EditorStore) {
   const { doc } = st.get(), picked = lone(st.get())!
   const main = picked.componentSet ? variantsOf(doc, picked.id)[0] : picked, at = setOf(doc, main.id) ?? main
   const node = makeNode('FRAME', { name: at.name, instanceOf: main.id, x: at.x + at.width + 40, y: at.y, width: main.width, height: main.height, rotation: at.rotation })
-  st.update((d) => put(d, [{ ...node, parentId: at.parentId, order: orderAbove(d, at) }]), undefined, [node.id])
+  st.update((d) => ({ doc: put(d, [{ ...node, parentId: at.parentId, order: orderAbove(d, at) }]), ids: [node.id] }))
 }
 const setSelected = (s: EditorState) => { const n = lone(s); return n?.componentSet ? n : n && setOf(s.doc, n.id) }
 function goToMain(st: EditorStore) {
@@ -184,19 +170,6 @@ function goToMain(st: EditorStore) {
   st.set({ pageId: pageOf(doc, main.id)!, selection: [main.id] })
   const s = st.get()
   st.set({ view: fitView(worldBox(s.doc, [main.id]), s.size) })
-}
-
-/** A single frame gets auto layout; anything else is wrapped in a new auto-layout frame first. */
-function addLayout(st: EditorStore) {
-  const { doc, selection } = st.get(), ids = topLevel(doc, selection), only = ids.length === 1 ? doc.nodes[ids[0]] : null
-  if (only?.type === 'FRAME' && !only.layout) return st.update((d) => addAutoLayout(d, only.id))
-  let id: string | null = null
-  st.update((d) => {
-    const r = group(d, ids, 'FRAME')
-    id = r.id
-    return id ? addAutoLayout(r.doc, id) : d
-  })
-  if (id) st.set({ selection: [id] })
 }
 
 export const isEnabled = (c: Command, store: EditorStore) => !c.enabled || c.enabled(store.get(), store)

@@ -74,8 +74,8 @@ function penGesture(store: EditorStore, p: Pointer): Gesture {
     const anchors = [...base, anchor]
     store.update((d) => {
       const n = fromParent(d.nodes[node.id] ?? node, [{ anchors, closed: false }])
-      return d.nodes[node.id] ? put(d, [n]) : insert(d, n, parentId)
-    }, penTag(node.id), [node.id])
+      return { doc: d.nodes[node.id] ? put(d, [n]) : insert(d, n, parentId), ids: [node.id] }
+    }, penTag(node.id))
     store.set({ pen: { id: node.id, anchors } })
   }
   write(point)
@@ -285,7 +285,7 @@ function shapeGesture(store: EditorStore, p: Pointer, tool: keyof typeof SHAPES)
   }
   const a = snapped(p).at
   const node = makeNode(shape.type, { name: nextName(doc, shape.label), ...shape.props })
-  const place = (geometry: Partial<Node>) => store.update(() => insert(doc, { ...node, ...geometry }, parentId), tag, [node.id])
+  const place = (geometry: Partial<Node>) => store.update(() => ({ doc: insert(doc, { ...node, ...geometry }, parentId), ids: [node.id] }), tag)
   let drawn = false
   return {
     move(q) {
@@ -322,7 +322,7 @@ function textGesture(store: EditorStore, p: Pointer): Gesture {
         name: 'Text', fills: [solid(0, 0, 0)], x: dragged ? Math.min(a.x, b.x) : a.x, y: dragged ? Math.min(a.y, b.y) : a.y,
         ...(dragged && { width: Math.max(1, Math.abs(b.x - a.x)), textAutoWidth: false }),
       })
-      store.update(() => insert(doc, node, parentId), textTag(node.id), [node.id])
+      store.update(() => ({ doc: insert(doc, node, parentId), ids: [node.id] }), textTag(node.id))
       store.set({ tool: 'move', editingText: node.id })
     },
   }

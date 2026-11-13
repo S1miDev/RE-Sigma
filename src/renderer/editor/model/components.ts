@@ -1,6 +1,6 @@
 // Components: an instance's subtree mirrors its main component's, except for the fields each instance node overrides.
 import { OVERRIDABLE, type Document, type Node } from '../../../shared/document'
-import { addAutoLayout, childrenOf, depth, duplicate, follow, group, lineage, nextName, put, remove, topLevel } from './ops'
+import { addAutoLayout, childrenOf, depth, duplicate, follow, group, lineage, nextName, put, remove, topLevel, type Edit } from './ops'
 
 type Key = (typeof OVERRIDABLE)[number]
 /** An instance root's own place in the document; never taken from the main. */
@@ -159,26 +159,26 @@ export const setOf = (doc: Document, mainId: string): Node | undefined => {
 }
 
 /** Wraps main components that share a parent in a component set laid out in a row. Returns the set's id. */
-export function combineAsVariants(doc: Document, ids: string[]): { doc: Document; id: string | null } {
+export function combineAsVariants(doc: Document, ids: string[]): Edit {
   const mains = topLevel(doc, ids).map((id) => doc.nodes[id])
-  if (!mains.length || mains.some((m) => !m.component || setOf(doc, m.id)) || new Set(mains.map((m) => m.parentId)).size > 1) return { doc, id: null }
+  if (!mains.length || mains.some((m) => !m.component || setOf(doc, m.id)) || new Set(mains.map((m) => m.parentId)).size > 1) return { doc, ids: [] }
   doc = put(doc, mains.filter((m) => !m.name.includes('=')).map((m) => ({ ...m, name: `Property 1=${m.name}` })))
-  const r = group(doc, mains.map((m) => m.id), 'FRAME')
-  if (!r.id) return r
-  doc = addAutoLayout(put(r.doc, [{ ...r.doc.nodes[r.id], componentSet: true, name: mains[0].name.split('=').at(-1)!.trim() || r.doc.nodes[r.id].name }]), r.id)
-  const set = doc.nodes[r.id]
-  return { doc: put(doc, [{ ...set, layout: { ...set.layout!, mode: 'HORIZONTAL', gap: 20, padding: [20, 20, 20, 20] } }]), id: r.id }
+  const r = group(doc, mains.map((m) => m.id), 'FRAME'), id = r.ids[0]
+  if (!id) return r
+  doc = addAutoLayout(put(r.doc, [{ ...r.doc.nodes[id], componentSet: true, name: mains[0].name.split('=').at(-1)!.trim() || r.doc.nodes[id].name }]), id)
+  const set = doc.nodes[id]
+  return { doc: put(doc, [{ ...set, layout: { ...set.layout!, mode: 'HORIZONTAL', gap: 20, padding: [20, 20, 20, 20] } }]), ids: [id] }
 }
 
 /** Copies the set's last variant as "<first prop>=Variant N". Returns the new variant's id. */
-export function addVariant(doc: Document, setId: string): { doc: Document; id: string | null } {
+export function addVariant(doc: Document, setId: string): Edit {
   const variants = variantsOf(doc, setId), last = variants.at(-1)
-  if (!last) return { doc, id: null }
+  if (!last) return { doc, ids: [] }
   const r = duplicate(doc, [last.id]), id = r.ids[0], props = variantProps(last.name)
   const prop = Object.keys(props)[0] ?? 'Property 1', taken = new Set(variants.map((v) => variantProps(v.name)[prop]))
   let n = variants.length + 1
   while (taken.has(`Variant ${n}`)) n++
-  return { doc: put(r.doc, [{ ...r.doc.nodes[id], name: variantName({ ...props, [prop]: `Variant ${n}` }) }]), id }
+  return { doc: put(r.doc, [{ ...r.doc.nodes[id], name: variantName({ ...props, [prop]: `Variant ${n}` }) }]), ids: [id] }
 }
 
 /** Layer names from a main component down to one of its nodes. */

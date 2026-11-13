@@ -51,7 +51,7 @@ function Pages() {
     <section aria-label="Pages" className="shrink-0 border-b border-line py-2">
       <div className="flex h-6 items-center justify-between px-3">
         <h3 className="text-[11px] font-semibold">Pages</h3>
-        <IconButton label="Add page" icon="plus" onClick={() => { let id = ''; store.update((d) => { const r = addPage(d); id = r.id; return r.doc }); go(id) }} />
+        <IconButton label="Add page" icon="plus" onClick={() => { store.update(addPage); go(store.get().doc.pages.at(-1)!) }} />
       </div>
       <ul className="mt-1 max-h-40 overflow-auto">
         {doc.pages.map((id, index) => (

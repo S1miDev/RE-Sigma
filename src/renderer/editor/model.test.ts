@@ -99,19 +99,19 @@ test('group wraps children, ungroup restores them in place', () => {
   const { doc, page, frame, a, b } = scene()
   const g = group(doc, [a, b], 'GROUP')
   expect(doc.nodes[a].parentId).toBe(page)
-  const box = g.doc.nodes[g.id!]
+  const box = g.doc.nodes[g.ids[0]]
   expect(box).toMatchObject({ type: 'GROUP', x: 400, y: 0, width: 150, height: 150 })
-  expect(g.doc.nodes[a]).toMatchObject({ parentId: g.id, x: 0, y: 0 })
+  expect(g.doc.nodes[a]).toMatchObject({ parentId: g.ids[0], x: 0, y: 0 })
   expect(g.doc.nodes[b]).toMatchObject({ x: 50, y: 50 })
-  expect(names(g.doc, page)).toEqual([frame, g.id])
+  expect(names(g.doc, page)).toEqual([frame, g.ids[0]])
 
-  const un = ungroup(g.doc, [g.id!])
+  const un = ungroup(g.doc, [g.ids[0]])
   expect(un.ids).toEqual([a, b])
-  expect(un.doc.nodes[g.id!]).toBeUndefined()
+  expect(un.doc.nodes[g.ids[0]]).toBeUndefined()
   expect(un.doc.nodes[b]).toMatchObject({ parentId: page, x: 450, y: 50 })
 
   // resizing a group scales its children
-  const scaled = resizeNode(g.doc, g.id!, { x: 400, y: 0, width: 300, height: 150 })
+  const scaled = resizeNode(g.doc, g.ids[0], { x: 400, y: 0, width: 300, height: 150 })
   expect(scaled.nodes[b]).toMatchObject({ x: 100, width: 200, height: 100 })
 })
 
@@ -136,13 +136,13 @@ test('translate moves by a page delta even inside a rotated parent', () => {
 
 test('pages: add, reorder, remove (never the last one)', () => {
   const { doc, page } = scene()
-  const added = addPage(doc)
-  expect(added.doc.nodes[added.id].name).toBe('Page 2')
-  expect(movePage(added.doc, added.id, 0).pages).toEqual([added.id, page])
-  const removed = removePage(added.doc, page)
-  expect(removed.pages).toEqual([added.id])
-  expect(Object.keys(removed.nodes)).toEqual([added.id])
-  expect(removePage(removed, added.id)).toBe(removed)
+  const added = addPage(doc), id = added.pages.at(-1)!
+  expect(added.nodes[id].name).toBe('Page 2')
+  expect(movePage(added, id, 0).pages).toEqual([id, page])
+  const removed = removePage(added, page)
+  expect(removed.pages).toEqual([id])
+  expect(Object.keys(removed.nodes)).toEqual([id])
+  expect(removePage(removed, id)).toBe(removed)
 })
 
 test('viewport: zoomAt keeps the point under the cursor; fitView centres', () => {
@@ -168,7 +168,7 @@ test('hit testing: top-most wins, frames expose children, groups answer for thei
   expect(hitTest(patch(doc, [b], { locked: true }), page, { x: 490, y: 90 })).toBe(a)
   expect(hitTest(patch(doc, [inner], { visible: false }), page, { x: 120, y: 120 })).toBe(frame)
   const g = group(doc, [a, b], 'GROUP')
-  expect(hitTest(g.doc, page, { x: 490, y: 90 })).toBe(g.id)
+  expect(hitTest(g.doc, page, { x: 490, y: 90 })).toBe(g.ids[0])
   expect(hitTest(g.doc, page, { x: 490, y: 90 }, { deep: true })).toBe(b)
   expect(hitTest(g.doc, page, { x: 410, y: 140 })).toBeNull() // inside the group's box but on no child
   const line = insert(doc, makeNode('LINE', { ...lineBetween({ x: 0, y: 300 }, { x: 100, y: 400 }), strokes: [solid(0, 0, 0)] }), page)
@@ -242,7 +242,7 @@ afterEach(() => void vi.useRealTimers())
 
 test('store: undo/redo restore document and selection; tagged edits share one step', () => {
   const { store, a, doc } = open()
-  store.update((d) => patch(d, [a], { x: 1 }), undefined, [a])
+  store.update((d) => ({ doc: patch(d, [a], { x: 1 }), ids: [a] }))
   store.update((d) => patch(d, [a], { x: 2 }), 'gesture1')
   store.update((d) => patch(d, [a], { x: 3 }), 'gesture1')
   expect(store.get().doc.nodes[a].x).toBe(3)
@@ -265,7 +265,7 @@ test('store: undo/redo restore document and selection; tagged edits share one st
 test('store: groups refit and empty groups vanish after any edit', () => {
   const { store, a, b } = open()
   let gid = ''
-  store.update((d) => { const g = group(d, [a, b], 'GROUP'); gid = g.id!; return g.doc })
+  store.update((d) => { const g = group(d, [a, b], 'GROUP'); gid = g.ids[0]; return g.doc })
   store.update((d) => patch(d, [b], { x: 200 }))
   expect(store.get().doc.nodes[gid].width).toBe(300)
   store.update((d) => remove(d, [a, b]))
@@ -882,7 +882,7 @@ test('pen: Escape or a tool change finishes an open path; a single point leaves 
 test('point editing: Enter starts it, dragging moves one point or one handle, Delete removes points, Escape ends it', () => {
   const { store, page } = open()
   const v = makeNode('VECTOR', { x: 600, y: 600, width: 100, height: 100, strokes: [solid(0, 0, 0)], vector: { w: 50, h: 50, fill: [{ d: 'M0 0L50 0C50 25 25 50 0 50Z', rule: 'nonzero' }], stroke: [{ d: 'M0 0Z', rule: 'nonzero' }] } })
-  store.update((d) => insert(d, v, page), undefined, [v.id])
+  store.update((d) => ({ doc: insert(d, v, page), ids: [v.id] }))
   run(store, 'edit')
   expect(store.get().vectorEdit).toEqual({ id: v.id, sel: null })
   drag(store, at(700, 600), at(720, 590), at(740, 580)) // the second anchor (100, 0 in px)

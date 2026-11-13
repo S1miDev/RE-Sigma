@@ -9,7 +9,7 @@ import { fitText } from './canvas/text'
 import type { View } from './canvas/viewport'
 import type { Box } from './model/geometry'
 import { syncInstances } from './model/components'
-import { autoLayout, fitGroups, put } from './model/ops'
+import { autoLayout, fitGroups, put, type Edit } from './model/ops'
 import type { Anchor } from './model/path'
 
 export type Tool = 'move' | 'hand' | 'frame' | 'rectangle' | 'ellipse' | 'line' | 'pen' | 'text'
@@ -100,12 +100,14 @@ export function createEditorStore(opened: OpenedProject, api: RefigApi) {
 
   /**
    * Applies an edit and records an undo step. Consecutive edits with the same `tag` share one step
-   * (always for 'gesture…' tags, within a second otherwise). `select` replaces the selection.
+   * (always for 'gesture…' tags, within a second otherwise). An edit that returns ids selects them (when there are any).
    */
-  function update(fn: (doc: Document) => Document, tag?: string, select?: string[]) {
+  function update(fn: (doc: Document) => Document | Edit, tag?: string) {
     const now = Date.now(), joins = tag !== undefined && tag === lastTag && (tag.startsWith('gesture') || now - lastAt < 1000)
+    const out = fn(state.doc), [next, ids] = 'doc' in out ? [out.doc, out.ids] : [out, []]
+    const select = ids.length ? ids : undefined
     // A gesture recomputes each frame from the document it started on, so the step's start is the true "before".
-    const doc = normalize(state.doc, fn(state.doc), joins ? (past.at(-1)?.doc ?? state.doc) : state.doc)
+    const doc = normalize(state.doc, next, joins ? (past.at(-1)?.doc ?? state.doc) : state.doc)
     if (doc === state.doc) return select && set({ selection: select })
     if (!joins) {
       past.push(snapshot())

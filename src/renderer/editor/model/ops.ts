@@ -35,6 +35,9 @@ export function topLevel(doc: Document, ids: string[]): string[] {
   return [...set].filter((id) => ![...set].some((a) => isAncestor(doc, a, id))).sort((a, b) => (path(a) < path(b) ? -1 : 1))
 }
 
+/** An edit that also names the nodes it made or freed: the editor selects them. */
+export type Edit = { doc: Document; ids: string[] }
+
 export const put = (doc: Document, nodes: Node[]): Document => ({ ...doc, nodes: { ...doc.nodes, ...Object.fromEntries(nodes.map((n) => [n.id, n])) } })
 export const patch = (doc: Document, ids: string[], change: Partial<Node> | ((n: Node) => Partial<Node>)): Document =>
   put(doc, ids.filter((id) => doc.nodes[id]).map((id) => ({ ...doc.nodes[id], ...(typeof change === 'function' ? change(doc.nodes[id]) : change) })))
@@ -239,17 +242,16 @@ export function layoutSlot(doc: Document, frameId: string, p: Pt, exclude: strin
 }
 
 /** Wraps the nodes in a new GROUP or FRAME placed where the top-most one was. */
-export function group(doc: Document, ids: string[], type: 'GROUP' | 'FRAME'): { doc: Document; id: string | null } {
+export function group(doc: Document, ids: string[], type: 'GROUP' | 'FRAME'): Edit {
   const items = topLevel(doc, ids)
-  if (!items.length) return { doc, id: null }
+  if (!items.length) return { doc, ids: [] }
   const top = doc.nodes[items.at(-1)!]
   const box = makeNode(type, { name: nextName(doc, type === 'GROUP' ? 'Group' : 'Frame'), parentId: top.parentId, clipsContent: false, order: orderAbove(doc, top) })
-  doc = fit(moveTo(put(doc, [box]), items, box.id), box.id)
-  return { doc, id: box.id }
+  return { doc: fit(moveTo(put(doc, [box]), items, box.id), box.id), ids: [box.id] }
 }
 
 /** Dissolves groups/frames, leaving their children in place. Returns the freed children. */
-export function ungroup(doc: Document, ids: string[]): { doc: Document; ids: string[] } {
+export function ungroup(doc: Document, ids: string[]): Edit {
   const freed: string[] = []
   for (const id of topLevel(doc, ids)) {
     const g = doc.nodes[id]
@@ -267,7 +269,7 @@ export function cloneTree(root: Node, kids: (id: string) => Node[], parentId: st
   return [copy, ...kids(root.id).flatMap((k) => cloneTree(k, kids, copy.id, k.order))]
 }
 /** Duplicates in place, each copy directly above its original. */
-export function duplicate(doc: Document, ids: string[]): { doc: Document; ids: string[] } {
+export function duplicate(doc: Document, ids: string[]): Edit {
   const out: string[] = []
   for (const id of topLevel(doc, ids)) {
     const n = doc.nodes[id]
@@ -293,9 +295,10 @@ export function reorder(doc: Document, ids: string[], to: 'forward' | 'backward'
   return doc
 }
 
-export function addPage(doc: Document): { doc: Document; id: string } {
+/** Appends a page; it is the document's last one. */
+export function addPage(doc: Document): Document {
   const page = makeNode('PAGE', { name: nextName(doc, 'Page'), fills: [solid(0.96, 0.96, 0.96)] })
-  return { doc: { ...put(doc, [page]), pages: [...doc.pages, page.id] }, id: page.id }
+  return { ...put(doc, [page]), pages: [...doc.pages, page.id] }
 }
 /** The last page can't be removed. */
 export function removePage(doc: Document, id: string): Document {
