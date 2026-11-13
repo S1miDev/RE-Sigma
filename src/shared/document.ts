@@ -1,8 +1,16 @@
 // The Refig document model. Flat node map with parentId + fractional order, like Figma's NodeChange list.
 export type Color = { r: number; g: number; b: number; a: number } // floats 0–1
+export const GRADIENT_KINDS = ['LINEAR', 'RADIAL', 'ANGULAR', 'DIAMOND'] as const
+export type GradientStop = { pos: number; color: Color } // pos 0–1
+/**
+ * `from`/`to` are in the node's normalized box (0–1), like Figma's handles. Linear runs from → to; the others are
+ * centred on `from` with `to` on the edge (radius, start angle), so a circle in this space is an ellipse fitting the box.
+ */
+export type Gradient = { type: 'GRADIENT'; kind: (typeof GRADIENT_KINDS)[number]; visible: boolean; from: { x: number; y: number }; to: { x: number; y: number }; stops: GradientStop[] }
 export type Paint =
   | { type: 'SOLID'; visible: boolean; color: Color }
   | { type: 'IMAGE'; visible: boolean; hash: string }
+  | Gradient
 export type DropShadow = { visible: boolean; x: number; y: number; blur: number; spread: number; color: Color }
 
 export const NODE_TYPES = ['PAGE', 'FRAME', 'GROUP', 'RECTANGLE', 'ELLIPSE', 'LINE', 'TEXT', 'VECTOR'] as const
@@ -87,6 +95,37 @@ export const OVERRIDABLE = [
 export const FORMAT_VERSION = 1
 export const isContainer = (n: Node) => n.type === 'PAGE' || n.type === 'FRAME' || n.type === 'GROUP'
 export const solid = (r: number, g: number, b: number, a = 1): Paint => ({ type: 'SOLID', visible: true, color: { r, g, b, a } })
+/** A new gradient fading `color` out: linear top → bottom, the others from the centre to the right edge. */
+export const gradient = (kind: Gradient['kind'], color: Color, visible = true): Gradient => ({
+  type: 'GRADIENT', kind, visible,
+  from: kind === 'LINEAR' ? { x: 0.5, y: 0 } : { x: 0.5, y: 0.5 }, to: kind === 'LINEAR' ? { x: 0.5, y: 1 } : { x: 1, y: 0.5 },
+  stops: [{ pos: 0, color }, { pos: 1, color: { ...color, a: 0 } }],
+})
+/** The gradient's direction in degrees (0 = right, clockwise, in the normalized box). */
+export const gradientAngle = (g: Gradient) => (Math.atan2(g.to.y - g.from.y, g.to.x - g.from.x) * 180) / Math.PI
+/** Turns a gradient to an absolute angle: linear about its midpoint, the others about their centre. */
+export function rotateGradient(g: Gradient, deg: number): Gradient {
+  const len = Math.hypot(g.to.x - g.from.x, g.to.y - g.from.y), a = (deg * Math.PI) / 180, dx = Math.cos(a) * len, dy = Math.sin(a) * len
+  if (g.kind !== 'LINEAR') return { ...g, to: { x: g.from.x + dx, y: g.from.y + dy } }
+  const mx = (g.from.x + g.to.x) / 2, my = (g.from.y + g.to.y) / 2
+  return { ...g, from: { x: mx - dx / 2, y: my - dy / 2 }, to: { x: mx + dx / 2, y: my + dy / 2 } }
+}
+export type PaintKind = 'SOLID' | Gradient['kind']
+/** Switches a solid or gradient paint to another kind. Gradients keep their stops; solid keeps the first stop's colour. */
+export function convertPaint(p: Exclude<Paint, { type: 'IMAGE' }>, kind: PaintKind): Paint {
+  const first = p.type === 'SOLID' ? p.color : [...p.stops].sort((a, b) => a.pos - b.pos)[0].color
+  if (kind === 'SOLID') return { type: 'SOLID', visible: p.visible, color: first }
+  const g = gradient(kind, first, p.visible)
+  return p.type === 'GRADIENT' ? { ...g, stops: p.stops } : g
+}
+/** The colour of a gradient at `pos`, interpolated between its stops. */
+export function colorAt(stops: GradientStop[], pos: number): Color {
+  const s = [...stops].sort((a, b) => a.pos - b.pos), i = s.findIndex((x) => x.pos >= pos)
+  if (i <= 0) return (i === 0 ? s[0] : s.at(-1)!).color
+  const a = s[i - 1], b = s[i], t = b.pos === a.pos ? 0 : (pos - a.pos) / (b.pos - a.pos)
+  const mix = (k: keyof Color) => a.color[k] + (b.color[k] - a.color[k]) * t
+  return { r: mix('r'), g: mix('g'), b: mix('b'), a: mix('a') }
+}
 
 export function makeNode(type: NodeType, props: Partial<Node> = {}): Node {
   return {

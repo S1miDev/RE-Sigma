@@ -2,6 +2,7 @@
 import type { Color, Document, DropShadow, Node } from '../../../shared/document'
 import { worldBox, worldMatrix, localMatrix } from '../model/geometry'
 import { childrenOf } from '../model/ops'
+import { fillGradient, paintGradient } from './gradient'
 import { fontOf, layoutText, lineX } from './text'
 import { fitView, type View } from './viewport'
 
@@ -11,9 +12,9 @@ const EMPTY_PAGE = '#f5f5f5'
 const visible = <T extends { visible: boolean }>(list: T[]) => list.filter((p) => p.visible)
 
 /** The node's outline in its own coordinates, grown outward by `grow`. */
-function shapePath(ctx: CanvasRenderingContext2D, n: Node, grow = 0) {
+function shapePath(ctx: CanvasRenderingContext2D | Path2D, n: Node, grow = 0) {
   const w = Math.max(0, n.width + grow * 2), h = Math.max(0, n.height + grow * 2)
-  ctx.beginPath()
+  if ('beginPath' in ctx) ctx.beginPath()
   if (n.type === 'ELLIPSE') ctx.ellipse(n.width / 2, n.height / 2, w / 2, h / 2, 0, 0, Math.PI * 2)
   else if (n.type === 'LINE') { ctx.moveTo(0, 0); ctx.lineTo(n.width, 0) }
   else ctx.roundRect(-grow, -grow, w, h, n.cornerRadius ? Math.max(0, Math.min(n.cornerRadius + grow, w / 2, h / 2)) : 0)
@@ -72,6 +73,10 @@ export function drawNode(ctx: CanvasRenderingContext2D, doc: Document, n: Node, 
         if (n.type === 'TEXT') drawText(ctx, n, 'fill')
         else if (n.type === 'VECTOR') ctx.fill(...vectorPath(n, 'fill'))
         else if (n.type !== 'LINE') { shapePath(ctx, n); ctx.fill() }
+      } else if (p.type === 'GRADIENT') {
+        if (n.type === 'TEXT') paintGradient(ctx, p, n.width, n.height, (style) => { ctx.fillStyle = style; drawText(ctx, n, 'fill') })
+        else if (n.type === 'VECTOR') fillGradient(ctx, p, ...vectorPath(n, 'fill'), n.width, n.height)
+        else if (n.type !== 'LINE') { const path = new Path2D(); shapePath(path, n); fillGradient(ctx, p, path, 'nonzero', n.width, n.height) }
       } else if (n.type !== 'TEXT' && n.type !== 'LINE') {
         const img = images(p.hash)
         if (!img) continue
@@ -94,18 +99,23 @@ export function drawNode(ctx: CanvasRenderingContext2D, doc: Document, n: Node, 
   }
 
   for (const p of strokes) {
-    if (p.type !== 'SOLID') continue
-    ctx.strokeStyle = css(p.color)
+    if (p.type === 'IMAGE') continue
     ctx.lineWidth = n.strokeWeight
-    if (n.type === 'TEXT') drawText(ctx, n, 'stroke')
-    // shortcut: an imported outline ignores later stroke weight/align edits; only strokes added in Refig follow them (centred).
-    else if (n.type === 'VECTOR') {
-      if (n.vector!.stroke.length) { ctx.fillStyle = ctx.strokeStyle; ctx.fill(...vectorPath(n, 'stroke')) }
-      else ctx.stroke(vectorPath(n, 'fill')[0])
-    } else {
-      shapePath(ctx, n, n.type === 'LINE' || n.strokeAlign === 'CENTER' ? 0 : n.strokeAlign === 'INSIDE' ? -n.strokeWeight / 2 : n.strokeWeight / 2)
-      ctx.stroke()
+    const outlined = n.type === 'VECTOR' && n.vector!.stroke.length > 0
+    if (p.type === 'GRADIENT' && outlined) { fillGradient(ctx, p, ...vectorPath(n, 'stroke'), n.width, n.height); continue }
+    const draw = (style: string | CanvasGradient) => {
+      ctx.strokeStyle = style
+      if (n.type === 'TEXT') drawText(ctx, n, 'stroke')
+      // shortcut: an imported outline ignores later stroke weight/align edits; only strokes added in Refig follow them (centred).
+      else if (outlined) { ctx.fillStyle = style; ctx.fill(...vectorPath(n, 'stroke')) }
+      else if (n.type === 'VECTOR') ctx.stroke(vectorPath(n, 'fill')[0])
+      else {
+        shapePath(ctx, n, n.type === 'LINE' || n.strokeAlign === 'CENTER' ? 0 : n.strokeAlign === 'INSIDE' ? -n.strokeWeight / 2 : n.strokeWeight / 2)
+        ctx.stroke()
+      }
     }
+    if (p.type === 'SOLID') draw(css(p.color))
+    else paintGradient(ctx, p, n.width, n.height, draw)
   }
   ctx.restore()
 }

@@ -1,6 +1,9 @@
 import { useRef, useState } from 'react'
 import type { ExportKind } from '../../../shared/api'
-import { CONSTRAINTS, LAYOUT_ALIGNS, solid, STROKE_ALIGNS, TEXT_ALIGNS, type AutoLayout, type Constraint, type Document, type DropShadow, type Node, type Paint } from '../../../shared/document'
+import {
+  colorAt, CONSTRAINTS, convertPaint, gradientAngle, LAYOUT_ALIGNS, rotateGradient, solid, STROKE_ALIGNS, TEXT_ALIGNS,
+  type AutoLayout, type Constraint, type Document, type DropShadow, type GradientStop, type Node, type Paint, type PaintKind,
+} from '../../../shared/document'
 import { Button, ColorField, IconButton, NumberField, PanelSection, Select, type IconName } from '../../ui'
 import { COMMANDS } from '../commands'
 import { setOf, setVariant, variantProps, variantsOf } from '../model/components'
@@ -250,6 +253,8 @@ function TextSection({ nodes, edit, common }: { nodes: Node[]; edit(change: Part
   )
 }
 
+const PAINT_KINDS: [PaintKind, string][] = [['SOLID', 'Solid'], ['LINEAR', 'Linear'], ['RADIAL', 'Radial'], ['ANGULAR', 'Angular'], ['DIAMOND', 'Diamond']]
+
 /** Fill or stroke list. With several layers selected it shows the first layer's paints and applies edits to all. */
 function Paints({ title, field, nodes, report, children }: { title: string; field: 'fills' | 'strokes'; nodes: Node[]; report(e: unknown): void; children?: React.ReactNode }) {
   const store = useStore(), file = useRef<HTMLInputElement>(null)
@@ -280,13 +285,40 @@ function Paints({ title, field, nodes, report, children }: { title: string; fiel
     }>
       {paints.length > 0 && (
         <>
-          {paints.map((p, i) => (
-            <Row key={i}>
-              {p.type === 'SOLID' ? <ColorField label={`${title} ${i + 1}`} color={p.color} onChange={(color) => set(at(i, { ...p, color }), `color${i}`)} /> : <span className="flex h-6 flex-1 items-center rounded bg-raised px-1.5 text-dim">Image</span>}
-              <IconButton label={p.visible ? `Hide ${title.toLowerCase()} ${i + 1}` : `Show ${title.toLowerCase()} ${i + 1}`} icon={p.visible ? 'eye' : 'eyeOff'} aria-pressed={!p.visible} onClick={() => set(at(i, { ...p, visible: !p.visible }))} />
-              <IconButton label={`Remove ${title.toLowerCase()} ${i + 1}`} icon="minus" onClick={() => set(paints.filter((_, j) => j !== i))} />
-            </Row>
-          ))}
+          {paints.map((p, i) => {
+            const name = `${title} ${i + 1}`
+            return (
+              <div key={i} className="flex flex-col gap-1.5">
+                <Row>
+                  {p.type !== 'IMAGE' && (
+                    <Select aria-label={`${name} type`} className="w-20" value={p.type === 'SOLID' ? 'SOLID' : p.kind} onChange={(e) => set(at(i, convertPaint(p, e.target.value as PaintKind)))}>
+                      {PAINT_KINDS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+                    </Select>
+                  )}
+                  {p.type === 'SOLID' ? <ColorField label={name} color={p.color} onChange={(color) => set(at(i, { ...p, color }), `color${i}`)} />
+                    : p.type === 'GRADIENT' ? <NumberField label={`${name} angle`} prefix="∠" className="flex-1" min={-180} max={180} value={Math.round(gradientAngle(p))} onChange={(deg) => set(at(i, rotateGradient(p, deg)), `angle${i}`)} />
+                    : <span className="flex h-6 flex-1 items-center rounded bg-raised px-1.5 text-dim">Image</span>}
+                  <IconButton label={p.visible ? `Hide ${title.toLowerCase()} ${i + 1}` : `Show ${title.toLowerCase()} ${i + 1}`} icon={p.visible ? 'eye' : 'eyeOff'} aria-pressed={!p.visible} onClick={() => set(at(i, { ...p, visible: !p.visible }))} />
+                  <IconButton label={`Remove ${title.toLowerCase()} ${i + 1}`} icon="minus" onClick={() => set(paints.filter((_, j) => j !== i))} />
+                </Row>
+                {p.type === 'GRADIENT' && (
+                  <div className="flex flex-col gap-1.5">
+                    {p.stops.map((s, k) => {
+                      const stop = (change: Partial<GradientStop>, tag: string) => set(at(i, { ...p, stops: p.stops.map((o, j) => (j === k ? { ...o, ...change } : o)) }), `${tag}${i}-${k}`)
+                      return (
+                        <Row key={k}>
+                          <NumberField label={`${name} stop ${k + 1} position`} prefix="@" className="w-12" min={0} max={100} value={Math.round(s.pos * 100)} onChange={(v) => stop({ pos: v / 100 }, 'pos')} />
+                          <ColorField label={`${name} stop ${k + 1}`} color={s.color} onChange={(color) => stop({ color }, 'stop')} />
+                          {p.stops.length > 2 && <IconButton label={`Remove ${name} stop ${k + 1}`} icon="minus" onClick={() => set(at(i, { ...p, stops: p.stops.filter((_, j) => j !== k) }))} />}
+                        </Row>
+                      )
+                    })}
+                    <Button onClick={() => set(at(i, { ...p, stops: [...p.stops, { pos: 0.5, color: colorAt(p.stops, 0.5) }] }))}>Add stop</Button>
+                  </div>
+                )}
+              </div>
+            )
+          })}
           {children}
         </>
       )}

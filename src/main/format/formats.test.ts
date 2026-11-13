@@ -1,8 +1,8 @@
 import fs from 'node:fs'
 import { zipSync, strToU8 } from 'fflate'
 import { expect, test } from 'vitest'
-import { emptyDocument, makeNode, solid } from '../../shared/document'
-import { importFig } from './fig'
+import { emptyDocument, makeNode, solid, type Gradient } from '../../shared/document'
+import { figGradient, importFig } from './fig'
 import { decodeMessage, decodeSchema, readCanvas } from './kiwi'
 import { readRefig, readRefigMeta, validateDocument, writeRefig, type Meta } from './refig'
 
@@ -144,4 +144,33 @@ test('validateDocument keeps component sets', () => {
   d.nodes[frame.id].componentSet = true
   expect(validateDocument(JSON.parse(JSON.stringify(d)))).toEqual(d)
   expect(() => validateDocument({ ...d, nodes: { ...d.nodes, [frame.id]: { ...d.nodes[frame.id], componentSet: 'yes' } } })).toThrow(/componentSet/)
+})
+
+test('figGradient reads stops and handles from the paint transform', () => {
+  const stops = [{ color: { r: 1, g: 0, b: 0, a: 1 }, position: 0 }, { color: { r: 0, g: 0, b: 1, a: 0.5 }, position: 1 }]
+  // identity: linear runs (0,½)→(1,½)
+  expect(figGradient({ type: 'GRADIENT_LINEAR', stops, opacity: 0.5 })).toEqual({
+    type: 'GRADIENT', kind: 'LINEAR', visible: true, from: { x: 0, y: 0.5 }, to: { x: 1, y: 0.5 },
+    stops: [{ pos: 0, color: { r: 1, g: 0, b: 0, a: 0.5 } }, { pos: 1, color: { r: 0, g: 0, b: 1, a: 0.25 } }],
+  })
+  // Figma's top-to-bottom linear: the transform maps box (x,y) → gradient (y, 1−x)
+  const g = figGradient({ type: 'GRADIENT_LINEAR', stops, transform: { m00: 0, m01: 1, m02: 0, m10: -1, m11: 0, m12: 1 } })!
+  expect(g.from).toEqual({ x: 0.5, y: 0 }); expect(g.to).toEqual({ x: 0.5, y: 1 })
+  expect(figGradient({ type: 'GRADIENT_RADIAL', stops })).toMatchObject({ kind: 'RADIAL', from: { x: 0.5, y: 0.5 }, to: { x: 1, y: 0.5 } })
+  expect(figGradient({ type: 'GRADIENT_LINEAR', stops: stops.slice(1) })).toBeNull()
+  expect(figGradient({ type: 'GRADIENT_LINEAR', stops, transform: { m00: 0, m11: 0 } })).toBeNull()
+  expect(figGradient({ type: 'SOLID' })).toBeNull()
+})
+
+test('validateDocument keeps gradients and rejects bad ones', () => {
+  const { doc, frame } = sampleDoc()
+  const d = structuredClone(doc)
+  const g: Gradient = { type: 'GRADIENT', kind: 'DIAMOND', visible: true, from: { x: 0.5, y: 0.5 }, to: { x: 1, y: 0.5 }, stops: [{ pos: 0, color: { r: 0, g: 0, b: 0, a: 1 } }, { pos: 1, color: { r: 1, g: 1, b: 1, a: 1 } }] }
+  d.nodes[frame.id].fills = [g]
+  expect(validateDocument(JSON.parse(JSON.stringify(d)))).toEqual(d)
+  const bad = (p: object) => () => validateDocument({ ...d, nodes: { ...d.nodes, [frame.id]: { ...d.nodes[frame.id], fills: [p] } } })
+  expect(bad({ ...g, kind: 'CONIC' })).toThrow(/kind/)
+  expect(bad({ ...g, stops: g.stops.slice(1) })).toThrow(/stops/)
+  expect(bad({ ...g, stops: [{ ...g.stops[0], pos: 2 }, g.stops[1]] })).toThrow(/pos/)
+  expect(bad({ ...g, from: { x: 'a', y: 0 } })).toThrow(/from/)
 })

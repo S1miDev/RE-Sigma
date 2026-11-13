@@ -39,7 +39,7 @@ Status legend: [done] [in progress] [todo]
        Known limits: deleting a node inside an instance does nothing (the sync recreates it);
        every edit re-syncs all instances (shortcut: comment, cache when documents get large);
        a new field on Node must be added to OVERRIDABLE or it won't reach instances.
- 4. [done] Variants / component sets (commit: see `git log --grep "Add variants"`)
+ 4. [done] Variants / component sets (commit cc4854c)
        FRAME flag `componentSet`; variants are its child main components, properties in the
        layer name ("Size=L, Tone=Dark"). Code: variantProps, combineAsVariants, addVariant,
        setVariant in src/renderer/editor/model/components.ts.
@@ -50,7 +50,19 @@ Status legend: [done] [in progress] [todo]
        New sets get auto layout (row, gap 20, padding 20) so variants never overlap.
        Skipped: property editor on the set (rename the variant layer instead), boolean/text/
        instance-swap component properties, dashed set border, .fig import of sets.
- 5. [todo] Gradient fills (linear, radial, angular, diamond)
+ 5. [done] Gradient fills (commit: see `git log --grep "Add gradient fills"`)
+       Paint type GRADIENT {kind LINEAR/RADIAL/ANGULAR/DIAMOND, from, to, stops}; handles in the
+       node's normalized box, like Figma. Helpers (gradient, rotateGradient, convertPaint, colorAt)
+       in src/shared/document.ts. Fills and strokes.
+       Canvas: src/renderer/editor/canvas/gradient.ts. Shape/vector fills exact; text fills and
+       strokes in pixel space (linear exact, others use a circle: shortcut comment).
+       SVG/PDF: linear/radial gradients, diamond as 4 clipped quadrants; angular shape fills become
+       a 256px raster image, angular text/strokes use the first stop (shortcut comment).
+       Design panel: type select per paint, angle field, stop rows (position, colour), Add stop.
+       .fig import: figGradient() in fig.ts (stops, opacity, handles from the inverse transform).
+       Neither fixture has gradients, so the import is only tested on hand-built paints.
+       Skipped: on-canvas gradient handles, per-stop interpolation, paint opacity (#11).
+       Known nit: stop rows clip the hex field to about 4 characters.
  6. [todo] Pen tool + vector node editing
  7. [todo] Pencil (freehand) tool
  8. [todo] Boolean operations (union, subtract, intersect, exclude) + flatten
@@ -79,9 +91,11 @@ Status legend: [done] [in progress] [todo]
 31. [todo] Assets panel
 32. [todo] Outline text; font embedding in SVG/PDF export
 
-Next step: #5 Gradient fills. Plan first. Paint union is in src/shared/document.ts; touch points:
-canvas render.ts, export svg.ts, DesignPanel Paints, refig.ts validation, fig.ts import
-(gradients are currently dropped and counted as omitted).
+Next step: #6 Pen tool + vector node editing. Plan first. VECTOR nodes exist (import only) with
+`vector` {w, h, fill paths, stroke paths} in absolute M/L/Q/C/Z; tools live in
+src/renderer/editor/tools/index.ts.
+
+Reviewing the feature commits: `/code-review ultra cc7cc81` reviews everything since before #1.
 
 Known unrelated issue: e2e test "imports a Figma .fig file and reports what was omitted"
 fails on main too. It expects VECTOR in the omitted list, but VECTORs import now.

@@ -1,7 +1,7 @@
 // .refig = ZIP { meta.json, document.json, thumbnail.png?, images/<sha256> }. See docs/project-format.md.
 import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from 'fflate'
 import {
-  CONSTRAINTS, FILL_RULES, FORMAT_VERSION, LAYOUT_ALIGNS, LAYOUT_MODES, NODE_TYPES, OVERRIDABLE, STROKE_ALIGNS, TEXT_ALIGNS,
+  CONSTRAINTS, FILL_RULES, FORMAT_VERSION, GRADIENT_KINDS, LAYOUT_ALIGNS, LAYOUT_MODES, NODE_TYPES, OVERRIDABLE, STROKE_ALIGNS, TEXT_ALIGNS,
   type AutoLayout, type Color, type Document, type DropShadow, type Node, type Paint, type VectorPath,
 } from '../../shared/document'
 
@@ -78,6 +78,15 @@ const paints = (x: unknown, at: string): Paint[] =>
     const visible = bool(p, 'visible', at)
     if (p.type === 'SOLID') return { type: 'SOLID', visible, color: color(p.color, `${at}.color`) }
     if (p.type === 'IMAGE' && typeof p.hash === 'string' && HASH.test(p.hash)) return { type: 'IMAGE', visible, hash: p.hash }
+    if (p.type === 'GRADIENT') {
+      const pt = (x: unknown, w: string) => (isObj(x) ? { x: num(x, 'x', w), y: num(x, 'y', w) } : fail(w))
+      const stops = list(p.stops, `${at}.stops`)
+      if (stops.length < 2) fail(`${at}.stops`)
+      return {
+        type: 'GRADIENT', visible, kind: oneOf(p, 'kind', at, GRADIENT_KINDS), from: pt(p.from, `${at}.from`), to: pt(p.to, `${at}.to`),
+        stops: stops.map((s) => ({ pos: num(s, 'pos', `${at}.stops`, 0, 1), color: color(s.color, `${at}.stops.color`) })),
+      }
+    }
     return fail(at)
   })
 const shadows = (x: unknown, at: string): DropShadow[] =>

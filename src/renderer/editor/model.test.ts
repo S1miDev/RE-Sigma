@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { RefigApi } from '../../shared/api'
-import { emptyDocument, makeNode, solid, type AutoLayout, type Constraint, type Document, type Node, type NodeType } from '../../shared/document'
+import { colorAt, convertPaint, emptyDocument, gradient, gradientAngle, makeNode, rotateGradient, solid, type AutoLayout, type Constraint, type Document, type Node, type NodeType, type Paint } from '../../shared/document'
 import { frameAt, hitTest, marqueeHits } from './canvas/hit'
 import { handleAt, handlesOf } from './canvas/overlay'
 import { snap, snapTargets } from './canvas/snap'
@@ -690,4 +690,52 @@ test('variants: switching one property keeps the others when such a variant exis
   expect(store.get().doc.nodes[i].instanceOf).toBe(byName('Size=S, Tone=Dark'))
   store.update((d) => setVariant(d, i, 'Size', 'L'))
   expect(store.get().doc.nodes[i].instanceOf).toBe(byName('Size=L, Tone=Dark'))
+})
+
+// ── gradients ────────────────────────────────────────────────────────────────────────────────────────────────────────
+const black = { r: 0, g: 0, b: 0, a: 1 }
+test('gradients: defaults, angle, rotation, conversion and interpolation', () => {
+  const lin = gradient('LINEAR', black)
+  expect(lin).toMatchObject({ from: { x: 0.5, y: 0 }, to: { x: 0.5, y: 1 }, stops: [{ pos: 0, color: black }, { pos: 1, color: { ...black, a: 0 } }] })
+  expect(gradientAngle(lin)).toBe(90)
+  const turned = rotateGradient(lin, 0)
+  near(turned.from.x, 0); near(turned.from.y, 0.5); near(turned.to.x, 1); near(turned.to.y, 0.5) // about the midpoint
+  const rad = rotateGradient(gradient('RADIAL', black), 90)
+  expect(rad.from).toEqual({ x: 0.5, y: 0.5 }); near(rad.to.x, 0.5); near(rad.to.y, 1) // about the centre
+  expect(convertPaint(lin, 'SOLID')).toEqual({ type: 'SOLID', visible: true, color: black })
+  expect(convertPaint({ type: 'SOLID', visible: false, color: black }, 'DIAMOND')).toMatchObject({ type: 'GRADIENT', kind: 'DIAMOND', visible: false, from: { x: 0.5, y: 0.5 } })
+  const custom = { ...lin, stops: [{ pos: 0.2, color: black }, { pos: 0.8, color: { r: 1, g: 1, b: 1, a: 1 } }] }
+  expect(convertPaint(custom, 'RADIAL')).toMatchObject({ kind: 'RADIAL', stops: custom.stops })
+  const mid = colorAt(custom.stops, 0.5)
+  near(mid.r, 0.5); near(mid.b, 0.5); expect(mid.a).toBe(1)
+  expect(colorAt(custom.stops, 0)).toEqual(black)
+  expect(colorAt(custom.stops, 1).r).toBe(1)
+})
+
+test('gradients: SVG export draws linear/radial in the scaled box, diamond as four quadrants, angular falls back', () => {
+  const { doc, page } = scene()
+  const add = (fills: Paint[], props: Partial<Node> = {}) => { const n = makeNode('RECTANGLE', { x: 0, y: 0, width: 200, height: 100, fills, ...props }); return { d: insert(doc, n, page), id: n.id } }
+  const lin = add([gradient('LINEAR', { r: 1, g: 0, b: 0, a: 1 })])
+  const svg = toSvg(lin.d, [lin.id], () => undefined)
+  expect(svg).toContain('<linearGradient id="g1" gradientUnits="userSpaceOnUse" gradientTransform="scale(200 100)" x1="0.5" y1="0" x2="0.5" y2="1">')
+  expect(svg).toContain('<stop offset="0" stop-color="rgb(255,0,0)" stop-opacity="1"/><stop offset="1" stop-color="rgb(255,0,0)" stop-opacity="0"/>')
+  expect(svg).toContain('fill="url(#g1)"')
+  const rad = add([gradient('RADIAL', black)])
+  expect(toSvg(rad.d, [rad.id], () => undefined)).toContain('<radialGradient id="g1" gradientUnits="userSpaceOnUse" gradientTransform="scale(200 100)" cx="0.5" cy="0.5" fx="0.5" fy="0.5" r="0.5">')
+  const dia = add([gradient('DIAMOND', black)])
+  const dsvg = toSvg(dia.d, [dia.id], () => undefined)
+  expect(dsvg.match(/<linearGradient /g)).toHaveLength(4)
+  expect(dsvg.match(/<g clip-path=/g)).toHaveLength(4)
+  const ang = add([], { strokes: [gradient('ANGULAR', { r: 0, g: 0, b: 1, a: 1 })], strokeWeight: 2 })
+  expect(toSvg(ang.d, [ang.id], () => undefined)).toContain('stroke="rgb(0,0,255)" stroke-opacity="1"') // no conic in SVG: first stop
+  const text = add([gradient('LINEAR', black)], { type: 'TEXT', characters: 'Hi', fontSize: 16, textAutoWidth: true })
+  expect(toSvg(text.d, [text.id], () => undefined)).toMatch(/<text [^>]*fill="url\(#g1\)"/)
+})
+
+test('gradients: a gradient switched on in an instance is an override', () => {
+  const { store, r, copy } = components()
+  store.update((d) => patch(d, [copy().id], { fills: [convertPaint({ type: 'SOLID', visible: true, color: black }, 'LINEAR')] }))
+  store.update((d) => patch(d, [r], { fills: [green] }))
+  expect(copy().fills[0].type).toBe('GRADIENT')
+  expect(copy().overrides).toEqual(['fills'])
 })

@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { createHash } from 'node:crypto'
 import type { Omitted } from '../../shared/api'
-import { CONSTRAINTS, makeNode, type Color, type Constraint, type Document, type DropShadow, type Node, type NodeType, type Paint, type VectorPath } from '../../shared/document'
+import { CONSTRAINTS, makeNode, type Color, type Constraint, type Gradient, type Document, type DropShadow, type Node, type NodeType, type Paint, type VectorPath } from '../../shared/document'
 import { orderBetween } from '../../shared/order'
 import { readCanvas } from './kiwi'
 import { FormatError, safeUnzip, validateDocument } from './refig'
@@ -19,6 +19,24 @@ const key = (g: any) => `${g.sessionID}:${g.localID}`
 const clamp = (v: unknown, lo = 0, hi = 1) => Math.min(hi, Math.max(lo, typeof v === 'number' && Number.isFinite(v) ? v : lo))
 const n0 = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
 const hex = (b: Uint8Array) => Buffer.from(b).toString('hex')
+const color = (c: any, opacity: unknown = 1): Color => ({ r: clamp(c?.r), g: clamp(c?.g), b: clamp(c?.b), a: clamp(c?.a ?? 1) * clamp(opacity ?? 1) })
+const GRADIENTS: Record<string, Gradient['kind']> = { GRADIENT_LINEAR: 'LINEAR', GRADIENT_RADIAL: 'RADIAL', GRADIENT_ANGULAR: 'ANGULAR', GRADIENT_DIAMOND: 'DIAMOND' }
+
+/**
+ * A Figma gradient paint, or null if it isn't one (or is degenerate). Figma's `transform` maps the node's normalized
+ * box into gradient space, where linear runs (0,½)→(1,½) and the others are centred on (½,½) with the edge at (1,½);
+ * its inverse gives the handles.
+ */
+export function figGradient(p: any): Gradient | null {
+  const kind = GRADIENTS[p?.type]
+  const stops = Array.isArray(p?.stops) ? p.stops.slice(0, 32).map((s: any) => ({ pos: clamp(s?.position), color: color(s?.color, p.opacity) })) : []
+  if (!kind || stops.length < 2) return null
+  const t = p.transform ?? {}, a = t.m00 ?? 1, b = n0(t.m01), c = n0(t.m02), d = n0(t.m10), e = t.m11 ?? 1, f = n0(t.m12)
+  const det = a * e - b * d
+  if (!Number.isFinite(det) || !det) return null
+  const back = (x: number, y: number) => ({ x: (e * (x - c) - b * (y - f)) / det, y: (-d * (x - c) + a * (y - f)) / det })
+  return { type: 'GRADIENT', kind, visible: p.visible !== false, from: back(kind === 'LINEAR' ? 0 : 0.5, 0.5), to: back(1, 0.5), stops }
+}
 const constraint = (v: unknown): Constraint => (CONSTRAINTS.includes(v as Constraint) ? (v as Constraint) : 'MIN')
 
 export function importFig(bytes: Uint8Array): { document: Document; images: Record<string, Uint8Array>; thumbnail?: Uint8Array; omitted: Omitted } {
@@ -53,11 +71,12 @@ export function importFig(bytes: Uint8Array): { document: Document; images: Reco
   const images: Record<string, Uint8Array> = {} // sha256 → bytes
   const nodes: Record<string, Node> = {}
 
-  const color = (c: any, opacity: unknown = 1): Color => ({ r: clamp(c?.r), g: clamp(c?.g), b: clamp(c?.b), a: clamp(c?.a ?? 1) * clamp(opacity ?? 1) })
   const paints = (list: any[] | undefined): Paint[] =>
     (list ?? []).flatMap((p): Paint[] => {
       const visible = p.visible !== false
       if (p.type === 'SOLID') return [{ type: 'SOLID', visible, color: color(p.color, p.opacity) }]
+      const g = figGradient(p)
+      if (g) return [g]
       const data = p.type === 'IMAGE' && p.image?.hash && files[`images/${hex(p.image.hash)}`]
       if (!data) return omit(`${p.type} paint`), []
       const hash = createHash('sha256').update(data).digest('hex')

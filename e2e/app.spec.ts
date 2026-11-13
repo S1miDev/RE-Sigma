@@ -216,6 +216,25 @@ test('an instance switches to another variant', async () => {
   await expect(opacity).toHaveValue('40')
 })
 
+test('a gradient fill renders and exports to SVG', async () => {
+  const page = await launch()
+  await page.getByRole('button', { name: 'New project' }).first().click()
+  await drawRectangle(page)
+  await page.getByLabel('Fill 1 type').selectOption('LINEAR')
+  await expect(page.getByLabel('Fill 1 angle')).toHaveValue('90')
+  await page.getByLabel('Fill 1 angle').fill('0')
+  await page.getByLabel('Fill 1 angle').press('Enter')
+  await page.getByRole('button', { name: 'Add stop' }).click()
+  await expect(page.getByLabel('Fill 1 stop 3 position')).toHaveValue('50')
+  const out = path.join(profile, 'gradient.svg')
+  await answerDialogs([out])
+  await page.getByLabel('Export format').selectOption('svg')
+  await page.getByRole('button', { name: 'Export selection' }).click()
+  await expect.poll(() => fs.existsSync(out) && fs.readFileSync(out, 'utf8')).toContain('<linearGradient')
+  expect(fs.readFileSync(out, 'utf8').match(/<stop /g)).toHaveLength(3)
+  await page.screenshot({ path: 'test-results/gradient.png' })
+})
+
 test('the page has no Node access and only the contract API', async () => {
   const page = await launch()
   const seen = await page.evaluate(() => ({

@@ -1,5 +1,6 @@
 // SVG serializer for documents. Mirrors canvas/render.ts: same shapes, paint order, stroke alignment and shadows.
-import type { Color, Document, Node } from '../../../shared/document'
+import type { Color, Document, Gradient, Node, Paint } from '../../../shared/document'
+import { gradientImage } from '../canvas/gradient'
 import { fontOf, layoutText, lineX } from '../canvas/text'
 import { localMatrix, worldBox, worldMatrix } from '../model/geometry'
 import { childrenOf } from '../model/ops'
@@ -37,6 +38,41 @@ export function toSvg(doc: Document, ids: string[], imageUrl: (hash: string) => 
     defs += `<clipPath id="${id}">${shape(n, 0, '')}</clipPath>`
     return id
   }
+  /** A linear or radial gradient in defs. Its coordinates are the node's normalized box, scaled to the node's size. */
+  const gradientDef = (g: Gradient, n: Node): string => {
+    const id = `g${++uid}`, stops = [...g.stops].sort((a, b) => a.pos - b.pos)
+      .map((s) => `<stop offset="${f(Math.min(1, Math.max(0, s.pos)))}" stop-color="${rgb(s.color)}" stop-opacity="${f(s.color.a)}"/>`).join('')
+    // vector paths carry their own scale, so their user space is the vector's box, not the node's
+    const [w, h] = n.type === 'VECTOR' ? [n.vector!.w, n.vector!.h] : [n.width, n.height]
+    const common = `id="${id}" gradientUnits="userSpaceOnUse" gradientTransform="scale(${f(w || 1)} ${f(h || 1)})"`
+    defs += g.kind === 'LINEAR'
+      ? `<linearGradient ${common} x1="${f(g.from.x)}" y1="${f(g.from.y)}" x2="${f(g.to.x)}" y2="${f(g.to.y)}">${stops}</linearGradient>`
+      : `<radialGradient ${common} cx="${f(g.from.x)}" cy="${f(g.from.y)}" fx="${f(g.from.x)}" fy="${f(g.from.y)}" r="${f(Math.hypot(g.to.x - g.from.x, g.to.y - g.from.y))}">${stops}</radialGradient>`
+    return `url(#${id})`
+  }
+  /**
+   * Draws something painted with a solid colour or a gradient. `draw` gets the paint attributes for `prop`.
+   * `raster` allows an angular gradient to become a clipped image of the node's shape.
+   */
+  const painted = (n: Node, p: Exclude<Paint, { type: 'IMAGE' }>, prop: 'fill' | 'stroke', draw: (attrs: string) => string, raster: boolean): string => {
+    const color = (c: Color) => draw(`${prop}="${rgb(c)}" ${prop}-opacity="${f(c.a)}"`)
+    if (p.type === 'SOLID') return color(p.color)
+    if (p.kind === 'LINEAR' || p.kind === 'RADIAL') return draw(`${prop}="${gradientDef(p, n)}"`)
+    if (p.kind === 'DIAMOND') {
+      // |dx| + |dy| is linear in each quadrant: four clipped linear gradients
+      const r = Math.hypot(p.to.x - p.from.x, p.to.y - p.from.y), cx = p.from.x * n.width, cy = p.from.y * n.height, far = 1e6
+      return [1, -1].flatMap((qx) => [1, -1].map((qy) => {
+        const id = `c${++uid}`
+        defs += `<clipPath id="${id}"><rect x="${f(qx > 0 ? cx : cx - far)}" y="${f(qy > 0 ? cy : cy - far)}" width="${far}" height="${far}"/></clipPath>`
+        const quarter: Gradient = { ...p, kind: 'LINEAR', to: { x: p.from.x + (qx * r) / 2, y: p.from.y + (qy * r) / 2 } }
+        return `<g clip-path="url(#${id})">${draw(`${prop}="${gradientDef(quarter, n)}"`)}</g>`
+      })).join('')
+    }
+    // shortcut: SVG has no conic gradient; a shape fill becomes a raster image, text and strokes take the first stop.
+    const url = raster ? gradientImage(p, 256) : undefined
+    if (url) return `<image href="${esc(url)}" width="${f(n.width)}" height="${f(n.height)}" preserveAspectRatio="none" clip-path="url(#${clip(n)})"/>`
+    return color([...p.stops].sort((a, b) => a.pos - b.pos)[0].color)
+  }
 
   const node = (n: Node): string => {
     if (!n.visible) return ''
@@ -56,10 +92,8 @@ export function toSvg(doc: Document, ids: string[], imageUrl: (hash: string) => 
           out += `<g transform="translate(${f(s.x)} ${f(s.y)})" filter="url(#${id})">${body}</g>`
         }
       for (const p of fills) {
-        if (p.type === 'SOLID') {
-          const paint = `fill="${rgb(p.color)}" fill-opacity="${f(p.color.a)}"`
-          if (n.type === 'TEXT') out += text(n, paint)
-          else if (n.type !== 'LINE') out += shape(n, 0, paint)
+        if (p.type !== 'IMAGE') {
+          if (n.type !== 'LINE') out += painted(n, p, 'fill', (attrs) => (n.type === 'TEXT' ? text(n, attrs) : shape(n, 0, attrs)), n.type !== 'TEXT')
         } else if (n.type !== 'TEXT' && n.type !== 'LINE') {
           const url = imageUrl(p.hash)
           if (url) out += `<image href="${esc(url)}" width="${f(n.width)}" height="${f(n.height)}" preserveAspectRatio="xMidYMid slice" clip-path="url(#${clip(n)})"/>`
@@ -69,11 +103,11 @@ export function toSvg(doc: Document, ids: string[], imageUrl: (hash: string) => 
     const kids = childrenOf(doc, n.id).map(node).join('')
     if (kids) out += n.type === 'FRAME' && n.clipsContent ? `<g clip-path="url(#${clip(n)})">${kids}</g>` : kids
     for (const p of strokes) {
-      if (p.type !== 'SOLID') continue
-      const paint = `fill="none" stroke="${rgb(p.color)}" stroke-opacity="${f(p.color.a)}" stroke-width="${f(n.strokeWeight)}"`
-      if (n.type === 'TEXT') out += text(n, paint)
-      else if (n.type === 'VECTOR' && n.vector!.stroke.length) out += vec(n, 'stroke', `fill="${rgb(p.color)}" fill-opacity="${f(p.color.a)}"`)
-      else out += shape(n, n.type === 'LINE' || n.strokeAlign === 'CENTER' ? 0 : n.strokeAlign === 'INSIDE' ? -n.strokeWeight / 2 : n.strokeWeight / 2, paint)
+      if (p.type === 'IMAGE') continue
+      const outlined = n.type === 'VECTOR' && n.vector!.stroke.length > 0, width = `stroke-width="${f(n.strokeWeight)}"`
+      const grow = n.type === 'LINE' || n.strokeAlign === 'CENTER' ? 0 : n.strokeAlign === 'INSIDE' ? -n.strokeWeight / 2 : n.strokeWeight / 2
+      out += painted(n, p, outlined ? 'fill' : 'stroke', (attrs) =>
+        n.type === 'TEXT' ? text(n, `fill="none" ${attrs} ${width}`) : outlined ? vec(n, 'stroke', attrs) : shape(n, grow, `fill="none" ${attrs} ${width}`), false)
     }
     return `<g transform="matrix(${localMatrix(n).map(f).join(' ')})"${n.opacity < 1 ? ` opacity="${f(n.opacity)}"` : ''}>${out}</g>`
   }
