@@ -93,9 +93,13 @@ A VectorPath is `{ d, rule }`: `d` is SVG path data using only `M L Q C Z`, numb
 ```json
 { "type": "SOLID", "visible": true, "color": { "r": 1, "g": 0.5, "b": 0, "a": 1 } }
 { "type": "IMAGE", "visible": true, "hash": "<sha256 of an entry in images/>" }
+{ "type": "GRADIENT", "kind": "LINEAR", "visible": true, "from": { "x": 0.5, "y": 0 }, "to": { "x": 0.5, "y": 1 }, "w": { "x": 0, "y": 0 },
+  "stops": [{ "pos": 0, "color": { "r": 0, "g": 0, "b": 0, "a": 1 } }, { "pos": 1, "color": { "r": 0, "g": 0, "b": 0, "a": 0 } }] }
 ```
 
 Colour channels are floats from 0 to 1. An image fill covers the box (scaled to fill, centred, cropped).
+
+A gradient (version 2) has a `kind` of `LINEAR`, `RADIAL`, `ANGULAR` or `DIAMOND` and 2–32 `stops` with `pos` from 0 to 1. Its handles are in the node's normalized box (0–1 on each axis), like Figma's. Linear runs `from` → `to`. The other kinds are centred on `from`, with `to` on the edge, which gives the radius and start angle. `w` is optional: it is the end of the second axis, Figma's width handle. For linear it is the point half a length "below" `from`; for the others it is the edge along the second radius. Without `w` the gradient is undistorted in the normalized box.
 
 ### DropShadow
 
@@ -116,7 +120,10 @@ Unknown fields are dropped.
 
 ## Versions
 
-`formatVersion` is an integer in both JSON files. A reader accepts any version up to its own and migrates older ones forward. It refuses a higher version with "This project was made by a newer version of Refig". Version 1 is the first version, so there are no migrations yet.
+`formatVersion` is an integer in both JSON files. A reader accepts any version up to its own and migrates older ones forward. It refuses a higher version with "This project was made by a newer version of Refig". The current version is 2.
+
+- **1:** the first version.
+- **2:** adds `GRADIENT` paints. Version 1 files read unchanged, so there is no migration. Apps that only know version 1 refuse version 2 files with the message above, not with "Invalid document".
 
 ## Saving
 

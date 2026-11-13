@@ -233,6 +233,12 @@ test('a gradient fill renders and exports to SVG', async () => {
   await expect.poll(() => fs.existsSync(out) && fs.readFileSync(out, 'utf8')).toContain('<linearGradient')
   expect(fs.readFileSync(out, 'utf8').match(/<stop /g)).toHaveLength(3)
   await page.screenshot({ path: 'test-results/gradient.png' })
+  // a diamond turned 30° renders turned (it used to ignore the angle)
+  await page.getByLabel('Fill 1 type').selectOption('DIAMOND')
+  await page.getByLabel('Fill 1 angle').fill('30')
+  await page.getByLabel('Fill 1 angle').press('Enter')
+  await expect(page.getByLabel('Fill 1 angle')).toHaveValue('30')
+  await page.screenshot({ path: 'test-results/gradient-diamond.png' })
 })
 
 test('the page has no Node access and only the contract API', async () => {
@@ -252,5 +258,5 @@ test('the page has no Node access and only the contract API', async () => {
   expect(seen).toEqual({ require: 'undefined', process: 'undefined', keys: [...API_KEYS].sort(), types: ['function'], inlineScriptRan: false })
   // bad arguments are rejected in main, before any file access
   await expect(page.evaluate(() => window.refig.openProject('../../secrets'))).rejects.toThrow(/Invalid argument: id/)
-  await expect(page.evaluate(() => window.refig.saveProject('00000000-0000-0000-0000-000000000000', { formatVersion: 1, pages: [], nodes: {} }))).rejects.toThrow(/not found|Invalid/)
+  await expect(page.evaluate(() => window.refig.saveProject('00000000-0000-0000-0000-000000000000', { formatVersion: 2, pages: [], nodes: {} }))).rejects.toThrow(/not found|Invalid/)
 })

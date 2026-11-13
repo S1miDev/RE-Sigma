@@ -1,5 +1,5 @@
 // SVG serializer for documents. Mirrors canvas/render.ts: same shapes, paint order, stroke alignment and shadows.
-import type { Color, Document, Gradient, Node, Paint } from '../../../shared/document'
+import { gradientMatrix, type Color, type Document, type Gradient, type Node, type Paint } from '../../../shared/document'
 import { gradientImage } from '../canvas/gradient'
 import { fontOf, layoutText, lineX } from '../canvas/text'
 import { localMatrix, worldBox, worldMatrix } from '../model/geometry'
@@ -17,7 +17,7 @@ export function toSvg(doc: Document, ids: string[], imageUrl: (hash: string) => 
   /** A VECTOR's fill or outlined-stroke paths, scaled to the node's size; strokes keep their width under the scale. */
   const vec = (n: Node, which: 'fill' | 'stroke', attrs: string): string => {
     const v = n.vector!, scale = `scale(${f(v.w ? n.width / v.w : 1)} ${f(v.h ? n.height / v.h : 1)})`
-    return v[which].map((p) => `<path d="${esc(p.d)}" fill-rule="${p.rule}" transform="${scale}" vector-effect="non-scaling-stroke" ${attrs}/>`).join('')
+    return v[which].map((p) => `<path d="${esc(p.d)}" fill-rule="${p.rule}" clip-rule="${p.rule}" transform="${scale}" vector-effect="non-scaling-stroke" ${attrs}/>`).join('')
   }
   const shape = (n: Node, grow: number, attrs: string): string => {
     if (n.type === 'VECTOR') return vec(n, 'fill', attrs) // shortcut: ignores grow, so shadow spread and stroke align don't apply to vectors
@@ -38,16 +38,21 @@ export function toSvg(doc: Document, ids: string[], imageUrl: (hash: string) => 
     defs += `<clipPath id="${id}">${shape(n, 0, '')}</clipPath>`
     return id
   }
-  /** A linear or radial gradient in defs. Its coordinates are the node's normalized box, scaled to the node's size. */
-  const gradientDef = (g: Gradient, n: Node): string => {
+  /** Canonical gradient space → a w×h box, as an SVG transform (see gradientMatrix). */
+  const space = (m: number[], w: number, h: number) => `scale(${f(w || 1)} ${f(h || 1)}) matrix(${m.map(f).join(' ')})`
+  /**
+   * A gradient in defs, drawn in canonical space: linear x 0 → 1 (or `along` for a diamond quadrant), radial centred on
+   * (½, ½) with radius ½. Vector paths carry their own scale, so their user space is the vector's box, not the node's.
+   */
+  const gradientDef = (g: Gradient, m: number[], n: Node, along?: [number, number, number, number]): string => {
     const id = `g${++uid}`, stops = [...g.stops].sort((a, b) => a.pos - b.pos)
       .map((s) => `<stop offset="${f(Math.min(1, Math.max(0, s.pos)))}" stop-color="${rgb(s.color)}" stop-opacity="${f(s.color.a)}"/>`).join('')
-    // vector paths carry their own scale, so their user space is the vector's box, not the node's
     const [w, h] = n.type === 'VECTOR' ? [n.vector!.w, n.vector!.h] : [n.width, n.height]
-    const common = `id="${id}" gradientUnits="userSpaceOnUse" gradientTransform="scale(${f(w || 1)} ${f(h || 1)})"`
-    defs += g.kind === 'LINEAR'
-      ? `<linearGradient ${common} x1="${f(g.from.x)}" y1="${f(g.from.y)}" x2="${f(g.to.x)}" y2="${f(g.to.y)}">${stops}</linearGradient>`
-      : `<radialGradient ${common} cx="${f(g.from.x)}" cy="${f(g.from.y)}" fx="${f(g.from.x)}" fy="${f(g.from.y)}" r="${f(Math.hypot(g.to.x - g.from.x, g.to.y - g.from.y))}">${stops}</radialGradient>`
+    const common = `id="${id}" gradientUnits="userSpaceOnUse" gradientTransform="${space(m, w, h)}"`
+    const [x1, y1, x2, y2] = along ?? [0, 0, 1, 0]
+    defs += g.kind === 'RADIAL'
+      ? `<radialGradient ${common} cx="0.5" cy="0.5" fx="0.5" fy="0.5" r="0.5">${stops}</radialGradient>`
+      : `<linearGradient ${common} x1="${f(x1)}" y1="${f(y1)}" x2="${f(x2)}" y2="${f(y2)}">${stops}</linearGradient>`
     return `url(#${id})`
   }
   /**
@@ -57,21 +62,23 @@ export function toSvg(doc: Document, ids: string[], imageUrl: (hash: string) => 
   const painted = (n: Node, p: Exclude<Paint, { type: 'IMAGE' }>, prop: 'fill' | 'stroke', draw: (attrs: string) => string, raster: boolean): string => {
     const color = (c: Color) => draw(`${prop}="${rgb(c)}" ${prop}-opacity="${f(c.a)}"`)
     if (p.type === 'SOLID') return color(p.color)
-    if (p.kind === 'LINEAR' || p.kind === 'RADIAL') return draw(`${prop}="${gradientDef(p, n)}"`)
+    const first = [...p.stops].sort((a, b) => a.pos - b.pos)[0].color, m = gradientMatrix(p)
+    if (!m) return color(first) // degenerate handles
+    if (p.kind === 'LINEAR' || p.kind === 'RADIAL') return draw(`${prop}="${gradientDef(p, m, n)}"`)
     if (p.kind === 'DIAMOND') {
-      // |dx| + |dy| is linear in each quadrant: four clipped linear gradients
-      const r = Math.hypot(p.to.x - p.from.x, p.to.y - p.from.y), cx = p.from.x * n.width, cy = p.from.y * n.height, far = 1e6
+      // |x−½| + |y−½| is linear in each canonical quadrant: four clipped linear gradients. The clip lives in the
+      // node's space (the <g>'s), the gradient in the painted element's.
+      const far = 1e4
       return [1, -1].flatMap((qx) => [1, -1].map((qy) => {
-        const id = `c${++uid}`
-        defs += `<clipPath id="${id}"><rect x="${f(qx > 0 ? cx : cx - far)}" y="${f(qy > 0 ? cy : cy - far)}" width="${far}" height="${far}"/></clipPath>`
-        const quarter: Gradient = { ...p, kind: 'LINEAR', to: { x: p.from.x + (qx * r) / 2, y: p.from.y + (qy * r) / 2 } }
-        return `<g clip-path="url(#${id})">${draw(`${prop}="${gradientDef(quarter, n)}"`)}</g>`
+        const id = `c${++uid}`, pts = [[0.5, 0.5], [0.5 + qx * far, 0.5], [0.5 + qx * far, 0.5 + qy * far], [0.5, 0.5 + qy * far]]
+        defs += `<clipPath id="${id}"><polygon points="${pts.map((q) => q.map(f).join(',')).join(' ')}" transform="${space(m, n.width, n.height)}"/></clipPath>`
+        return `<g clip-path="url(#${id})">${draw(`${prop}="${gradientDef(p, m, n, [0.5, 0.5, 0.5 + qx / 4, 0.5 + qy / 4])}"`)}</g>`
       })).join('')
     }
     // shortcut: SVG has no conic gradient; a shape fill becomes a raster image, text and strokes take the first stop.
     const url = raster ? gradientImage(p, 256) : undefined
     if (url) return `<image href="${esc(url)}" width="${f(n.width)}" height="${f(n.height)}" preserveAspectRatio="none" clip-path="url(#${clip(n)})"/>`
-    return color([...p.stops].sort((a, b) => a.pos - b.pos)[0].color)
+    return color(first)
   }
 
   const node = (n: Node): string => {

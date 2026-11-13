@@ -1,71 +1,92 @@
-// Gradient paints for the canvas renderer.
-import type { Gradient } from '../../../shared/document'
+// Gradient paints for the canvas renderer. Every kind is drawn in canonical gradient space (see gradientMatrix),
+// mapped onto the node's box, so rotated, skewed and elliptical gradients from Figma come out right.
+import { gradientMatrix, type Gradient } from '../../../shared/document'
 import { css } from './render'
 
-type Part = { style: CanvasGradient; clip?: [number, number, number, number] }
+type Pt = { x: number; y: number }
+type Part = { style: CanvasGradient; clip?: Pt[] } // clip: a polygon in the same space as the style
+const FAR = 1e4 // reaches past any box in canonical space
+
+function addStops(g: Gradient, grad: CanvasGradient) {
+  for (const s of [...g.stops].sort((a, b) => a.pos - b.pos)) grad.addColorStop(Math.min(1, Math.max(0, s.pos)), css(s.color))
+  return grad
+}
+/** A linear gradient whose value is 0 at `at` and grows by 1 per unit along `grad` (the value's gradient vector). */
+function linearAlong(ctx: CanvasRenderingContext2D, at: Pt, grad: Pt) {
+  const g2 = grad.x * grad.x + grad.y * grad.y || 1
+  return ctx.createLinearGradient(at.x, at.y, at.x + grad.x / g2, at.y + grad.y / g2)
+}
+/** The four quadrants of a diamond around canonical (½, ½): in each, |x−½| + |y−½| is linear. */
+const QUADRANTS = [1, -1].flatMap((qx) => [1, -1].map((qy) => ({ qx, qy, poly: [{ x: 0.5, y: 0.5 }, { x: 0.5 + qx * FAR, y: 0.5 }, { x: 0.5 + qx * FAR, y: 0.5 + qy * FAR }, { x: 0.5, y: 0.5 + qy * FAR }] })))
+
+/** Styles in canonical space, for drawing under the gradient's matrix. Exact for every kind. */
+function canonicalParts(ctx: CanvasRenderingContext2D, g: Gradient): Part[] {
+  if (g.kind === 'LINEAR') return [{ style: addStops(g, ctx.createLinearGradient(0, 0, 1, 0)) }]
+  if (g.kind === 'RADIAL') return [{ style: addStops(g, ctx.createRadialGradient(0.5, 0.5, 0, 0.5, 0.5, 0.5)) }]
+  if (g.kind === 'ANGULAR') return [{ style: addStops(g, ctx.createConicGradient(0, 0.5, 0.5)) }]
+  return QUADRANTS.map(({ qx, qy, poly }) => ({ style: addStops(g, linearAlong(ctx, { x: 0.5, y: 0.5 }, { x: qx * 2, y: qy * 2 })), clip: poly }))
+}
 
 /**
- * Canvas gradients for `g` in a space where the node's box spans (0,0)–(sx,sy). With sx = sy = 1 (drawn under a
- * scale to the node's size) every kind is exact. In pixel space linear stays exact; the others use a circle.
+ * Styles in pixel space, for text and strokes (which can't be drawn under a skewing transform). Linear and diamond are
+ * exact: their value is an affine function of the pixel. Radial and angular use the circle through the first handle.
  */
-function parts(ctx: CanvasRenderingContext2D, g: Gradient, sx: number, sy: number): Part[] {
-  const stops = [...g.stops].sort((a, b) => a.pos - b.pos)
-  const add = (grad: CanvasGradient) => {
-    for (const s of stops) grad.addColorStop(Math.min(1, Math.max(0, s.pos)), css(s.color))
-    return grad
-  }
-  const f = { x: g.from.x * sx, y: g.from.y * sy }, t = { x: g.to.x * sx, y: g.to.y * sy }
-  if (g.kind === 'LINEAR') {
-    // In the box, value = dot(p − from, v) / |v|². Under the scale S its gradient is S⁻¹v / |v|²; the pixel-space end
-    // point is from + u with u = that gradient / |gradient|².
-    const vx = g.to.x - g.from.x, vy = g.to.y - g.from.y, v2 = vx * vx + vy * vy
-    if (!v2) return []
-    const gx = vx / sx / v2, gy = vy / sy / v2, g2 = gx * gx + gy * gy
-    return [{ style: add(ctx.createLinearGradient(f.x, f.y, f.x + gx / g2, f.y + gy / g2)) }]
-  }
-  // shortcut: in pixel space (text, strokes) radial/angular/diamond use a circle of the mapped radius; exact only for square boxes.
-  const r = Math.hypot(t.x - f.x, t.y - f.y)
-  if (g.kind === 'RADIAL') return [{ style: add(ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, r)) }]
-  if (g.kind === 'ANGULAR') return [{ style: add(ctx.createConicGradient(Math.atan2(t.y - f.y, t.x - f.x), f.x, f.y)) }]
-  // Diamond: |dx| + |dy| is linear inside each quadrant, so it is four clipped linear gradients.
-  const far = 1e6
-  return [1, -1].flatMap((qx) => [1, -1].map((qy): Part => ({
-    style: add(ctx.createLinearGradient(f.x, f.y, f.x + (qx * r) / 2, f.y + (qy * r) / 2)),
-    clip: [qx > 0 ? f.x : f.x - far, qy > 0 ? f.y : f.y - far, far, far],
-  })))
+function pixelParts(ctx: CanvasRenderingContext2D, g: Gradient, P: DOMMatrix): Part[] {
+  const inv = P.inverse(), at = (x: number, y: number) => P.transformPoint({ x, y })
+  // canonical x and y as functions of the pixel: their gradient vectors are the rows of the inverse's linear part
+  const gx = { x: inv.a, y: inv.c }, gy = { x: inv.b, y: inv.d }
+  if (g.kind === 'LINEAR') return [{ style: addStops(g, linearAlong(ctx, at(0, 0), gx)) }]
+  if (g.kind === 'DIAMOND') return QUADRANTS.map(({ qx, qy, poly }) => ({
+    style: addStops(g, linearAlong(ctx, at(0.5, 0.5), { x: (qx * gx.x + qy * gy.x) * 2, y: (qx * gx.y + qy * gy.y) * 2 })),
+    clip: poly.map((p) => at(p.x, p.y)),
+  }))
+  // shortcut: radial/angular text and strokes use a circle; exact unless the gradient is skewed or the box isn't square.
+  const c = at(0.5, 0.5), e = at(1, 0.5), r = Math.hypot(e.x - c.x, e.y - c.y)
+  return [{ style: addStops(g, g.kind === 'RADIAL' ? ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, r) : ctx.createConicGradient(Math.atan2(e.y - c.y, e.x - c.x), c.x, c.y)) }]
 }
 
 function each(ctx: CanvasRenderingContext2D, list: Part[], draw: (style: CanvasGradient) => void) {
   for (const p of list) {
     ctx.save()
-    if (p.clip) { ctx.beginPath(); ctx.rect(...p.clip); ctx.clip() }
+    if (p.clip) {
+      ctx.beginPath()
+      p.clip.forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y)))
+      ctx.clip()
+    }
     draw(p.style)
     ctx.restore()
   }
 }
+/** Box → canonical gradient space for a w×h node, or null for degenerate handles. A flat box counts as 1px thick. */
+function boxMatrix(g: Gradient, w: number, h: number): DOMMatrix | null {
+  const m = gradientMatrix(g)
+  return m && new DOMMatrix().scale(w || 1, h || 1).multiply(new DOMMatrix(m))
+}
 
-/** Fills a path (in the node's own coordinates) exactly: the path is drawn in the normalized box under a scale. */
+/** Fills a path (in the node's own coordinates) exactly, drawing it in canonical gradient space. */
 export function fillGradient(ctx: CanvasRenderingContext2D, g: Gradient, path: Path2D, rule: CanvasFillRule, w: number, h: number) {
-  if (!w || !h) return
-  const unit = new Path2D()
-  unit.addPath(path, new DOMMatrix().scale(1 / w, 1 / h))
+  const P = boxMatrix(g, w, h)
+  if (!P) return
+  const canonical = new Path2D()
+  canonical.addPath(path, P.inverse())
   ctx.save()
-  ctx.scale(w, h)
-  each(ctx, parts(ctx, g, 1, 1), (style) => { ctx.fillStyle = style; ctx.fill(unit, rule) })
+  ctx.transform(P.a, P.b, P.c, P.d, P.e, P.f)
+  each(ctx, canonicalParts(ctx, g), (style) => { ctx.fillStyle = style; ctx.fill(canonical, rule) })
   ctx.restore()
+}
+
+/** Paints text or a stroke in the node's own coordinates; `draw` fills or strokes with the style it is given. */
+export function paintGradient(ctx: CanvasRenderingContext2D, g: Gradient, w: number, h: number, draw: (style: CanvasGradient) => void) {
+  const P = boxMatrix(g, w, h)
+  if (P) each(ctx, pixelParts(ctx, g, P), draw)
 }
 
 /** A size×size PNG data URL of the gradient over the whole box, or undefined without a canvas (tests). For SVG export. */
 export function gradientImage(g: Gradient, size: number): string | undefined {
-  const canvas = document.createElement('canvas'), ctx = canvas.getContext('2d')
-  if (!ctx) return undefined
+  const canvas = document.createElement('canvas'), ctx = canvas.getContext('2d'), P = boxMatrix(g, size, size)
+  if (!ctx || !P) return undefined
   canvas.width = canvas.height = size
-  ctx.scale(size, size)
-  each(ctx, parts(ctx, g, 1, 1), (style) => { ctx.fillStyle = style; ctx.fillRect(0, 0, 1, 1) })
+  ctx.transform(P.a, P.b, P.c, P.d, P.e, P.f)
+  each(ctx, canonicalParts(ctx, g), (style) => { ctx.fillStyle = style; ctx.fillRect(-FAR, -FAR, FAR * 2, FAR * 2) })
   return canvas.toDataURL('image/png')
-}
-
-/** Paints text or a stroke in pixel space; `draw` fills or strokes with the style it is given. */
-export function paintGradient(ctx: CanvasRenderingContext2D, g: Gradient, w: number, h: number, draw: (style: CanvasGradient) => void) {
-  each(ctx, parts(ctx, g, w || 1, h || 1), draw) // a line has no height; treat it as 1px so the mapping stays finite
 }

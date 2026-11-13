@@ -50,7 +50,7 @@ Status legend: [done] [in progress] [todo]
        New sets get auto layout (row, gap 20, padding 20) so variants never overlap.
        Skipped: property editor on the set (rename the variant layer instead), boolean/text/
        instance-swap component properties, dashed set border, .fig import of sets.
- 5. [done] Gradient fills (commit: see `git log --grep "Add gradient fills"`)
+ 5. [done] Gradient fills (commit 6860185)
        Paint type GRADIENT {kind LINEAR/RADIAL/ANGULAR/DIAMOND, from, to, stops}; handles in the
        node's normalized box, like Figma. Helpers (gradient, rotateGradient, convertPaint, colorAt)
        in src/shared/document.ts. Fills and strokes.
@@ -63,6 +63,16 @@ Status legend: [done] [in progress] [todo]
        Neither fixture has gradients, so the import is only tested on hand-built paints.
        Skipped: on-canvas gradient handles, per-stop interpolation, paint opacity (#11).
        Known nit: stop rows clip the hex field to about 4 characters.
+       Review fixes (ultrareview of 6860185, see `git log --grep "Fix gradient review"`):
+       - Gradients keep Figma's third (width) handle `w`. Everything draws through
+         gradientMatrix() (canonical gradient space → box), so rotated diamonds, elliptical radials
+         and skewed linears are exact on canvas and in SVG. Text/strokes: linear and diamond are
+         exact; radial/angular still use a circle.
+       - .fig import: near-singular transforms and >32 paints per list are skipped and reported;
+         >32 stops are reported.
+       - FORMAT_VERSION is 2, so older apps refuse gradient files with "newer version".
+       - Zero-height vectors draw gradient strokes; Add stop stops at 32; text editing shows a
+         gradient's midpoint colour; SVG vector clips carry clip-rule.
  6. [todo] Pen tool + vector node editing
  7. [todo] Pencil (freehand) tool
  8. [todo] Boolean operations (union, subtract, intersect, exclude) + flatten

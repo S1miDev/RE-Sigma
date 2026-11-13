@@ -2,11 +2,14 @@
 export type Color = { r: number; g: number; b: number; a: number } // floats 0–1
 export const GRADIENT_KINDS = ['LINEAR', 'RADIAL', 'ANGULAR', 'DIAMOND'] as const
 export type GradientStop = { pos: number; color: Color } // pos 0–1
+type Pt = { x: number; y: number }
 /**
- * `from`/`to` are in the node's normalized box (0–1), like Figma's handles. Linear runs from → to; the others are
- * centred on `from` with `to` on the edge (radius, start angle), so a circle in this space is an ellipse fitting the box.
+ * Handles in the node's normalized box (0–1), like Figma's. Linear runs from → to; the others are centred on `from`
+ * with `to` on the edge (radius, start angle). `w` is Figma's third (width) handle: where the gradient's other axis
+ * ends — for linear, the point half a length "below" `from`; for the others, the edge along the second radius.
+ * Without `w` the gradient is undistorted in the normalized box (a circle there is an ellipse fitting the box).
  */
-export type Gradient = { type: 'GRADIENT'; kind: (typeof GRADIENT_KINDS)[number]; visible: boolean; from: { x: number; y: number }; to: { x: number; y: number }; stops: GradientStop[] }
+export type Gradient = { type: 'GRADIENT'; kind: (typeof GRADIENT_KINDS)[number]; visible: boolean; from: Pt; to: Pt; w?: Pt; stops: GradientStop[] }
 export type Paint =
   | { type: 'SOLID'; visible: boolean; color: Color }
   | { type: 'IMAGE'; visible: boolean; hash: string }
@@ -80,7 +83,7 @@ export interface Node {
 }
 
 export interface Document {
-  formatVersion: 1
+  formatVersion: typeof FORMAT_VERSION
   pages: string[]
   nodes: Record<string, Node>
 }
@@ -92,7 +95,8 @@ export const OVERRIDABLE = [
   'letterSpacing', 'textAlign', 'textAutoWidth', 'vector',
 ] as const satisfies readonly (keyof Node)[]
 
-export const FORMAT_VERSION = 1
+// 2: gradient paints. Version 1 files read unchanged; older apps refuse version 2 as "made by a newer version".
+export const FORMAT_VERSION = 2
 export const isContainer = (n: Node) => n.type === 'PAGE' || n.type === 'FRAME' || n.type === 'GROUP'
 export const solid = (r: number, g: number, b: number, a = 1): Paint => ({ type: 'SOLID', visible: true, color: { r, g, b, a } })
 /** A new gradient fading `color` out: linear top → bottom, the others from the centre to the right edge. */
@@ -103,12 +107,29 @@ export const gradient = (kind: Gradient['kind'], color: Color, visible = true): 
 })
 /** The gradient's direction in degrees (0 = right, clockwise, in the normalized box). */
 export const gradientAngle = (g: Gradient) => (Math.atan2(g.to.y - g.from.y, g.to.x - g.from.x) * 180) / Math.PI
-/** Turns a gradient to an absolute angle: linear about its midpoint, the others about their centre. */
+/** Turns a gradient to an absolute angle, all handles together: linear about its midpoint, the others about their centre. */
 export function rotateGradient(g: Gradient, deg: number): Gradient {
-  const len = Math.hypot(g.to.x - g.from.x, g.to.y - g.from.y), a = (deg * Math.PI) / 180, dx = Math.cos(a) * len, dy = Math.sin(a) * len
-  if (g.kind !== 'LINEAR') return { ...g, to: { x: g.from.x + dx, y: g.from.y + dy } }
-  const mx = (g.from.x + g.to.x) / 2, my = (g.from.y + g.to.y) / 2
-  return { ...g, from: { x: mx - dx / 2, y: my - dy / 2 }, to: { x: mx + dx / 2, y: my + dy / 2 } }
+  const by = ((deg - gradientAngle(g)) * Math.PI) / 180, cos = Math.cos(by), sin = Math.sin(by)
+  const c = g.kind === 'LINEAR' ? { x: (g.from.x + g.to.x) / 2, y: (g.from.y + g.to.y) / 2 } : g.from
+  const turn = (p: Pt) => ({ x: c.x + (p.x - c.x) * cos - (p.y - c.y) * sin, y: c.y + (p.x - c.x) * sin + (p.y - c.y) * cos })
+  return { ...g, from: turn(g.from), to: turn(g.to), ...(g.w && { w: turn(g.w) }) }
+}
+
+/**
+ * The affine map [a, b, c, d, e, f] (DOMMatrix order) from canonical gradient space to the node's normalized box, or
+ * null when the handles are degenerate. In canonical space linear runs x = 0 → 1; the others are centred on (½, ½)
+ * with radius ½ and start at angle 0; a diamond is |x−½| + |y−½| = ½. This is the inverse of Figma's paint transform.
+ */
+export function gradientMatrix(g: Gradient): [number, number, number, number, number, number] | null {
+  const ux = g.to.x - g.from.x, uy = g.to.y - g.from.y
+  // without a third handle the second axis is the first turned 90° (y down); linear's is half as long
+  const half = g.kind === 'LINEAR' ? 0.5 : 1
+  const w = g.w ?? { x: g.from.x - uy * half, y: g.from.y + ux * half }
+  const ex = g.kind === 'LINEAR' ? [ux, uy] : [ux * 2, uy * 2], ey = [(w.x - g.from.x) * 2, (w.y - g.from.y) * 2]
+  if (!(Math.abs(ex[0] * ey[1] - ex[1] * ey[0]) > 1e-12)) return null
+  // origin: the image of canonical (0, 0); `from` is the image of (0, ½) for linear and (½, ½) otherwise
+  const ox = g.from.x - ey[0] / 2 - (g.kind === 'LINEAR' ? 0 : ex[0] / 2), oy = g.from.y - ey[1] / 2 - (g.kind === 'LINEAR' ? 0 : ex[1] / 2)
+  return [ex[0], ex[1], ey[0], ey[1], ox, oy]
 }
 export type PaintKind = 'SOLID' | Gradient['kind']
 /** Switches a solid or gradient paint to another kind. Gradients keep their stops; solid keeps the first stop's colour. */
@@ -165,5 +186,5 @@ export function makeNode(type: NodeType, props: Partial<Node> = {}): Node {
 
 export function emptyDocument(): Document {
   const page = makeNode('PAGE', { name: 'Page 1', fills: [solid(0.96, 0.96, 0.96)] })
-  return { formatVersion: 1, pages: [page.id], nodes: { [page.id]: page } }
+  return { formatVersion: FORMAT_VERSION, pages: [page.id], nodes: { [page.id]: page } }
 }

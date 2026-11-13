@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
+import { colorAt } from '../../../shared/document'
 import { zoomToFit } from '../commands'
 import { apply, worldMatrix, worldRotation } from '../model/geometry'
 import { patch, remove } from '../model/ops'
@@ -118,7 +119,9 @@ function TextEditor({ id }: { id: string }) {
   const n = doc.nodes[id]
   if (!n) return null
   const at = toScreen(view, apply(worldMatrix(doc, id), { x: 0, y: 0 }))
-  const fill = n.fills.find((p) => p.visible && p.type === 'SOLID')
+  // the editor shows one colour: a solid fill's, or a gradient's midpoint
+  const fill = n.fills.find((p) => p.visible && p.type !== 'IMAGE')
+  const color = fill?.type === 'SOLID' ? fill.color : fill?.type === 'GRADIENT' ? colorAt(fill.stops, 0.5) : null
 
   const commit = (value: string) => {
     const now = store.get().doc.nodes[id]
@@ -150,7 +153,7 @@ function TextEditor({ id }: { id: string }) {
         left: at.x, top: at.y, transformOrigin: '0 0', transform: `rotate(${worldRotation(doc, id)}deg)`,
         font: fontOf(n, view.zoom), lineHeight: `${lineHeightOf(n) * view.zoom}px`, letterSpacing: `${(n.letterSpacing ?? 0) * view.zoom}px`,
         textAlign: (n.textAlign ?? 'LEFT').toLowerCase() as CSSProperties['textAlign'],
-        color: fill?.type === 'SOLID' ? css(fill.color) : '#000',
+        color: color ? css(color) : '#000',
         width: n.textAutoWidth ? undefined : n.width * view.zoom, minWidth: 4,
         whiteSpace: n.textAutoWidth ? 'pre' : 'pre-wrap',
         fieldSizing: 'content', // grows with its content

@@ -84,6 +84,7 @@ const paints = (x: unknown, at: string): Paint[] =>
       if (stops.length < 2) fail(`${at}.stops`)
       return {
         type: 'GRADIENT', visible, kind: oneOf(p, 'kind', at, GRADIENT_KINDS), from: pt(p.from, `${at}.from`), to: pt(p.to, `${at}.to`),
+        ...(p.w !== undefined && { w: pt(p.w, `${at}.w`) }),
         stops: stops.map((s) => ({ pos: num(s, 'pos', `${at}.stops`, 0, 1), color: color(s.color, `${at}.stops.color`) })),
       }
     }
@@ -167,7 +168,7 @@ export function validateDocument(x: unknown): Document {
   if (!isObj(x)) return fail('not an object')
   if (!Number.isInteger(x.formatVersion) || (x.formatVersion as number) < 1) return fail('formatVersion')
   if ((x.formatVersion as number) > FORMAT_VERSION) throw new FormatError('This project was made by a newer version of Refig')
-  // formatVersion 1 is the only version so far; migrations from older versions go here.
+  // 1 → 2 only added gradient paints, so version 1 needs no migration; future migrations go here.
   if (!isObj(x.nodes)) return fail('nodes')
   const nodes: Record<string, Node> = {}
   for (const [id, n] of Object.entries(x.nodes)) nodes[id] = validateNode(id, n)
@@ -192,7 +193,7 @@ export function validateDocument(x: unknown): Document {
     }
     for (const id of chain) rooted.add(id)
   }
-  return { formatVersion: 1, pages: pages as string[], nodes }
+  return { formatVersion: FORMAT_VERSION, pages: pages as string[], nodes } // older versions read as the current one
 }
 
 export function validateMeta(x: unknown): Meta {

@@ -313,7 +313,8 @@ function Paints({ title, field, nodes, report, children }: { title: string; fiel
                         </Row>
                       )
                     })}
-                    <Button onClick={() => set(at(i, { ...p, stops: [...p.stops, { pos: 0.5, color: colorAt(p.stops, 0.5) }] }))}>Add stop</Button>
+                    {/* .refig files hold at most 32 stops per gradient */}
+                    <Button disabled={p.stops.length >= 32} onClick={() => set(at(i, { ...p, stops: [...p.stops, { pos: 0.5, color: colorAt(p.stops, 0.5) }] }))}>Add stop</Button>
                   </div>
                 )}
               </div>

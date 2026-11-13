@@ -1,13 +1,13 @@
 import fs from 'node:fs'
 import { zipSync, strToU8 } from 'fflate'
 import { expect, test } from 'vitest'
-import { emptyDocument, makeNode, solid, type Gradient } from '../../shared/document'
+import { emptyDocument, FORMAT_VERSION, gradientMatrix, makeNode, solid, type Gradient } from '../../shared/document'
 import { figGradient, importFig } from './fig'
 import { decodeMessage, decodeSchema, readCanvas } from './kiwi'
 import { readRefig, readRefigMeta, validateDocument, writeRefig, type Meta } from './refig'
 
 const fixture = (name: string) => new Uint8Array(fs.readFileSync(new URL(`../../../research/fixtures/${name}`, import.meta.url)))
-const meta: Meta = { format: 'refig', formatVersion: 1, id: '11111111-2222-3333-4444-555555555555', name: 'A', createdAt: '2026-01-01T00:00:00.000Z', modifiedAt: '2026-01-02T00:00:00.000Z', appVersion: '0.1.0' }
+const meta: Meta = { format: 'refig', formatVersion: FORMAT_VERSION, id: '11111111-2222-3333-4444-555555555555', name: 'A', createdAt: '2026-01-01T00:00:00.000Z', modifiedAt: '2026-01-02T00:00:00.000Z', appVersion: '0.1.0' }
 
 function sampleDoc() {
   const doc = emptyDocument(), page = doc.pages[0]
@@ -62,7 +62,7 @@ test('validateDocument rejects bad shapes, dangling parents and cycles', () => {
   expect(broken((d) => (d.nodes[frame.id].parentId = text.id))).toThrow(/parentId|cycle/)
   expect(broken((d) => delete d.nodes[text.id].characters)).toThrow(/characters/)
   expect(broken((d) => (d.pages = []))).toThrow(/pages/)
-  expect(broken((d) => ((d as { formatVersion: number }).formatVersion = 2))).toThrow(/newer version/)
+  expect(broken((d) => ((d as { formatVersion: number }).formatVersion = FORMAT_VERSION + 1))).toThrow(/newer version/)
   // a cycle that never reaches a page
   const a = makeNode('GROUP'), b = makeNode('GROUP', { parentId: a.id })
   a.parentId = b.id
@@ -150,7 +150,7 @@ test('figGradient reads stops and handles from the paint transform', () => {
   const stops = [{ color: { r: 1, g: 0, b: 0, a: 1 }, position: 0 }, { color: { r: 0, g: 0, b: 1, a: 0.5 }, position: 1 }]
   // identity: linear runs (0,½)→(1,½)
   expect(figGradient({ type: 'GRADIENT_LINEAR', stops, opacity: 0.5 })).toEqual({
-    type: 'GRADIENT', kind: 'LINEAR', visible: true, from: { x: 0, y: 0.5 }, to: { x: 1, y: 0.5 },
+    type: 'GRADIENT', kind: 'LINEAR', visible: true, from: { x: 0, y: 0.5 }, to: { x: 1, y: 0.5 }, w: { x: 0, y: 1 },
     stops: [{ pos: 0, color: { r: 1, g: 0, b: 0, a: 0.5 } }, { pos: 1, color: { r: 0, g: 0, b: 1, a: 0.25 } }],
   })
   // Figma's top-to-bottom linear: the transform maps box (x,y) → gradient (y, 1−x)
@@ -174,3 +174,18 @@ test('validateDocument keeps gradients and rejects bad ones', () => {
   expect(bad({ ...g, stops: [{ ...g.stops[0], pos: 2 }, g.stops[1]] })).toThrow(/pos/)
   expect(bad({ ...g, from: { x: 'a', y: 0 } })).toThrow(/from/)
 })
+
+test('figGradient keeps the width handle, and skips gradients it cannot represent', () => {
+  const stops = [{ color: { r: 1, g: 0, b: 0, a: 1 }, position: 0 }, { color: { r: 0, g: 0, b: 1, a: 1 }, position: 1 }]
+  // Figma's value x + y: diagonal isolines that from/to alone would lose
+  const skew = figGradient({ type: 'GRADIENT_LINEAR', stops, transform: { m00: 1, m01: 1, m02: 0, m10: 0, m11: 1, m12: 0 } })!
+  const m = gradientMatrix(skew)!
+  // the canonical→box matrix is the transform's inverse: box (x, y) = (cx − cy, cy)
+  ;[1, 0, -1, 1, 0, 0].forEach((v, i) => expect(m[i]).toBeCloseTo(v, 9))
+  // an elliptical radial: canonical radius ½ is ¼ wide and ½ tall in the box
+  const oval = figGradient({ type: 'GRADIENT_RADIAL', stops, transform: { m00: 2, m01: 0, m02: -0.5, m10: 0, m11: 1, m12: 0 } })!
+  expect(oval).toMatchObject({ from: { x: 0.5, y: 0.5 }, to: { x: 0.75, y: 0.5 }, w: { x: 0.5, y: 1 } })
+  // near-singular: handles would land past the validator's range
+  expect(figGradient({ type: 'GRADIENT_LINEAR', stops, transform: { m00: 1e-7, m01: 0, m02: 0, m10: 0, m11: 1e-7, m12: 0 } })).toBeNull()
+})
+

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { RefigApi } from '../../shared/api'
-import { colorAt, convertPaint, emptyDocument, gradient, gradientAngle, makeNode, rotateGradient, solid, type AutoLayout, type Constraint, type Document, type Node, type NodeType, type Paint } from '../../shared/document'
+import { colorAt, convertPaint, emptyDocument, gradient, gradientAngle, gradientMatrix, makeNode, rotateGradient, solid, type AutoLayout, type Constraint, type Document, type Node, type NodeType, type Paint } from '../../shared/document'
 import { frameAt, hitTest, marqueeHits } from './canvas/hit'
 import { handleAt, handlesOf } from './canvas/overlay'
 import { snap, snapTargets } from './canvas/snap'
@@ -717,11 +717,11 @@ test('gradients: SVG export draws linear/radial in the scaled box, diamond as fo
   const add = (fills: Paint[], props: Partial<Node> = {}) => { const n = makeNode('RECTANGLE', { x: 0, y: 0, width: 200, height: 100, fills, ...props }); return { d: insert(doc, n, page), id: n.id } }
   const lin = add([gradient('LINEAR', { r: 1, g: 0, b: 0, a: 1 })])
   const svg = toSvg(lin.d, [lin.id], () => undefined)
-  expect(svg).toContain('<linearGradient id="g1" gradientUnits="userSpaceOnUse" gradientTransform="scale(200 100)" x1="0.5" y1="0" x2="0.5" y2="1">')
+  expect(svg).toContain('<linearGradient id="g1" gradientUnits="userSpaceOnUse" gradientTransform="scale(200 100) matrix(0 1 -1 0 1 0)" x1="0" y1="0" x2="1" y2="0">')
   expect(svg).toContain('<stop offset="0" stop-color="rgb(255,0,0)" stop-opacity="1"/><stop offset="1" stop-color="rgb(255,0,0)" stop-opacity="0"/>')
   expect(svg).toContain('fill="url(#g1)"')
   const rad = add([gradient('RADIAL', black)])
-  expect(toSvg(rad.d, [rad.id], () => undefined)).toContain('<radialGradient id="g1" gradientUnits="userSpaceOnUse" gradientTransform="scale(200 100)" cx="0.5" cy="0.5" fx="0.5" fy="0.5" r="0.5">')
+  expect(toSvg(rad.d, [rad.id], () => undefined)).toContain('<radialGradient id="g1" gradientUnits="userSpaceOnUse" gradientTransform="scale(200 100) matrix(1 0 0 1 0 0)" cx="0.5" cy="0.5" fx="0.5" fy="0.5" r="0.5">')
   const dia = add([gradient('DIAMOND', black)])
   const dsvg = toSvg(dia.d, [dia.id], () => undefined)
   expect(dsvg.match(/<linearGradient /g)).toHaveLength(4)
@@ -738,4 +738,18 @@ test('gradients: a gradient switched on in an instance is an override', () => {
   store.update((d) => patch(d, [r], { fills: [green] }))
   expect(copy().fills[0].type).toBe('GRADIENT')
   expect(copy().overrides).toEqual(['fills'])
+})
+
+test('gradients: rotation turns every handle, so a rotated diamond exports rotated; vector clips keep their fill rule', () => {
+  const dia = rotateGradient(gradient('DIAMOND', black), 45)
+  const m = gradientMatrix(dia)!
+  near(m[0], Math.SQRT1_2); near(m[1], Math.SQRT1_2) // canonical x now runs diagonally
+  const skewed = rotateGradient({ ...gradient('RADIAL', black), w: { x: 0.5, y: 0.75 } }, 90)
+  near(skewed.w!.x, 0.25); near(skewed.w!.y, 0.5) // the width handle turns with the others
+  const { doc, page } = scene()
+  const n = makeNode('RECTANGLE', { width: 200, height: 100, fills: [dia] }), d = insert(doc, n, page)
+  const svg = toSvg(d, [n.id], () => undefined)
+  expect(svg.match(/<polygon [^>]*transform="scale\(200 100\) matrix\(0\.707 0\.707 -0\.707 0\.707 /g)).toHaveLength(4)
+  const v = makeNode('VECTOR', { width: 10, height: 10, fills: [solid(0, 0, 0)], vector: { w: 10, h: 10, fill: [{ d: 'M0 0L10 0L10 10Z', rule: 'evenodd' }], stroke: [] } })
+  expect(toSvg(insert(doc, v, page), [v.id], () => undefined)).toContain('fill-rule="evenodd" clip-rule="evenodd"')
 })
