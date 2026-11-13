@@ -4,6 +4,7 @@ import { Icon, IconButton, type IconName } from '../../ui'
 import { zoomToFit } from '../commands'
 import { addPage, childrenOf, moveTo, movePage, patch, removePage } from '../model/ops'
 import { useEditor, useStore } from '../store'
+import { showPage } from '../tools'
 
 const TYPE_ICON: Record<Node['type'], IconName> = { PAGE: 'page', FRAME: 'frame', GROUP: 'group', RECTANGLE: 'rectangle', ELLIPSE: 'ellipse', LINE: 'line', TEXT: 'text', VECTOR: 'vector' }
 
@@ -44,7 +45,7 @@ function Pages() {
   const [dragging, setDragging] = useState<string | null>(null)
 
   const go = (id: string) => {
-    store.set({ pageId: id, selection: [], editingText: null })
+    showPage(store, id)
     zoomToFit(store, 1)
   }
   return (

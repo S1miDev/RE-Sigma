@@ -6,7 +6,7 @@ import { apply, worldBox, worldMatrix, worldRotation, type Pt } from './model/ge
 import { addAutoLayout, align, childrenOf, cloneTree, distribute, descendants, duplicate, group, insert, nextName, orderAbove, pageOf, patch, put, remove, reorder, topLevel, topOrder, translate, ungroup } from './model/ops'
 import { addVariant, combineAsVariants, detach, makeComponent, resetOverrides, setOf, variantsOf } from './model/components'
 import type { EditorState, EditorStore, Tool } from './store'
-import { deletePoint, finishPen, setTool } from './tools'
+import { deletePoint, editNode, exitMode, setTool, showPage } from './tools'
 
 /** Things only the Editor component can do. */
 export interface Actions { back(): void; openExport(): void }
@@ -66,6 +66,7 @@ export async function pasteImage(store: EditorStore, file: Blob) {
 }
 
 const has = (s: EditorState) => s.selection.length > 0
+const inMode = (s: EditorState) => s.mode.kind !== 'none'
 const centre = (s: EditorState) => ({ x: s.size.w / 2, y: s.size.h / 2 })
 const tool = (id: Tool, label: string, key: string): Command => ({ id: `tool-${id}`, label, group: 'Tools', keys: [key], run: (st) => setTool(st, id) })
 const toggle = (field: 'visible' | 'locked') => (st: EditorStore) => {
@@ -93,7 +94,7 @@ export const COMMANDS: Command[] = [
   { id: 'paste', label: 'Paste', group: 'Edit', keys: ['Ctrl+V'], enabled: () => clipboard !== null, run: (st) => void paste(st) },
   { id: 'duplicate', label: 'Duplicate', group: 'Edit', keys: ['Ctrl+D'], enabled: has, run: (st) => st.update((d) => duplicate(d, st.get().selection)) },
   // while editing points, Delete removes the selected point rather than the layer
-  { id: 'delete', label: 'Delete', group: 'Edit', keys: ['Delete', 'Backspace'], enabled: (s) => (s.vectorEdit ? !!s.vectorEdit.sel : has(s)), run: (st) => (st.get().vectorEdit ? deletePoint(st) : st.update((d) => remove(d, st.get().selection))) },
+  { id: 'delete', label: 'Delete', group: 'Edit', keys: ['Delete', 'Backspace'], enabled: (s) => (s.mode.kind === 'points' ? !!s.mode.sel : has(s)), run: (st) => (st.get().mode.kind === 'points' ? deletePoint(st) : st.update((d) => remove(d, st.get().selection))) },
   { id: 'select-all', label: 'Select all', group: 'Edit', keys: ['Ctrl+A'], run: (st) => { const s = st.get(); st.set({ selection: childrenOf(s.doc, s.pageId).filter((n) => n.visible && !n.locked).map((n) => n.id) }) } },
 
   { id: 'zoom-in', label: 'Zoom in', group: 'View', keys: ['Ctrl+='], run: (st) => { const s = st.get(); st.set({ view: zoomAt(s.view, centre(s), s.view.zoom * 2) }) } },
@@ -129,21 +130,11 @@ export const COMMANDS: Command[] = [
 
   tool('move', 'Move', 'V'), tool('hand', 'Hand', 'H'), tool('frame', 'Frame', 'F'), tool('rectangle', 'Rectangle', 'R'),
   tool('ellipse', 'Ellipse', 'O'), tool('line', 'Line', 'L'), tool('pen', 'Pen', 'P'), tool('text', 'Text', 'T'),
-  // Escape steps out one level: finishes a pen path, ends point editing, then deselects
-  { id: 'escape', label: 'Deselect', group: 'Tools', keys: ['Escape'], run: (st) => {
-    const s = st.get()
-    if (s.pen) finishPen(st)
-    else if (s.vectorEdit) st.set({ vectorEdit: null })
-    else st.set({ selection: [], tool: 'move' })
-  } },
-  // Enter edits a text's characters or a vector's points; it also finishes a pen path or point editing
-  { id: 'edit', label: 'Edit text or points', group: 'Tools', keys: ['Enter'], enabled: (s) => !!s.pen || !!s.vectorEdit || (s.selection.length === 1 && ['TEXT', 'VECTOR'].includes(s.doc.nodes[s.selection[0]]?.type)), run: (st) => {
-    const s = st.get(), n = s.doc.nodes[s.selection[0]]
-    if (s.pen) finishPen(st)
-    else if (s.vectorEdit) st.set({ vectorEdit: null })
-    else if (n.type === 'TEXT') st.set({ editingText: n.id })
-    else st.set({ vectorEdit: { id: n.id, sel: null } })
-  } },
+  // Escape steps out one level: leaves a mode (finishing a pen path), then deselects
+  { id: 'escape', label: 'Deselect', group: 'Tools', keys: ['Escape'], run: (st) => (inMode(st.get()) ? exitMode(st) : st.set({ selection: [], tool: 'move' })) },
+  // Enter edits a text's characters or a vector's points, or leaves the mode
+  { id: 'edit', label: 'Edit text or points', group: 'Tools', keys: ['Enter'], enabled: (s) => inMode(s) || (s.selection.length === 1 && ['TEXT', 'VECTOR'].includes(s.doc.nodes[s.selection[0]]?.type)),
+    run: (st) => (inMode(st.get()) ? exitMode(st) : editNode(st, st.get().selection[0])) },
 ]
 
 const lone = (s: EditorState) => (s.selection.length === 1 ? s.doc.nodes[s.selection[0]] : undefined)
@@ -167,7 +158,7 @@ function createInstance(st: EditorStore) {
 const setSelected = (s: EditorState) => { const n = lone(s); return n?.componentSet ? n : n && setOf(s.doc, n.id) }
 function goToMain(st: EditorStore) {
   const { doc } = st.get(), main = doc.nodes[lone(st.get())!.instanceOf!]
-  st.set({ pageId: pageOf(doc, main.id)!, selection: [main.id] })
+  showPage(st, pageOf(doc, main.id)!, [main.id])
   const s = st.get()
   st.set({ view: fitView(worldBox(s.doc, [main.id]), s.size) })
 }

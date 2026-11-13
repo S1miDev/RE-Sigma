@@ -11,8 +11,8 @@ import { apply, corners, invert, lineBetween, localMatrix, mul, resizeBox, world
 import { addAutoLayout, addPage, align, autoLayout, childrenOf, distribute, duplicate, group, insert, moveTo, movePage, patch, put, remove, removePage, reorder, resizeNode, topLevel, translate, ungroup } from './model/ops'
 import { setVariant, syncInstances, variantProps, variantsOf } from './model/components'
 import { anchorsOf, parsePath, pathData, withAnchors } from './model/path'
-import { AUTOSAVE_MS, createEditorStore, gestureStep } from './store'
-import { beginGesture, type Pointer } from './tools'
+import { AUTOSAVE_MS, createEditorStore, gestureStep, NO_MODE, type EditorStore, type Mode } from './store'
+import { beginGesture, editNode, showPage, type Pointer } from './tools'
 
 const near = (a: number, b: number) => expect(a).toBeCloseTo(b, 6)
 function scene() {
@@ -378,9 +378,9 @@ test('tools: text tool creates a node in edit mode; hand tool pans', () => {
   store.set({ tool: 'text' })
   drag(store, at(10, 500))
   const s = store.get(), id = s.selection[0]
-  expect(s).toMatchObject({ tool: 'move', editingText: id })
+  expect(s).toMatchObject({ tool: 'move', mode: { kind: 'text', id } })
   expect(s.doc.nodes[id]).toMatchObject({ type: 'TEXT', parentId: page, x: 10, y: 500, textAutoWidth: true })
-  store.set({ tool: 'hand', editingText: null })
+  store.set({ tool: 'hand', mode: NO_MODE })
   drag(store, at(0, 0), at(30, 40))
   expect(store.get().view).toMatchObject({ x: 30, y: 40 })
 })
@@ -842,17 +842,42 @@ test('paths: re-fitting a rotated vector keeps every point where it was on the p
   near(after[1].x, before[1].x); near(after[1].y, before[1].y) // the point that didn't move stayed put
 })
 
+const penMode = (store: EditorStore) => store.get().mode as Extract<Mode, { kind: 'pen' }>
+
+test('modes: switching page or undoing leaves point editing; a pen path in progress is finished on a page switch', () => {
+  const { store, page } = open()
+  const v = makeNode('VECTOR', { x: 600, y: 600, width: 50, height: 50, vector: { w: 50, h: 50, fill: [{ d: 'M0 0L50 0L0 50Z', rule: 'nonzero' }], stroke: [] } })
+  store.update((d) => ({ doc: insert(d, v, page), ids: [v.id] }))
+  editNode(store, v.id)
+  expect(store.get().mode).toEqual({ kind: 'points', id: v.id, sel: null })
+  store.update((d) => addPage(d))
+  showPage(store, store.get().doc.pages.at(-1)!)
+  expect(store.get().mode).toEqual(NO_MODE)
+
+  showPage(store, page, [v.id])
+  editNode(store, v.id)
+  store.undo()
+  expect(store.get().mode).toEqual(NO_MODE)
+
+  store.set({ tool: 'pen' })
+  drag(store, at(10, 10))
+  const lone = penMode(store).id
+  showPage(store, store.get().doc.pages.at(-1)!)
+  expect(store.get()).toMatchObject({ mode: NO_MODE, tool: 'move' })
+  expect(store.get().doc.nodes[lone]).toBeUndefined() // a single point leaves nothing
+})
+
 test('pen: clicks draw corners, a drag pulls handles, the first point closes, the whole path is one undo step', () => {
   const { store, doc } = open()
   store.set({ tool: 'pen' })
   drag(store, at(600, 600))
   drag(store, at(700, 600), at(720, 640), at(740, 680)) // drag: handles
-  const id = store.get().pen!.id
-  expect(store.get().pen!.anchors[1]).toEqual({ x: 700, y: 600, out: { x: 740, y: 680 }, in: { x: 660, y: 520 } }) // page = parent coords here
+  const id = penMode(store).id
+  expect(penMode(store).anchors[1]).toEqual({ x: 700, y: 600, out: { x: 740, y: 680 }, in: { x: 660, y: 520 } }) // page = parent coords here
   drag(store, at(700, 700))
   drag(store, at(603, 602)) // back on the first point
   const s = store.get(), n = s.doc.nodes[id]
-  expect(s).toMatchObject({ pen: null, tool: 'move', selection: [id] })
+  expect(s).toMatchObject({ mode: NO_MODE, tool: 'move', selection: [id] })
   expect(n).toMatchObject({ type: 'VECTOR', name: 'Vector 1', fills: [], strokes: [solid(0, 0, 0)] })
   expect(anchorsOf(n)[0]).toMatchObject({ closed: true })
   expect(anchorsOf(n)[0].anchors).toHaveLength(3)
@@ -867,14 +892,14 @@ test('pen: Escape or a tool change finishes an open path; a single point leaves 
   store.set({ tool: 'pen' })
   drag(store, at(600, 600))
   drag(store, at(700, 630, { shift: true })) // snapped onto the horizontal
-  const id = store.get().pen!.id
-  expect(store.get().pen!.anchors[1]).toMatchObject({ x: expect.closeTo(704.4, 1), y: expect.closeTo(600, 6) })
+  const id = penMode(store).id
+  expect(penMode(store).anchors[1]).toMatchObject({ x: expect.closeTo(704.4, 1), y: expect.closeTo(600, 6) })
   run(store, 'escape')
-  expect(store.get()).toMatchObject({ pen: null, tool: 'move', selection: [id] })
+  expect(store.get()).toMatchObject({ mode: NO_MODE, tool: 'move', selection: [id] })
   expect(anchorsOf(store.get().doc.nodes[id])[0].closed).toBe(false)
   store.set({ tool: 'pen' })
   drag(store, at(800, 800))
-  const lone = store.get().pen!.id
+  const lone = penMode(store).id
   run(store, 'tool-rectangle')
   expect(store.get().doc.nodes[lone]).toBeUndefined()
   expect(store.get().tool).toBe('rectangle')
@@ -885,10 +910,10 @@ test('point editing: Enter starts it, dragging moves one point or one handle, De
   const v = makeNode('VECTOR', { x: 600, y: 600, width: 100, height: 100, strokes: [solid(0, 0, 0)], vector: { w: 50, h: 50, fill: [{ d: 'M0 0L50 0C50 25 25 50 0 50Z', rule: 'nonzero' }], stroke: [{ d: 'M0 0Z', rule: 'nonzero' }] } })
   store.update((d) => ({ doc: insert(d, v, page), ids: [v.id] }))
   run(store, 'edit')
-  expect(store.get().vectorEdit).toEqual({ id: v.id, sel: null })
+  expect(store.get().mode).toEqual({ kind: 'points', id: v.id, sel: null })
   drag(store, at(700, 600), at(720, 590), at(740, 580)) // the second anchor (100, 0 in px)
   let n = store.get().doc.nodes[v.id]
-  expect(store.get().vectorEdit!.sel).toEqual({ s: 0, i: 1 })
+  expect(store.get().mode).toMatchObject({ sel: { s: 0, i: 1 } })
   expect(anchorsOf(n)[0].anchors[1]).toMatchObject({ x: 140, y: 0, out: { x: 140, y: 50 } }) // handles came along
   expect(n).toMatchObject({ x: 600, y: 580, width: 140, height: 120 }) // the box re-fitted
   expect(n.vector!.stroke).toEqual([]) // the imported outline no longer matches: dropped
@@ -897,14 +922,14 @@ test('point editing: Enter starts it, dragging moves one point or one handle, De
   run(store, 'delete')
   n = store.get().doc.nodes[v.id]
   expect(anchorsOf(n)[0].anchors).toHaveLength(2)
-  store.set({ vectorEdit: { id: v.id, sel: { s: 0, i: 0 } } })
+  store.set({ mode: { kind: 'points', id: v.id, sel: { s: 0, i: 0 } } })
   run(store, 'delete') // one point left: the vector goes
   expect(store.get().doc.nodes[v.id]).toBeUndefined()
-  expect(store.get().vectorEdit).toBeNull()
+  expect(store.get().mode).toEqual(NO_MODE)
   store.undo(); store.undo()
-  store.set({ selection: [v.id], vectorEdit: { id: v.id, sel: null } })
+  store.set({ selection: [v.id], mode: { kind: 'points', id: v.id, sel: null } })
   run(store, 'escape')
-  expect(store.get()).toMatchObject({ vectorEdit: null, selection: [v.id] })
+  expect(store.get()).toMatchObject({ mode: NO_MODE, selection: [v.id] })
 })
 
 test('paths: a control point sitting on its anchor is not a handle (so the anchor stays grabbable)', () => {

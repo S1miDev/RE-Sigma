@@ -4,8 +4,8 @@ import { zoomToFit } from '../commands'
 import { apply, worldMatrix, worldRotation } from '../model/geometry'
 import { patch, remove } from '../model/ops'
 import { isTyping } from '../../util'
-import { useEditor, useStore } from '../store'
-import { beginGesture, textStep, type Gesture, type Pointer } from '../tools'
+import { NO_MODE, useEditor, useStore } from '../store'
+import { beginGesture, editNode, textStep, type Gesture, type Pointer } from '../tools'
 import { hitTest } from './hit'
 import { drawOverlay } from './overlay'
 import { css } from './color'
@@ -19,7 +19,7 @@ export function Canvas() {
   const ref = useRef<HTMLCanvasElement>(null)
   const gesture = useRef<Gesture | null>(null)
   const tool = useEditor((s) => s.tool)
-  const editingText = useEditor((s) => s.editingText)
+  const editingText = useEditor((s) => (s.mode.kind === 'text' ? s.mode.id : null))
   const [space, setSpace] = useState(false)
 
   useEffect(() => {
@@ -29,7 +29,7 @@ export function Canvas() {
       frame = 0
       if (!ctx) return
       const s = store.get(), dpr = window.devicePixelRatio || 1
-      renderPage(ctx, s.doc, s.pageId, s.view, dpr, store.image, s.editingText)
+      renderPage(ctx, s.doc, s.pageId, s.view, dpr, store.image, s.mode.kind === 'text' ? s.mode.id : null)
       drawOverlay(ctx, s, dpr)
     }
     const schedule = () => (frame ||= requestAnimationFrame(draw))
@@ -106,8 +106,7 @@ export function Canvas() {
         onPointerCancel={up}
         onDoubleClick={(e) => {
           const s = store.get(), hit = s.tool === 'move' && hitTest(s.doc, s.pageId, pointer(e).world, { deep: true, tolerance: 4 / s.view.zoom })
-          const type = hit && s.doc.nodes[hit].type
-          if (hit) store.set({ selection: [hit], editingText: type === 'TEXT' ? hit : null, vectorEdit: type === 'VECTOR' ? { id: hit, sel: null } : null })
+          if (hit) editNode(store, hit)
         }}
       />
       {editingText && <TextEditor key={editingText} id={editingText} />}
@@ -127,8 +126,8 @@ function TextEditor({ id }: { id: string }) {
   const color = fill?.type === 'SOLID' ? fill.color : fill?.type === 'GRADIENT' ? colorAt(fill.stops, 0.5) : null
 
   const commit = (value: string) => {
-    const now = store.get().doc.nodes[id]
-    store.set({ editingText: null })
+    const { mode } = store.get(), now = store.get().doc.nodes[id]
+    if (mode.kind === 'text' && mode.id === id) store.set({ mode: NO_MODE })
     if (!now) return
     const tag = now.characters === '' ? textStep(id) : undefined // the first commit joins the undo step that created the node
     if (!value) store.update((d) => remove(d, [id]), tag)

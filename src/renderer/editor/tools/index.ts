@@ -7,7 +7,7 @@ import { toScreen } from '../canvas/viewport'
 import { apply, bounds, deg, invert, lineBetween, localMatrix, resizeBox, worldBox, worldMatrix, worldRotation, type Pt } from '../model/geometry'
 import { insert, layoutSlot, moveTo, nextName, patch, put, remove, resizeNode, topLevel, translate } from '../model/ops'
 import { anchorsOf, withAnchors, type Anchor, type Sub } from '../model/path'
-import { gestureStep, type EditorStore, type Tool } from '../store'
+import { gestureStep, NO_MODE, type EditorStore, type Tool } from '../store'
 
 export interface Pointer { screen: Pt; world: Pt; shift: boolean; alt: boolean; ctrl: boolean }
 export interface Gesture { move(p: Pointer): void; up(p: Pointer): void }
@@ -30,10 +30,28 @@ export function beginGesture(store: EditorStore, p: Pointer, pan = false): Gestu
   return shapeGesture(store, p, tool)
 }
 
-/** Switches tools. A path the pen is drawing is finished first, and point editing ends. */
+/** Switches tools, leaving any mode first (a path the pen is drawing is finished). */
 export function setTool(store: EditorStore, tool: Tool) {
-  finishPen(store)
-  store.set({ tool, vectorEdit: null })
+  exitMode(store)
+  store.set({ tool })
+}
+
+/** Leaves the current mode. A path being drawn is finished (see finishPen). */
+export function exitMode(store: EditorStore) {
+  if (store.get().mode.kind === 'pen') finishPen(store)
+  else store.set({ mode: NO_MODE })
+}
+
+/** Selects a node and starts editing it: a text's characters, a vector's points. Other nodes are just selected. */
+export function editNode(store: EditorStore, id: string) {
+  const type = store.get().doc.nodes[id]?.type
+  store.set({ selection: [id], mode: type === 'TEXT' ? { kind: 'text', id } : type === 'VECTOR' ? { kind: 'points', id, sel: null } : NO_MODE })
+}
+
+/** Shows a page, leaving any mode, with `selection` selected. */
+export function showPage(store: EditorStore, pageId: string, selection: string[] = []) {
+  exitMode(store)
+  store.set({ pageId, selection })
 }
 
 // ── pen ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -44,11 +62,12 @@ const penStep = (id: string) => gestureStep(`pen-${id}`) // the whole path is on
 const fromParent = (n: Node, subs: Sub[]): Node => withAnchors({ ...n, x: 0, y: 0, width: 0, height: 0, rotation: 0 }, subs)
 
 /** Ends the path being drawn: selects it, or removes it if it is a single point. Back to the Move tool. */
-export function finishPen(store: EditorStore) {
-  const { pen, doc } = store.get(), n = pen && doc.nodes[pen.id]
-  if (!pen) return
-  if (n && pen.anchors.length < 2) store.update((d) => remove(d, [n.id]), penStep(n.id))
-  store.set({ pen: null, tool: 'move', selection: n && store.get().doc.nodes[n.id] ? [n.id] : [] })
+function finishPen(store: EditorStore) {
+  const { mode, doc } = store.get()
+  if (mode.kind !== 'pen') return
+  const n = doc.nodes[mode.id]
+  if (n && mode.anchors.length < 2) store.update((d) => remove(d, [n.id]), penStep(n.id))
+  store.set({ mode: NO_MODE, tool: 'move', selection: n && store.get().doc.nodes[n.id] ? [n.id] : [] })
 }
 
 /**
@@ -57,7 +76,7 @@ export function finishPen(store: EditorStore) {
  */
 function penGesture(store: EditorStore, p: Pointer): Gesture {
   const s = store.get(), { doc, view } = s
-  const current = s.pen && doc.nodes[s.pen.id] ? s.pen : null, existing = current && doc.nodes[current.id]
+  const current = s.mode.kind === 'pen' && doc.nodes[s.mode.id] ? s.mode : null, existing = current && doc.nodes[current.id]
   const parentId = existing ? existing.parentId! : frameAt(doc, s.pageId, p.world)
   const toPage = worldMatrix(doc, parentId), toParent = invert(toPage)
   if (current && current.anchors.length >= 2 && dist(toScreen(view, apply(toPage, current.anchors[0])), p.screen) <= CLOSE_PX) {
@@ -75,7 +94,7 @@ function penGesture(store: EditorStore, p: Pointer): Gesture {
       const n = fromParent(d.nodes[node.id] ?? node, [{ anchors, closed: false }])
       return { doc: d.nodes[node.id] ? put(d, [n]) : insert(d, n, parentId), ids: [node.id] }
     }, penStep(node.id))
-    store.set({ pen: { id: node.id, anchors } })
+    store.set({ mode: { kind: 'pen', id: node.id, anchors } })
   }
   write(point)
   return {
@@ -93,7 +112,7 @@ const POINT_PX = 6
 type PointHit = { s: number; i: number; part: 'anchor' | 'in' | 'out' }
 /** The anchor or handle of the edited vector under a screen point. Handles first: they sit on top. */
 export function pointAt(store: EditorStore, screen: Pt): PointHit | null {
-  const { doc, view, vectorEdit } = store.get(), n = vectorEdit && doc.nodes[vectorEdit.id]
+  const { doc, view, mode } = store.get(), n = mode.kind === 'points' ? doc.nodes[mode.id] : undefined
   if (!n) return null
   const m = worldMatrix(doc, n.id), subs = anchorsOf(n), near = (q: Pt) => dist(toScreen(view, apply(m, q)), screen) <= POINT_PX
   for (const part of ['in', 'out', 'anchor'] as const)
@@ -106,10 +125,10 @@ export function pointAt(store: EditorStore, screen: Pt): PointHit | null {
 }
 
 /** Drags an anchor (with its handles) or one handle of the vector being edited. */
-function pointGesture(store: EditorStore, p: Pointer, hit: PointHit): Gesture {
-  const { doc } = store.get(), id = store.get().vectorEdit!.id, n = doc.nodes[id], tag = gestureStep()
+function pointGesture(store: EditorStore, p: Pointer, id: string, hit: PointHit): Gesture {
+  const { doc } = store.get(), n = doc.nodes[id], tag = gestureStep()
   const subs = anchorsOf(n), toLocal = invert(worldMatrix(doc, id)), from = apply(toLocal, p.world)
-  store.set({ vectorEdit: { id, sel: { s: hit.s, i: hit.i } } })
+  store.set({ mode: { kind: 'points', id, sel: { s: hit.s, i: hit.i } } })
   return {
     move(q) {
       const to = apply(toLocal, q.world), dx = to.x - from.x, dy = to.y - from.y
@@ -128,14 +147,14 @@ function pointGesture(store: EditorStore, p: Pointer, hit: PointHit): Gesture {
 
 /** Removes the selected anchor of the vector being edited; a subpath left with one point goes, and so does an empty vector. */
 export function deletePoint(store: EditorStore) {
-  const { vectorEdit } = store.get()
-  if (!vectorEdit?.sel) return
-  const { id, sel } = vectorEdit
+  const { mode } = store.get()
+  if (mode.kind !== 'points' || !mode.sel) return
+  const { id, sel } = mode
   store.update((d) => {
     const subs = anchorsOf(d.nodes[id]).map((sub, si) => si === sel.s ? { ...sub, anchors: sub.anchors.filter((_, i) => i !== sel.i) } : sub).filter((sub) => sub.anchors.length >= 2)
     return subs.length ? put(d, [withAnchors(d.nodes[id], subs)]) : remove(d, [id])
   })
-  if (store.get().vectorEdit) store.set({ vectorEdit: { id, sel: null } })
+  if (store.get().mode.kind === 'points') store.set({ mode: { kind: 'points', id, sel: null } })
 }
 
 function panGesture(store: EditorStore, p: Pointer): Gesture {
@@ -144,12 +163,13 @@ function panGesture(store: EditorStore, p: Pointer): Gesture {
 }
 
 function moveToolGesture(store: EditorStore, p: Pointer): Gesture | null {
-  if (store.get().vectorEdit) {
-    const hit = pointAt(store, p.screen), { doc, pageId, view, vectorEdit } = store.get()
-    if (hit) return pointGesture(store, p, hit)
+  const { mode } = store.get()
+  if (mode.kind === 'points') {
+    const hit = pointAt(store, p.screen), { doc, pageId, view } = store.get()
+    if (hit) return pointGesture(store, p, mode.id, hit)
     // a click on the vector's body deselects the point; anywhere else ends point editing
-    if (hitTest(doc, pageId, p.world, { deep: true, tolerance: 4 / view.zoom }) === vectorEdit!.id) return void store.set({ vectorEdit: { ...vectorEdit!, sel: null } }), null
-    store.set({ vectorEdit: null })
+    if (hitTest(doc, pageId, p.world, { deep: true, tolerance: 4 / view.zoom }) === mode.id) return void store.set({ mode: { ...mode, sel: null } }), null
+    store.set({ mode: NO_MODE })
   }
   const s = store.get(), { doc, pageId, view } = s
   if (s.selection.length === 1) {
@@ -323,7 +343,7 @@ function textGesture(store: EditorStore, p: Pointer): Gesture {
         ...(dragged && { width: Math.max(1, Math.abs(b.x - a.x)), textAutoWidth: false }),
       })
       store.update(() => ({ doc: insert(doc, node, parentId), ids: [node.id] }), textStep(node.id))
-      store.set({ tool: 'move', editingText: node.id })
+      store.set({ tool: 'move', mode: { kind: 'text', id: node.id } })
     },
   }
 }

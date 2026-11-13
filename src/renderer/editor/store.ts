@@ -13,6 +13,17 @@ import { autoLayout, fitGroups, put, type Edit } from './model/ops'
 import type { Anchor } from './model/path'
 
 export type Tool = 'move' | 'hand' | 'frame' | 'rectangle' | 'ellipse' | 'line' | 'pen' | 'text'
+/**
+ * What a node is being edited as, if anything: its characters (text), a path being drawn (pen; its points live here,
+ * in parent coordinates, because path data can't hold the last point's outgoing handle until the next segment
+ * exists), or a VECTOR's points (sel = subpath, anchor). A mode ends when its node goes away.
+ */
+export type Mode =
+  | { kind: 'none' }
+  | { kind: 'text'; id: string }
+  | { kind: 'pen'; id: string; anchors: Anchor[] }
+  | { kind: 'points'; id: string; sel: { s: number; i: number } | null }
+export const NO_MODE: Mode = { kind: 'none' }
 export interface EditorState {
   name: string
   doc: Document
@@ -21,11 +32,7 @@ export interface EditorState {
   tool: Tool
   view: View
   size: { w: number; h: number } // canvas viewport in CSS px
-  editingText: string | null
-  // the path the pen tool is drawing; its points live here (parent coordinates) because path data can't hold the
-  // last point's outgoing handle until the next segment exists
-  pen: { id: string; anchors: Anchor[] } | null
-  vectorEdit: { id: string; sel: { s: number; i: number } | null } | null // a VECTOR whose points are being edited; sel = subpath, anchor
+  mode: Mode
   overlay: { marquee?: Box; guides?: Guides }
   save: 'saved' | 'dirty' | 'saving' | 'error'
   saveError?: string
@@ -67,7 +74,7 @@ export function createEditorStore(opened: OpenedProject, api: RefigApi) {
   const id = opened.summary.id
   let state: EditorState = {
     name: opened.summary.name, doc: opened.document, pageId: opened.document.pages[0], selection: [], tool: 'move',
-    view: { x: 0, y: 0, zoom: 1 }, size: { w: 0, h: 0 }, editingText: null, pen: null, vectorEdit: null, overlay: {}, save: 'saved', uiHidden: false, tick: 0,
+    view: { x: 0, y: 0, zoom: 1 }, size: { w: 0, h: 0 }, mode: NO_MODE, overlay: {}, save: 'saved', uiHidden: false, tick: 0,
   }
   const listeners = new Set<() => void>()
   const past: Snapshot[] = [], future: Snapshot[] = []
@@ -92,14 +99,8 @@ export function createEditorStore(opened: OpenedProject, api: RefigApi) {
 
   function commit(doc: Document, p: Partial<EditorState> = {}) {
     const pageId = doc.nodes[p.pageId ?? state.pageId] ? (p.pageId ?? state.pageId) : doc.pages[0]
-    const editingText = p.editingText !== undefined ? p.editingText : state.editingText
-    const pen = p.pen !== undefined ? p.pen : state.pen, vectorEdit = p.vectorEdit !== undefined ? p.vectorEdit : state.vectorEdit
-    set({
-      ...p, doc, pageId, selection: (p.selection ?? state.selection).filter((i) => doc.nodes[i]),
-      // modes end when their node goes away (deleted, undone)
-      editingText: editingText && doc.nodes[editingText] ? editingText : null,
-      pen: pen && doc.nodes[pen.id] ? pen : null, vectorEdit: vectorEdit && doc.nodes[vectorEdit.id] ? vectorEdit : null,
-    })
+    const mode = p.mode ?? state.mode
+    set({ ...p, doc, pageId, selection: (p.selection ?? state.selection).filter((i) => doc.nodes[i]), mode: 'id' in mode && !doc.nodes[mode.id] ? NO_MODE : mode })
     dirty = true
     if (state.save !== 'saving') set({ save: 'dirty' })
     clearTimeout(timer)
@@ -128,7 +129,7 @@ export function createEditorStore(opened: OpenedProject, api: RefigApi) {
     if (!s) return
     to.push(snapshot())
     lastStep = undefined
-    commit(s.doc, { pageId: s.pageId, selection: s.selection, editingText: null })
+    commit(s.doc, { pageId: s.pageId, selection: s.selection, mode: NO_MODE }) // a mode's state may not match the restored document
   }
 
   /** Saves now if there are unsaved changes. Resolves false if the save failed (the document stays in memory and is retried). */

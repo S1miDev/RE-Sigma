@@ -1,9 +1,9 @@
 // Selection outlines, handles, marquee and snap guides. Drawn in screen pixels on top of the page.
 import type { Document } from '../../../shared/document'
-import { apply, corners, worldMatrix, type Box, type Pt } from '../model/geometry'
+import { apply, corners, worldMatrix, type Pt } from '../model/geometry'
 import { childrenOf } from '../model/ops'
-import { anchorsOf, type Anchor } from '../model/path'
-import type { Guides } from './snap'
+import { anchorsOf } from '../model/path'
+import type { EditorState } from '../store'
 import { toScreen, type View } from './viewport'
 
 const ACCENT = '#0d99ff'
@@ -23,14 +23,7 @@ export function handlesOf(doc: Document, id: string, view: View): Handle[] {
 }
 export const handleAt = (handles: Handle[], p: Pt, radius = 7) => handles.find((h) => Math.hypot(h.at.x - p.x, h.at.y - p.y) <= radius)
 
-export function drawOverlay(
-  ctx: CanvasRenderingContext2D,
-  s: {
-    doc: Document; pageId: string; selection: string[]; view: View; overlay: { marquee?: Box; guides?: Guides }; tool: string
-    pen: { id: string; anchors: Anchor[] } | null; vectorEdit: { id: string; sel: { s: number; i: number } | null } | null
-  },
-  dpr: number,
-) {
+export function drawOverlay(ctx: CanvasRenderingContext2D, s: Pick<EditorState, 'doc' | 'pageId' | 'selection' | 'view' | 'overlay' | 'tool' | 'mode'>, dpr: number) {
   const { doc, view } = s, W = ctx.canvas.width / dpr, H = ctx.canvas.height / dpr
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.lineWidth = 1
@@ -55,11 +48,12 @@ export function drawOverlay(
   }
   // points of the path being drawn or edited replace the resize handles
   // (the pen's points are in its parent's coordinates; an edited vector's in its own)
-  const pen = s.pen && doc.nodes[s.pen.id], edited = s.vectorEdit && doc.nodes[s.vectorEdit.id]
-  const points = pen ? { subs: [{ anchors: s.pen!.anchors, closed: false }], m: worldMatrix(doc, pen.parentId) }
-    : edited ? { subs: anchorsOf(edited), m: worldMatrix(doc, edited.id) } : null
+  const { mode } = s, n = 'id' in mode ? doc.nodes[mode.id] : undefined
+  const points = !n ? null
+    : mode.kind === 'pen' ? { subs: [{ anchors: mode.anchors, closed: false }], m: worldMatrix(doc, n.parentId) }
+    : mode.kind === 'points' ? { subs: anchorsOf(n), m: worldMatrix(doc, n.id) } : null
   if (points) {
-    const at = (q: Pt) => toScreen(view, apply(points.m, q)), sel = s.vectorEdit?.sel
+    const at = (q: Pt) => toScreen(view, apply(points.m, q)), sel = mode.kind === 'points' ? mode.sel : null
     points.subs.forEach((sub, si) => sub.anchors.forEach((a, i) => {
       const p = at(a)
       for (const h of [a.in, a.out]) if (h) {
