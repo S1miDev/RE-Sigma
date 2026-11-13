@@ -169,7 +169,7 @@ test('imports a Figma file and reports omitted layers', () => {
   const r = store.importFile(fixture)
   expect(r).toMatchObject({ status: 'imported', summary: { name: 'Untitled' } })
   if (r.status !== 'imported') return
-  expect(r.omitted?.VECTOR).toBeGreaterThan(0)
+  expect(r.omitted?.['INSTANCE override']).toBeGreaterThan(0)
   expect(store.open(r.summary.id).document.pages).toHaveLength(4)
   expect(store.importFile(fixture).status).toBe('conflict') // same name
 })

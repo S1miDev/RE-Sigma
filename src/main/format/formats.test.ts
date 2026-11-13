@@ -101,7 +101,7 @@ test('imports the Figma fixture, mapping supported layers and counting the rest'
   // children keep Figma's stacking order
   const probe = doc.pages[1]
   const top = nodes.filter((n) => n.parentId === probe).sort((a, b) => (a.order < b.order ? -1 : 1))
-  expect(top.slice(0, 3).map((n) => n.name)).toEqual(['Rectangle', 'Ellipse', 'Line'])
+  expect(top.slice(0, 3).map((n) => n.name)).toEqual(['Rectangle', 'Ellipse', 'Polygon'])
   // a raw canvas.fig (no zip wrapper) also imports
   expect(importFig(fixture('canvas.fig')).document.pages).toHaveLength(4)
   expect(() => importFig(strToU8('junk'))).toThrow()
