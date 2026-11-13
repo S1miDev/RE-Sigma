@@ -5,7 +5,7 @@ import { apply, worldMatrix, worldRotation } from '../model/geometry'
 import { patch, remove } from '../model/ops'
 import { isTyping } from '../../util'
 import { useEditor, useStore } from '../store'
-import { beginGesture, textTag, type Gesture, type Pointer } from '../tools'
+import { beginGesture, textStep, type Gesture, type Pointer } from '../tools'
 import { hitTest } from './hit'
 import { drawOverlay } from './overlay'
 import { css } from './color'
@@ -130,7 +130,7 @@ function TextEditor({ id }: { id: string }) {
     const now = store.get().doc.nodes[id]
     store.set({ editingText: null })
     if (!now) return
-    const tag = now.characters === '' ? textTag(id) : undefined // the first commit joins the undo step that created the node
+    const tag = now.characters === '' ? textStep(id) : undefined // the first commit joins the undo step that created the node
     if (!value) store.update((d) => remove(d, [id]), tag)
     else if (value !== now.characters) {
       // The layer is named after its text until the user renames it.

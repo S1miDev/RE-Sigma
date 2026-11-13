@@ -33,6 +33,14 @@ export interface EditorState {
   tick: number // bumped when an image finishes decoding
 }
 type Snapshot = Pick<EditorState, 'doc' | 'pageId' | 'selection'>
+/**
+ * The undo step an edit belongs to. Consecutive edits with the same key share one step: always for a gesture
+ * (it rebuilds from where it started each frame), within a second otherwise (typing a value, nudging).
+ */
+export type Step = { key: string; gesture?: boolean }
+let gestures = 0
+/** A fresh step for one pointer gesture, or a named one (`of`) that a later edit can join. */
+export const gestureStep = (of?: string): Step => ({ key: `gesture:${of ?? ++gestures}`, gesture: true })
 
 export const AUTOSAVE_MS = 1000
 const RETRY_MS = 5000
@@ -63,7 +71,7 @@ export function createEditorStore(opened: OpenedProject, api: RefigApi) {
   }
   const listeners = new Set<() => void>()
   const past: Snapshot[] = [], future: Snapshot[] = []
-  let lastTag: string | undefined, lastAt = 0
+  let lastStep: Step | undefined, lastAt = 0
   let dirty = false, disposed = false, timer: ReturnType<typeof setTimeout> | undefined, inflight: Promise<boolean> | null = null
   const bytes = new Map<string, Uint8Array>(), bitmaps = new Map<string, ImageBitmap>()
 
@@ -98,12 +106,9 @@ export function createEditorStore(opened: OpenedProject, api: RefigApi) {
     timer = setTimeout(() => void save(), AUTOSAVE_MS)
   }
 
-  /**
-   * Applies an edit and records an undo step. Consecutive edits with the same `tag` share one step
-   * (always for 'gesture…' tags, within a second otherwise). An edit that returns ids selects them (when there are any).
-   */
-  function update(fn: (doc: Document) => Document | Edit, tag?: string) {
-    const now = Date.now(), joins = tag !== undefined && tag === lastTag && (tag.startsWith('gesture') || now - lastAt < 1000)
+  /** Applies an edit and records an undo step (see Step). An edit that returns ids selects them (when there are any). */
+  function update(fn: (doc: Document) => Document | Edit, step?: Step) {
+    const now = Date.now(), joins = !!step && step.key === lastStep?.key && (!!step.gesture || now - lastAt < 1000)
     const out = fn(state.doc), [next, ids] = 'doc' in out ? [out.doc, out.ids] : [out, []]
     const select = ids.length ? ids : undefined
     // A gesture recomputes each frame from the document it started on, so the step's start is the true "before".
@@ -114,7 +119,7 @@ export function createEditorStore(opened: OpenedProject, api: RefigApi) {
       if (past.length > HISTORY) past.shift()
     }
     future.length = 0
-    lastTag = tag
+    lastStep = step
     lastAt = now
     commit(doc, select ? { selection: select } : {})
   }
@@ -122,7 +127,7 @@ export function createEditorStore(opened: OpenedProject, api: RefigApi) {
     const s = from.pop()
     if (!s) return
     to.push(snapshot())
-    lastTag = undefined
+    lastStep = undefined
     commit(s.doc, { pageId: s.pageId, selection: s.selection, editingText: null })
   }
 

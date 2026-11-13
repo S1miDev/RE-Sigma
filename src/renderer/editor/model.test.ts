@@ -11,7 +11,7 @@ import { apply, corners, invert, lineBetween, localMatrix, mul, resizeBox, world
 import { addAutoLayout, addPage, align, autoLayout, childrenOf, distribute, duplicate, group, insert, moveTo, movePage, patch, put, remove, removePage, reorder, resizeNode, topLevel, translate, ungroup } from './model/ops'
 import { setVariant, syncInstances, variantProps, variantsOf } from './model/components'
 import { anchorsOf, parsePath, pathData, withAnchors } from './model/path'
-import { AUTOSAVE_MS, createEditorStore } from './store'
+import { AUTOSAVE_MS, createEditorStore, gestureStep } from './store'
 import { beginGesture, type Pointer } from './tools'
 
 const near = (a: number, b: number) => expect(a).toBeCloseTo(b, 6)
@@ -243,8 +243,9 @@ afterEach(() => void vi.useRealTimers())
 test('store: undo/redo restore document and selection; tagged edits share one step', () => {
   const { store, a, doc } = open()
   store.update((d) => ({ doc: patch(d, [a], { x: 1 }), ids: [a] }))
-  store.update((d) => patch(d, [a], { x: 2 }), 'gesture1')
-  store.update((d) => patch(d, [a], { x: 3 }), 'gesture1')
+  const g = gestureStep()
+  store.update((d) => patch(d, [a], { x: 2 }), g)
+  store.update((d) => patch(d, [a], { x: 3 }), g)
   expect(store.get().doc.nodes[a].x).toBe(3)
   store.undo()
   expect(store.get().doc.nodes[a].x).toBe(1)

@@ -190,7 +190,7 @@ export function handleKey(e: KeyboardEvent, store: EditorStore, actions: Actions
   const arrow = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[key.replace('Shift+', '')]
   if (arrow && s.selection.length) {
     const step = e.shiftKey ? 10 : 1, ids = topLevel(s.doc, s.selection).filter((id) => !s.doc.nodes[id].locked)
-    store.update((d) => translate(d, ids, { x: arrow[0] * step, y: arrow[1] * step }), 'nudge')
+    store.update((d) => translate(d, ids, { x: arrow[0] * step, y: arrow[1] * step }), { key: 'nudge' })
     return true
   }
   const cmd = COMMANDS.find((c) => c.keys?.includes(key))

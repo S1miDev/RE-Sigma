@@ -7,14 +7,13 @@ import { toScreen } from '../canvas/viewport'
 import { apply, bounds, deg, invert, lineBetween, localMatrix, resizeBox, worldBox, worldMatrix, worldRotation, type Pt } from '../model/geometry'
 import { insert, layoutSlot, moveTo, nextName, patch, put, remove, resizeNode, topLevel, translate } from '../model/ops'
 import { anchorsOf, withAnchors, type Anchor, type Sub } from '../model/path'
-import type { EditorStore, Tool } from '../store'
+import { gestureStep, type EditorStore, type Tool } from '../store'
 
 export interface Pointer { screen: Pt; world: Pt; shift: boolean; alt: boolean; ctrl: boolean }
 export interface Gesture { move(p: Pointer): void; up(p: Pointer): void }
 
 const SNAP_PX = 5
 const DRAG_PX = 3
-let seq = 0
 const dist = (a: Pt, b: Pt) => Math.hypot(a.x - b.x, a.y - b.y)
 /** Rounds the direction from → to to a multiple of 45°, keeping the length. */
 function snapAngle(from: Pt, to: Pt): Pt {
@@ -39,7 +38,7 @@ export function setTool(store: EditorStore, tool: Tool) {
 
 // ── pen ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 const CLOSE_PX = 8
-const penTag = (id: string) => `gesture-pen-${id}` // the whole path is one undo step
+const penStep = (id: string) => gestureStep(`pen-${id}`) // the whole path is one undo step
 
 /** Writes points given in the parent's coordinates to the node (the pen node is never rotated while drawing). */
 const fromParent = (n: Node, subs: Sub[]): Node => withAnchors({ ...n, x: 0, y: 0, width: 0, height: 0, rotation: 0 }, subs)
@@ -48,7 +47,7 @@ const fromParent = (n: Node, subs: Sub[]): Node => withAnchors({ ...n, x: 0, y: 
 export function finishPen(store: EditorStore) {
   const { pen, doc } = store.get(), n = pen && doc.nodes[pen.id]
   if (!pen) return
-  if (n && pen.anchors.length < 2) store.update((d) => remove(d, [n.id]), penTag(n.id))
+  if (n && pen.anchors.length < 2) store.update((d) => remove(d, [n.id]), penStep(n.id))
   store.set({ pen: null, tool: 'move', selection: n && store.get().doc.nodes[n.id] ? [n.id] : [] })
 }
 
@@ -62,7 +61,7 @@ function penGesture(store: EditorStore, p: Pointer): Gesture {
   const parentId = existing ? existing.parentId! : frameAt(doc, s.pageId, p.world)
   const toPage = worldMatrix(doc, parentId), toParent = invert(toPage)
   if (current && current.anchors.length >= 2 && dist(toScreen(view, apply(toPage, current.anchors[0])), p.screen) <= CLOSE_PX) {
-    store.update((d) => put(d, [fromParent(d.nodes[current.id], [{ anchors: current.anchors, closed: true }])]), penTag(current.id))
+    store.update((d) => put(d, [fromParent(d.nodes[current.id], [{ anchors: current.anchors, closed: true }])]), penStep(current.id))
     finishPen(store)
     return { move() {}, up() {} }
   }
@@ -75,7 +74,7 @@ function penGesture(store: EditorStore, p: Pointer): Gesture {
     store.update((d) => {
       const n = fromParent(d.nodes[node.id] ?? node, [{ anchors, closed: false }])
       return { doc: d.nodes[node.id] ? put(d, [n]) : insert(d, n, parentId), ids: [node.id] }
-    }, penTag(node.id))
+    }, penStep(node.id))
     store.set({ pen: { id: node.id, anchors } })
   }
   write(point)
@@ -108,7 +107,7 @@ export function pointAt(store: EditorStore, screen: Pt): PointHit | null {
 
 /** Drags an anchor (with its handles) or one handle of the vector being edited. */
 function pointGesture(store: EditorStore, p: Pointer, hit: PointHit): Gesture {
-  const { doc } = store.get(), id = store.get().vectorEdit!.id, n = doc.nodes[id], tag = `gesture${++seq}`
+  const { doc } = store.get(), id = store.get().vectorEdit!.id, n = doc.nodes[id], tag = gestureStep()
   const subs = anchorsOf(n), toLocal = invert(worldMatrix(doc, id)), from = apply(toLocal, p.world)
   store.set({ vectorEdit: { id, sel: { s: hit.s, i: hit.i } } })
   return {
@@ -169,7 +168,7 @@ function moveToolGesture(store: EditorStore, p: Pointer): Gesture | null {
 }
 
 function dragGesture(store: EditorStore, p: Pointer, selection: string[], hit: string, collapseOnClick: boolean): Gesture | null {
-  const { doc, pageId, view } = store.get(), tag = `gesture${++seq}`
+  const { doc, pageId, view } = store.get(), tag = gestureStep()
   const ids = topLevel(doc, selection).filter((id) => !doc.nodes[id].locked)
   const box = worldBox(doc, ids)
   if (!box) return null
@@ -225,7 +224,7 @@ function marqueeGesture(store: EditorStore, p: Pointer): Gesture {
 }
 
 function handleGesture(store: EditorStore, p: Pointer, id: string, h: Handle): Gesture {
-  const { doc, view } = store.get(), n = doc.nodes[id], tag = `gesture${++seq}`
+  const { doc, view } = store.get(), n = doc.nodes[id], tag = gestureStep()
   const toParent = invert(worldMatrix(doc, n.parentId))
 
   if (h.kind === 'rotate') {
@@ -276,7 +275,7 @@ const SHAPES: Record<Exclude<Tool, 'move' | 'hand' | 'text' | 'pen'>, { type: No
 
 /** Drag to draw; a plain click drops a 100×100 shape. The new node lands in the frame under the pointer. */
 function shapeGesture(store: EditorStore, p: Pointer, tool: keyof typeof SHAPES): Gesture {
-  const { doc, pageId, view } = store.get(), tag = `gesture${++seq}`, shape = SHAPES[tool]
+  const { doc, pageId, view } = store.get(), tag = gestureStep(), shape = SHAPES[tool]
   const parentId = frameAt(doc, pageId, p.world), toParent = invert(worldMatrix(doc, parentId))
   const targets = worldRotation(doc, parentId) === 0 ? snapTargets(doc, parentId, []) : []
   const snapped = (q: Pointer) => {
@@ -308,7 +307,8 @@ function shapeGesture(store: EditorStore, p: Pointer, tool: keyof typeof SHAPES)
   }
 }
 
-export const textTag = (id: string) => `gesture-text-${id}`
+/** The step that creates a text node; its first commit joins it. */
+export const textStep = (id: string) => gestureStep(`text-${id}`)
 
 /** Click for auto-width text, drag for a fixed-width box. Editing starts immediately. */
 function textGesture(store: EditorStore, p: Pointer): Gesture {
@@ -322,7 +322,7 @@ function textGesture(store: EditorStore, p: Pointer): Gesture {
         name: 'Text', fills: [solid(0, 0, 0)], x: dragged ? Math.min(a.x, b.x) : a.x, y: dragged ? Math.min(a.y, b.y) : a.y,
         ...(dragged && { width: Math.max(1, Math.abs(b.x - a.x)), textAutoWidth: false }),
       })
-      store.update(() => ({ doc: insert(doc, node, parentId), ids: [node.id] }), textTag(node.id))
+      store.update(() => ({ doc: insert(doc, node, parentId), ids: [node.id] }), textStep(node.id))
       store.set({ tool: 'move', editingText: node.id })
     },
   }

@@ -9,11 +9,13 @@ import { COMMANDS } from '../commands'
 import { setOf, setVariant, variantProps, variantsOf } from '../model/components'
 import { exportSelection } from '../export'
 import { addAutoLayout, patch, resizeNode } from '../model/ops'
-import { useEditor, useStore } from '../store'
+import { useEditor, useStore, type Step } from '../store'
 
 const FONTS = ['Inter', 'Arial', 'Georgia', 'Times New Roman', 'Courier New', 'Verdana', 'Segoe UI', 'Tahoma', 'Trebuchet MS']
 const WEIGHTS: [number, string][] = [[100, 'Thin'], [200, 'Extra Light'], [300, 'Light'], [400, 'Regular'], [500, 'Medium'], [600, 'Semi Bold'], [700, 'Bold'], [800, 'Extra Bold'], [900, 'Black']]
 const Row = ({ children }: { children: React.ReactNode }) => <div className="flex items-center gap-1.5">{children}</div>
+/** Panel edits of the same field on the same layers within a second share one undo step. */
+const panelStep = (field: string, ids: string[]): Step => ({ key: `panel:${field}:${ids.join()}` })
 
 export function DesignPanel({ report }: { report(e: unknown): void }) {
   const store = useStore()
@@ -21,7 +23,7 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
   const nodes = selection.map((id) => doc.nodes[id]).filter(Boolean)
   const ids = nodes.map((n) => n.id)
   /** Applies a change to every selected node. Edits to the same field within a second share one undo step. */
-  const edit = (change: Partial<Node>, tag: string) => store.update((d) => patch(d, ids, change), `panel:${tag}:${ids.join()}`)
+  const edit = (change: Partial<Node>, tag: string) => store.update((d) => patch(d, ids, change), panelStep(tag, ids))
 
   if (!nodes.length) {
     const page = doc.nodes[pageId], bg = page.fills[0]
@@ -30,7 +32,7 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
         <PanelSection title="Page">
           {bg?.type === 'SOLID' && (
             <Row>
-              <ColorField label="Page background" color={bg.color} onChange={(color) => store.update((d) => patch(d, [pageId], { fills: [{ ...bg, color: { ...color, a: 1 }, visible: true }] }), 'panel:page-bg')} />
+              <ColorField label="Page background" color={bg.color} onChange={(color) => store.update((d) => patch(d, [pageId], { fills: [{ ...bg, color: { ...color, a: 1 }, visible: true }] }), panelStep('page-bg', [pageId]))} />
             </Row>
           )}
           <p className="text-dim">Select a layer to edit its properties.</p>
@@ -44,7 +46,7 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
   const all = (...types: Node['type'][]) => nodes.every((n) => types.includes(n.type))
   const none = (...types: Node['type'][]) => nodes.every((n) => !types.includes(n.type))
   const resize = (size: { width?: number; height?: number }) =>
-    store.update((d) => ids.reduce((acc, id) => resizeNode(acc, id, { x: acc.nodes[id].x, y: acc.nodes[id].y, width: acc.nodes[id].width, height: acc.nodes[id].height, ...size }), d), `panel:size:${ids.join()}`)
+    store.update((d) => ids.reduce((acc, id) => resizeNode(acc, id, { x: acc.nodes[id].x, y: acc.nodes[id].y, width: acc.nodes[id].width, height: acc.nodes[id].height, ...size }), d), panelStep('size', ids))
 
   return (
     <div className="min-h-0 flex-1 overflow-auto">
@@ -87,7 +89,7 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
               const names = axis === 'h' ? { MIN: 'Left', MAX: 'Right', STRETCH: 'Left & right', CENTER: 'Center', SCALE: 'Scale' } : { MIN: 'Top', MAX: 'Bottom', STRETCH: 'Top & bottom', CENTER: 'Center', SCALE: 'Scale' }
               return (
                 <Select key={axis} aria-label={axis === 'h' ? 'Horizontal constraint' : 'Vertical constraint'} className="flex-1" value={value}
-                  onChange={(e) => store.update((d) => patch(d, ids, (n) => ({ constraints: { h: 'MIN', v: 'MIN', ...n.constraints, [axis]: e.target.value as Constraint } })), `panel:constraint-${axis}:${ids.join()}`)}>
+                  onChange={(e) => store.update((d) => patch(d, ids, (n) => ({ constraints: { h: 'MIN', v: 'MIN', ...n.constraints, [axis]: e.target.value as Constraint } })), panelStep(`constraint-${axis}`, ids))}>
                   {!value && <option value="" disabled>Mixed</option>}
                   {CONSTRAINTS.map((c) => <option key={c} value={c}>{names[c]}</option>)}
                 </Select>
@@ -259,7 +261,7 @@ function Paints({ title, field, nodes, report, children }: { title: string; fiel
   const store = useStore(), file = useRef<HTMLInputElement>(null)
   const ids = nodes.map((n) => n.id), paints = nodes[0][field]
   const set = (next: Paint[], tag?: string) =>
-    store.update((d) => patch(d, ids, (n) => ({ [field]: next, ...(field === 'strokes' && next.length && !n.strokeWeight && { strokeWeight: 1 }) })), tag && `panel:${field}:${tag}:${ids.join()}`)
+    store.update((d) => patch(d, ids, (n) => ({ [field]: next, ...(field === 'strokes' && next.length && !n.strokeWeight && { strokeWeight: 1 }) })), tag ? panelStep(`${field}:${tag}`, ids) : undefined)
   const at = (i: number, p: Paint) => paints.map((old, j) => (j === i ? p : old))
   const addImage = async (f: File | undefined) => {
     if (!f) return
@@ -329,7 +331,7 @@ function Paints({ title, field, nodes, report, children }: { title: string; fiel
 function Shadows({ nodes }: { nodes: Node[] }) {
   const store = useStore()
   const ids = nodes.map((n) => n.id), effects = nodes[0].effects
-  const set = (next: DropShadow[], tag?: string) => store.update((d) => patch(d, ids, { effects: next }), tag && `panel:shadow:${tag}:${ids.join()}`)
+  const set = (next: DropShadow[], tag?: string) => store.update((d) => patch(d, ids, { effects: next }), tag ? panelStep(`shadow:${tag}`, ids) : undefined)
   const at = (i: number, change: Partial<DropShadow>, tag: string) => set(effects.map((s, j) => (j === i ? { ...s, ...change } : s)), `${tag}${i}`)
   return (
     <PanelSection title="Drop shadow" action={<IconButton label="Add drop shadow" icon="plus" onClick={() => set([...effects, { visible: true, x: 0, y: 4, blur: 4, spread: 0, color: { r: 0, g: 0, b: 0, a: 0.25 } }])} />}>
