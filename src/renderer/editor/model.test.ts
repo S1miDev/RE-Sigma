@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { RefigApi } from '../../shared/api'
-import { emptyDocument, makeNode, solid, type Document, type Node, type NodeType } from '../../shared/document'
+import { emptyDocument, makeNode, solid, type AutoLayout, type Document, type Node, type NodeType } from '../../shared/document'
 import { frameAt, hitTest, marqueeHits } from './canvas/hit'
 import { handleAt, handlesOf } from './canvas/overlay'
 import { snap, snapTargets } from './canvas/snap'
@@ -8,7 +8,7 @@ import { fitView, toScreen, toWorld, zoomAt } from './canvas/viewport'
 import { COMMANDS, keyOf } from './commands'
 import { toSvg } from './export/svg'
 import { apply, corners, invert, lineBetween, localMatrix, mul, resizeBox, worldBox } from './model/geometry'
-import { addPage, align, childrenOf, distribute, duplicate, group, insert, moveTo, movePage, patch, remove, removePage, reorder, resizeNode, topLevel, translate, ungroup } from './model/ops'
+import { addAutoLayout, addPage, align, autoLayout, childrenOf, distribute, duplicate, group, insert, moveTo, movePage, patch, remove, removePage, reorder, resizeNode, topLevel, translate, ungroup } from './model/ops'
 import { AUTOSAVE_MS, createEditorStore } from './store'
 import { beginGesture, type Pointer } from './tools'
 
@@ -397,4 +397,76 @@ test('distribute: middle node moves so the gaps are equal', () => {
   const ids = [0, 30, 300].map((x) => { const n = makeNode('RECTANGLE', { x, y: 0, width: 100, height: 10 }); d = insert(d, n, page); return n.id })
   const out = distribute(d, ids, 'x')
   near(out.nodes[ids[1]].x, 150) // span 0..400, 300 of box width, 100 free / 2 gaps = 50
+})
+
+// ── auto layout ──────────────────────────────────────────────────────────────────────────────────────────────────────
+function row(layout: Partial<AutoLayout> = {}, sizes: [number, number][] = [[40, 20], [60, 30], [20, 10]]) {
+  let doc: Document = emptyDocument()
+  const page = doc.pages[0]
+  const f = makeNode('FRAME', { x: 0, y: 0, width: 300, height: 100, layout: { mode: 'HORIZONTAL', gap: 10, padding: [5, 6, 7, 8], align: 'MIN', hugW: true, hugH: true, ...layout } })
+  doc = insert(doc, f, page)
+  const kids = sizes.map(([width, height]) => { const n = makeNode('RECTANGLE', { x: 500, y: 500, width, height }); doc = insert(doc, n, f.id); return n.id })
+  return { doc, page, f: f.id, kids }
+}
+const boxOf = (doc: Document, id: string) => { const n = doc.nodes[id]; return [n.x, n.y, n.width, n.height] }
+
+test('auto layout: places children with gap and padding, hugs content, aligns on the cross axis', () => {
+  const { doc, f, kids } = row()
+  const out = autoLayout(doc)
+  expect(kids.map((k) => boxOf(out, k))).toEqual([[8, 5, 40, 20], [58, 5, 60, 30], [128, 5, 20, 10]])
+  expect(boxOf(out, f).slice(2)).toEqual([8 + 40 + 10 + 60 + 10 + 20 + 6, 5 + 30 + 7])
+  const c = autoLayout(row({ align: 'CENTER' }).doc), m = row({ align: 'MAX' })
+  expect(Object.values(c.nodes).filter((n) => n.type === 'RECTANGLE').map((n) => n.y)).toEqual([10, 5, 15])
+  expect(autoLayout(m.doc).nodes[m.kids[2]].y).toBe(25)
+  const v = row({ mode: 'VERTICAL' }), vo = autoLayout(v.doc)
+  expect(v.kids.map((k) => vo.nodes[k].y)).toEqual([5, 35, 75])
+  expect(boxOf(vo, v.f).slice(2)).toEqual([8 + 60 + 6, 5 + 20 + 10 + 30 + 10 + 10 + 7])
+  expect(autoLayout(out)).toBe(out) // settled layout changes nothing
+})
+
+test('auto layout: fill shares leftover space, hidden children are skipped, hug overrides fill', () => {
+  const r = row({ hugW: false, hugH: false })
+  let d = patch(r.doc, [r.kids[0]], { fillW: true, fillH: true })
+  d = patch(d, [r.kids[2]], { visible: false })
+  const out = autoLayout(d)
+  expect(boxOf(out, r.kids[0])).toEqual([8, 5, 300 - 8 - 6 - 10 - 60, 100 - 5 - 7])
+  expect(out.nodes[r.kids[1]].x).toBe(8 + 216 + 10)
+  expect(boxOf(out, r.kids[2])).toEqual([500, 500, 20, 10])
+  const hug = row()
+  expect(autoLayout(patch(hug.doc, [hug.kids[0]], { fillW: true })).nodes[hug.kids[0]].width).toBe(40)
+})
+
+test('auto layout: a manual resize turns hug and fill off on that axis only', () => {
+  const r = row()
+  let d = resizeNode(autoLayout(r.doc), r.f, { x: 0, y: 0, width: 400, height: 42 })
+  expect(d.nodes[r.f].layout).toMatchObject({ hugW: false, hugH: true })
+  d = resizeNode(patch(d, [r.kids[0]], { fillW: true, fillH: true }), r.kids[0], { x: 8, y: 5, width: 40, height: 99 })
+  expect(d.nodes[r.kids[0]]).toMatchObject({ fillW: true, fillH: false })
+})
+
+test('auto layout: adding it sorts children by position and reads gap and padding off the arrangement', () => {
+  const { doc, frame, inner } = scene()
+  let d = doc
+  const n = makeNode('RECTANGLE', { x: 130, y: 10, width: 50, height: 50 }); d = insert(d, n, frame)
+  const m = makeNode('RECTANGLE', { x: 70, y: 10, width: 50, height: 50 }); d = insert(d, m, frame)
+  d = addAutoLayout(d, frame)
+  expect(d.nodes[frame].layout).toEqual({ mode: 'HORIZONTAL', gap: 10, padding: [10, 20, 140, 10], align: 'MIN', hugW: true, hugH: true })
+  expect(childrenOf(d, frame).map((k) => k.id)).toEqual([inner, m.id, n.id])
+})
+
+test('auto layout: Shift+A wraps the selection; dragging a child reorders it; dropping in slots it', () => {
+  const { store, a, b } = open()
+  store.set({ selection: [a, b] })
+  COMMANDS.find((c) => c.id === 'add-auto-layout')!.run(store, { back() {}, openExport() {} })
+  const s = store.get(), f = s.selection[0]
+  expect(s.doc.nodes[f].layout?.mode).toBe('HORIZONTAL')
+  expect(childrenOf(s.doc, f).map((k) => k.id)).toEqual([a, b])
+  const fb = worldBox(s.doc, [f])!
+  expect(fb).toEqual({ x: 400, y: 0, w: 200, h: 100 }) // gap read as 0 from the overlap
+  store.set({ selection: [] })
+  drag(store, at(410, 50, { ctrl: true }), at(450, 50), at(590, 50)) // a past b's centre
+  expect(childrenOf(store.get().doc, f).map((k) => k.id)).toEqual([b, a])
+  expect(store.get().doc.nodes[b].x).toBe(0)
+  store.undo()
+  expect(childrenOf(store.get().doc, f).map((k) => k.id)).toEqual([a, b])
 })

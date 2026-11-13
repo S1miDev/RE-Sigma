@@ -122,6 +122,26 @@ test('exports the selection as PNG, SVG and PDF', async () => {
   }
 })
 
+test('Shift+A puts two rectangles in an auto-layout frame whose gap is editable', async () => {
+  const page = await launch()
+  await page.getByRole('button', { name: 'New project' }).first().click()
+  await drawRectangle(page)
+  const box = (await page.getByLabel('Canvas').boundingBox())!
+  await page.keyboard.press('r')
+  await page.mouse.move(box.x + 500, box.y + 150)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 600, box.y + 250, { steps: 5 })
+  await page.mouse.up()
+  await page.keyboard.press('Control+a')
+  await page.keyboard.press('Shift+A')
+  await expect(page.getByRole('region', { name: 'Auto layout' })).toBeVisible()
+  await expect(page.getByLabel('Width', { exact: true })).toHaveValue('400') // 220 + 80 gap + 100
+  await page.getByLabel('Gap').fill('24')
+  await page.getByLabel('Gap').press('Enter')
+  await expect(page.getByLabel('Width', { exact: true })).toHaveValue('344')
+  await page.screenshot({ path: 'test-results/auto-layout.png' })
+})
+
 test('the page has no Node access and only the contract API', async () => {
   const page = await launch()
   const seen = await page.evaluate(() => ({

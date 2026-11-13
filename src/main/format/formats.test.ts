@@ -71,6 +71,16 @@ test('validateDocument rejects bad shapes, dangling parents and cycles', () => {
   expect(validateDocument({ ...doc, extra: 1 })).not.toHaveProperty('extra')
 })
 
+test('validateDocument keeps auto layout and fill flags, and rejects bad ones', () => {
+  const { doc, frame, text } = sampleDoc()
+  const d = structuredClone(doc)
+  d.nodes[frame.id].layout = { mode: 'VERTICAL', gap: 8, padding: [1, 2, 3, 4], align: 'CENTER', hugW: false, hugH: true }
+  d.nodes[text.id].fillW = true
+  expect(validateDocument(JSON.parse(JSON.stringify(d)))).toEqual(d)
+  expect(() => validateDocument({ ...d, nodes: { ...d.nodes, [frame.id]: { ...d.nodes[frame.id], layout: { ...d.nodes[frame.id].layout, padding: [1, 2] } } } })).toThrow(/padding/)
+  expect(() => validateDocument({ ...d, nodes: { ...d.nodes, [frame.id]: { ...d.nodes[frame.id], layout: { ...d.nodes[frame.id].layout, gap: -1 } } } })).toThrow(/gap/)
+})
+
 test('readRefig rejects unexpected entries, path traversal and non-zips', () => {
   const ok = { 'meta.json': strToU8(JSON.stringify(meta)), 'document.json': strToU8(JSON.stringify(emptyDocument())) }
   expect(readRefig(zipSync(ok)).meta.name).toBe('A')

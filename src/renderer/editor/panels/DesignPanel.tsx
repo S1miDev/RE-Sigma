@@ -1,9 +1,9 @@
 import { useRef, useState } from 'react'
 import type { ExportKind } from '../../../shared/api'
-import { solid, STROKE_ALIGNS, TEXT_ALIGNS, type DropShadow, type Node, type Paint } from '../../../shared/document'
+import { LAYOUT_ALIGNS, solid, STROKE_ALIGNS, TEXT_ALIGNS, type AutoLayout, type DropShadow, type Node, type Paint } from '../../../shared/document'
 import { Button, ColorField, IconButton, NumberField, PanelSection, Select, type IconName } from '../../ui'
 import { exportSelection } from '../export'
-import { patch, resizeNode } from '../model/ops'
+import { addAutoLayout, patch, resizeNode } from '../model/ops'
 import { useEditor, useStore } from '../store'
 
 const FONTS = ['Inter', 'Arial', 'Georgia', 'Times New Roman', 'Courier New', 'Verdana', 'Segoe UI', 'Tahoma', 'Trebuchet MS']
@@ -67,7 +67,15 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
             Clip content
           </label>
         )}
+        {nodes.every((n) => doc.nodes[n.parentId ?? '']?.layout) && (
+          <Row>
+            <Check label="Fill width" checked={common('fillW') === true} onChange={(fillW) => edit({ fillW }, 'fill-w')} />
+            <Check label="Fill height" checked={common('fillH') === true} onChange={(fillH) => edit({ fillH }, 'fill-h')} />
+          </Row>
+        )}
       </PanelSection>
+
+      {nodes.length === 1 && first.type === 'FRAME' && <AutoLayoutSection node={first} edit={edit} />}
 
       {all('TEXT') && <TextSection nodes={nodes} edit={edit} common={common} />}
       {none('GROUP', 'LINE') && <Paints title="Fill" field="fills" nodes={nodes} report={report} />}
@@ -89,6 +97,51 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
         <ExportControls onDone={() => {}} onError={report} />
       </PanelSection>
     </div>
+  )
+}
+
+const Check = ({ label, checked, onChange }: { label: string; checked: boolean; onChange(v: boolean): void }) => (
+  <label className="flex flex-1 items-center gap-2">
+    <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+    {label}
+  </label>
+)
+
+function AutoLayoutSection({ node, edit }: { node: Node; edit(change: Partial<Node>, tag: string): void }) {
+  const store = useStore(), L = node.layout
+  const set = (change: Partial<AutoLayout>, tag: string) => L && edit({ layout: { ...L, ...change } }, `layout-${tag}`)
+  const pad = (i: number, v: number) => set({ padding: L!.padding.map((p, j) => (j === i ? v : p)) as AutoLayout['padding'] }, `pad${i}`)
+  return (
+    <PanelSection title="Auto layout" action={
+      L ? <IconButton label="Remove auto layout" icon="minus" onClick={() => edit({ layout: undefined }, 'layout')} />
+        : <IconButton label="Add auto layout" icon="plus" onClick={() => store.update((d) => addAutoLayout(d, node.id))} />
+    }>
+      {L && (
+        <>
+          <Row>
+            <Select aria-label="Direction" className="flex-1" value={L.mode} onChange={(e) => set({ mode: e.target.value as AutoLayout['mode'] }, 'mode')}>
+              <option value="HORIZONTAL">Horizontal</option>
+              <option value="VERTICAL">Vertical</option>
+            </Select>
+            <NumberField label="Gap" prefix="↔" className="flex-1" min={0} value={L.gap} onChange={(gap) => set({ gap }, 'gap')} />
+          </Row>
+          <Row>
+            {(['Top', 'Right', 'Bottom', 'Left'] as const).map((side, i) => (
+              <NumberField key={side} label={`Padding ${side.toLowerCase()}`} prefix={side[0]} className="flex-1" min={0} value={L.padding[i]} onChange={(v) => pad(i, v)} />
+            ))}
+          </Row>
+          <Row>
+            <Select aria-label="Align" className="flex-1" value={L.align} onChange={(e) => set({ align: e.target.value as AutoLayout['align'] }, 'align')}>
+              {LAYOUT_ALIGNS.map((a) => <option key={a} value={a}>{L.mode === 'HORIZONTAL' ? { MIN: 'Top', CENTER: 'Center', MAX: 'Bottom' }[a] : { MIN: 'Left', CENTER: 'Center', MAX: 'Right' }[a]}</option>)}
+            </Select>
+          </Row>
+          <Row>
+            <Check label="Hug width" checked={L.hugW} onChange={(hugW) => set({ hugW }, 'hug-w')} />
+            <Check label="Hug height" checked={L.hugH} onChange={(hugH) => set({ hugH }, 'hug-h')} />
+          </Row>
+        </>
+      )}
+    </PanelSection>
   )
 }
 

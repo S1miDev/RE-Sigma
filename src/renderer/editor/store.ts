@@ -8,7 +8,7 @@ import type { Guides } from './canvas/snap'
 import { fitText } from './canvas/text'
 import type { View } from './canvas/viewport'
 import type { Box } from './model/geometry'
-import { fitGroups, put } from './model/ops'
+import { autoLayout, fitGroups, put } from './model/ops'
 
 export type Tool = 'move' | 'hand' | 'frame' | 'rectangle' | 'ellipse' | 'line' | 'text'
 export interface EditorState {
@@ -32,11 +32,16 @@ export const AUTOSAVE_MS = 1000
 const RETRY_MS = 5000
 const HISTORY = 200
 
-/** Text boxes follow their content and groups wrap their children, whatever edit was made. */
+/** Re-measures text nodes changed since `prev`. */
+function fitTexts(prev: Document, next: Document): Document {
+  const refit = Object.values(next.nodes).filter((n) => n.type === 'TEXT' && prev.nodes[n.id] !== n).map(fitText).filter((n) => next.nodes[n.id] !== n)
+  return refit.length ? put(next, refit) : next
+}
+/** Text boxes follow their content, groups wrap their children and auto-layout frames place theirs, whatever edit was made. */
 function normalize(prev: Document, next: Document): Document {
   if (next === prev) return prev
-  const refit = Object.values(next.nodes).filter((n) => n.type === 'TEXT' && prev.nodes[n.id] !== n).map(fitText).filter((n) => next.nodes[n.id] !== n)
-  return fitGroups(refit.length ? put(next, refit) : next)
+  // auto layout can change a text box's width (fill), so text is measured again and laid out once more
+  return autoLayout(fitTexts(prev, autoLayout(fitGroups(fitTexts(prev, next)))))
 }
 
 export function createEditorStore(opened: OpenedProject, api: RefigApi) {

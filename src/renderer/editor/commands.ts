@@ -3,7 +3,7 @@
 import { makeNode, type Node } from '../../shared/document'
 import { fitView, toWorld, zoomAt } from './canvas/viewport'
 import { apply, worldBox, worldMatrix, worldRotation, type Pt } from './model/geometry'
-import { align, childrenOf, cloneTree, distribute, descendants, duplicate, group, nextName, pageOf, patch, put, remove, reorder, topLevel, translate, ungroup } from './model/ops'
+import { addAutoLayout, align, childrenOf, cloneTree, distribute, descendants, duplicate, group, nextName, pageOf, patch, put, remove, reorder, topLevel, translate, ungroup } from './model/ops'
 import { orderBetween } from '../../shared/order'
 import type { EditorState, EditorStore, Tool } from './store'
 
@@ -105,6 +105,8 @@ export const COMMANDS: Command[] = [
   { id: 'group', label: 'Group selection', group: 'Object', keys: ['Ctrl+G'], enabled: has, run: (st) => wrap(st, 'GROUP') },
   { id: 'ungroup', label: 'Ungroup', group: 'Object', keys: ['Ctrl+Shift+G'], enabled: (s) => s.selection.some((id) => ['GROUP', 'FRAME'].includes(s.doc.nodes[id]?.type)), run: (st) => { let ids: string[] = []; st.update((d) => { const r = ungroup(d, st.get().selection); ids = r.ids; return r.doc }); if (ids.length) st.set({ selection: ids }) } },
   { id: 'frame-selection', label: 'Frame selection', group: 'Object', keys: ['Ctrl+Alt+G'], enabled: has, run: (st) => wrap(st, 'FRAME') },
+  { id: 'add-auto-layout', label: 'Add auto layout', group: 'Object', keys: ['Shift+A'], enabled: has, run: addLayout },
+  { id: 'remove-auto-layout', label: 'Remove auto layout', group: 'Object', keys: ['Alt+Shift+A'], enabled: (s) => s.selection.some((id) => s.doc.nodes[id]?.layout), run: (st) => st.update((d) => patch(d, st.get().selection.filter((id) => d.nodes[id]?.layout), { layout: undefined })) },
   { id: 'toggle-visible', label: 'Show/Hide selection', group: 'Object', keys: ['Ctrl+Shift+H'], enabled: has, run: toggle('visible') },
   { id: 'toggle-lock', label: 'Lock/Unlock selection', group: 'Object', keys: ['Ctrl+Shift+L'], enabled: has, run: toggle('locked') },
 
@@ -129,6 +131,19 @@ function wrap(st: EditorStore, type: 'GROUP' | 'FRAME') {
     const r = group(d, st.get().selection, type)
     id = r.id
     return r.doc
+  })
+  if (id) st.set({ selection: [id] })
+}
+
+/** A single frame gets auto layout; anything else is wrapped in a new auto-layout frame first. */
+function addLayout(st: EditorStore) {
+  const { doc, selection } = st.get(), ids = topLevel(doc, selection), only = ids.length === 1 ? doc.nodes[ids[0]] : null
+  if (only?.type === 'FRAME' && !only.layout) return st.update((d) => addAutoLayout(d, only.id))
+  let id: string | null = null
+  st.update((d) => {
+    const r = group(d, ids, 'FRAME')
+    id = r.id
+    return id ? addAutoLayout(r.doc, id) : d
   })
   if (id) st.set({ selection: [id] })
 }

@@ -1,8 +1,8 @@
 // .refig = ZIP { meta.json, document.json, thumbnail.png?, images/<sha256> }. See docs/project-format.md.
 import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from 'fflate'
 import {
-  FILL_RULES, FORMAT_VERSION, NODE_TYPES, STROKE_ALIGNS, TEXT_ALIGNS,
-  type Color, type Document, type DropShadow, type Node, type Paint, type VectorPath,
+  FILL_RULES, FORMAT_VERSION, LAYOUT_ALIGNS, LAYOUT_MODES, NODE_TYPES, STROKE_ALIGNS, TEXT_ALIGNS,
+  type AutoLayout, type Color, type Document, type DropShadow, type Node, type Paint, type VectorPath,
 } from '../../shared/document'
 
 export interface Meta {
@@ -113,6 +113,17 @@ function validateNode(id: string, n: unknown): Node {
     effects: shadows(n.effects, `${at}.effects`),
     cornerRadius: num(n, 'cornerRadius', at, 0),
     clipsContent: bool(n, 'clipsContent', at),
+  }
+  if (n.fillW !== undefined) node.fillW = bool(n, 'fillW', at)
+  if (n.fillH !== undefined) node.fillH = bool(n, 'fillH', at)
+  if (type === 'FRAME' && n.layout !== undefined) {
+    const l = isObj(n.layout) ? n.layout : fail(`${at}.layout`), la = `${at}.layout`
+    const p: Obj = Array.isArray(l.padding) && l.padding.length === 4 ? { ...l.padding } : fail(`${la}.padding`)
+    node.layout = {
+      mode: oneOf(l, 'mode', la, LAYOUT_MODES), gap: num(l, 'gap', la, 0), align: oneOf(l, 'align', la, LAYOUT_ALIGNS),
+      padding: [0, 1, 2, 3].map((i) => num(p, String(i), `${la}.padding`, 0)) as AutoLayout['padding'],
+      hugW: bool(l, 'hugW', la), hugH: bool(l, 'hugH', la),
+    }
   }
   if (type === 'TEXT')
     Object.assign(node, {

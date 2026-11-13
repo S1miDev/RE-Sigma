@@ -4,7 +4,7 @@ import { frameAt, hitTest, marqueeHits } from '../canvas/hit'
 import { handleAt, handlesOf, type Handle } from '../canvas/overlay'
 import { snap, snapTargets } from '../canvas/snap'
 import { apply, bounds, deg, invert, lineBetween, localMatrix, resizeBox, worldBox, worldMatrix, worldRotation, type Pt } from '../model/geometry'
-import { insert, moveTo, nextName, patch, resizeNode, topLevel, translate } from '../model/ops'
+import { insert, layoutSlot, moveTo, nextName, patch, resizeNode, topLevel, translate } from '../model/ops'
 import type { EditorStore, Tool } from '../store'
 
 export interface Pointer { screen: Pt; world: Pt; shift: boolean; alt: boolean; ctrl: boolean }
@@ -55,29 +55,37 @@ function dragGesture(store: EditorStore, p: Pointer, selection: string[], hit: s
   const ids = topLevel(doc, selection).filter((id) => !doc.nodes[id].locked)
   const box = worldBox(doc, ids)
   if (!box) return null
-  const targets = snapTargets(doc, doc.nodes[ids[0]].parentId!, ids)
+  const parentId = doc.nodes[ids[0]].parentId!
+  const targets = snapTargets(doc, parentId, ids)
+  // Children of an auto-layout frame reorder live while the pointer stays in it, and float on the page once it leaves.
+  const layoutParent = doc.nodes[parentId].layout && ids.every((id) => doc.nodes[id].parentId === parentId) ? parentId : null
   let moved = false
   return {
     move(q) {
       let dx = q.world.x - p.world.x, dy = q.world.y - p.world.y
       if (!moved && dist(q.screen, p.screen) < DRAG_PX) return
       moved = true
+      if (layoutParent && frameAt(doc, pageId, q.world, ids) === layoutParent) {
+        store.update(() => moveTo(doc, ids, layoutParent, { before: layoutSlot(doc, layoutParent, q.world, ids) }), tag)
+        return void store.set({ overlay: {} })
+      }
       if (q.shift) Math.abs(dx) > Math.abs(dy) ? (dy = 0) : (dx = 0) // constrain to one axis
       const sn = snap(
         q.shift && !dx ? [] : [box.x + dx, box.x + box.w / 2 + dx, box.x + box.w + dx],
         q.shift && !dy ? [] : [box.y + dy, box.y + box.h / 2 + dy, box.y + box.h + dy],
-        targets, SNAP_PX / view.zoom,
+        layoutParent ? [] : targets, SNAP_PX / view.zoom,
       )
-      store.update(() => translate(doc, ids, { x: dx + sn.dx, y: dy + sn.dy }), tag)
+      store.update(() => translate(layoutParent ? moveTo(doc, ids, pageId) : doc, ids, { x: dx + sn.dx, y: dy + sn.dy }), tag)
       store.set({ overlay: { guides: sn.guides } })
     },
     up(q) {
       store.set({ overlay: {} })
       if (!moved) return void (collapseOnClick && store.set({ selection: [hit] }))
       // Dropping inside a frame parents the node to it; dropping outside moves it back to the page. Group members stay in their group.
-      const now = store.get().doc, target = frameAt(now, pageId, q.world, ids)
-      const movers = ids.filter((id) => now.nodes[id] && now.nodes[id].parentId !== target && now.nodes[now.nodes[id].parentId!].type !== 'GROUP')
-      if (movers.length) store.update((d) => moveTo(d, movers, target), tag)
+      // An auto-layout frame takes the nodes at the slot under the pointer.
+      const now = store.get().doc, target = frameAt(now, pageId, q.world, ids), slotted = !!now.nodes[target].layout
+      const movers = ids.filter((id) => now.nodes[id] && (slotted || now.nodes[id].parentId !== target) && now.nodes[now.nodes[id].parentId!].type !== 'GROUP')
+      if (movers.length) store.update((d) => moveTo(d, movers, target, slotted ? { before: layoutSlot(d, target, q.world, movers) } : {}), tag)
     },
   }
 }

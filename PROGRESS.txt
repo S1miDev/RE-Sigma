@@ -1,0 +1,51 @@
+RE-Sigma: features missing vs Figma, implemented in list order
+================================================================
+Source of the list: comparison of RE-Sigma with Figma's editor (2026-11-13).
+Workflow per feature: plan -> implement -> unit tests (npm test) -> typecheck (npm run typecheck)
+-> e2e check in the packaged app (npm run test:e2e -- -g "<name>") -> commit -> update this file.
+
+Status legend: [done] [in progress] [todo]
+
+ 1. [done] Auto layout
+       Frame `layout` {mode, gap, padding, align, hugW, hugH}; child `fillW`/`fillH`.
+       Engine: autoLayout() in src/renderer/editor/model/ops.ts, run from normalize() in store.ts.
+       Shift+A add (wraps selection), Alt+Shift+A remove; Design panel "Auto layout" section;
+       drag reorders children live; dropping into a layout frame slots the node.
+       Skipped: wrap, space-between, absolute-positioned children, min/max sizes,
+       .fig stackMode import (imported positions are already baked).
+       Known limits (shortcut: comments): rotated children use their unrotated box;
+       fill-inside-hug nesting deeper than one level may lag one edit.
+ 2. [todo] Constraints (pin left/right/center/scale when a parent frame resizes)
+ 3. [todo] Components + instances (main component, overrides, detach)
+ 4. [todo] Variants / component sets
+ 5. [todo] Gradient fills (linear, radial, angular, diamond)
+ 6. [todo] Pen tool + vector node editing
+ 7. [todo] Pencil (freehand) tool
+ 8. [todo] Boolean operations (union, subtract, intersect, exclude) + flatten
+ 9. [todo] Masks
+10. [todo] Star, polygon, arrow tools; ellipse arcs; per-corner radius; corner smoothing
+11. [todo] Blend modes and per-fill opacity
+12. [todo] Inner shadow, layer blur, background blur
+13. [todo] Stroke options: dashes, caps, joins, arrowheads, per-side weight
+14. [todo] Image fill modes (fill/fit/crop/tile), SVG/image file import, drag-drop files
+15. [todo] Rich text: mixed styles, decoration, case, lists, vertical align, truncation, system fonts
+16. [todo] Styles: color, text, effect, grid
+17. [todo] Variables / design tokens with modes
+18. [todo] Rulers, draggable guides, pixel grid, layout grids
+19. [todo] Right-click context menu
+20. [todo] Command palette (Ctrl+K) and search in layers/pages
+21. [todo] Section tool; frame size presets
+22. [todo] Multi-export per layer (JPG/WebP, 1x/2x), slices, whole-page export
+23. [todo] Eyedropper; color picker with recent + document colors
+24. [todo] Copy/paste properties, paste-over, cross-app clipboard
+25. [todo] Alt-hover measurement, scale tool (K), bulk rename, find & replace
+26. [todo] Prototyping: interactions, preview mode
+27. [todo] Comments
+28. [todo] Dev mode / inspect, code export
+29. [todo] Plugins / widgets API
+30. [todo] Version history, libraries, cloud sync, multiplayer
+31. [todo] Assets panel
+32. [todo] Outline text; font embedding in SVG/PDF export
+
+Next step: #2 Constraints. Plan first; it must cooperate with auto layout
+(children of a layout frame ignore constraints; constraints apply on frame resize in resizeNode).

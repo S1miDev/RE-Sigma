@@ -10,6 +10,17 @@ export type NodeType = (typeof NODE_TYPES)[number]
 export const STROKE_ALIGNS = ['INSIDE', 'CENTER', 'OUTSIDE'] as const
 export const TEXT_ALIGNS = ['LEFT', 'CENTER', 'RIGHT'] as const
 export const FILL_RULES = ['nonzero', 'evenodd'] as const
+export const LAYOUT_MODES = ['HORIZONTAL', 'VERTICAL'] as const
+export const LAYOUT_ALIGNS = ['MIN', 'CENTER', 'MAX'] as const
+/** Auto layout on a FRAME. padding is [top, right, bottom, left]; align is on the cross axis; hug sizes the frame to its content. */
+export type AutoLayout = {
+  mode: (typeof LAYOUT_MODES)[number]
+  gap: number
+  padding: [number, number, number, number]
+  align: (typeof LAYOUT_ALIGNS)[number]
+  hugW: boolean
+  hugH: boolean
+}
 /** SVG path data using only absolute M L Q C Z. */
 export type VectorPath = { d: string; rule: (typeof FILL_RULES)[number] }
 
@@ -34,6 +45,9 @@ export interface Node {
   effects: DropShadow[]
   cornerRadius: number
   clipsContent: boolean
+  layout?: AutoLayout // FRAME only
+  fillW?: boolean // child of an auto-layout frame: stretch to fill it along this axis
+  fillH?: boolean
   // TEXT only
   characters?: string
   fontFamily?: string

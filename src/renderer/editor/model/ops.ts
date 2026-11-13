@@ -141,15 +141,82 @@ export function fitGroups(doc: Document): Document {
   return doc
 }
 
+type Rect = { x: number; y: number; width: number; height: number }
 /** Sets a node's box. Resizing a group scales its children with it. */
-export function resizeNode(doc: Document, id: string, box: { x: number; y: number; width: number; height: number }): Document {
+function setBox(doc: Document, id: string, box: Rect): Document {
   const n = doc.nodes[id]
   if (n.type === 'GROUP' && n.width && n.height) {
     // shortcut: a rotated child is scaled along the group's axes, not sheared; exact only for unrotated children.
     const sx = box.width / n.width, sy = box.height / n.height
-    for (const k of childrenOf(doc, id)) doc = resizeNode(doc, k.id, { x: k.x * sx, y: k.y * sy, width: k.width * sx, height: k.height * sy })
+    for (const k of childrenOf(doc, id)) doc = setBox(doc, k.id, { x: k.x * sx, y: k.y * sy, width: k.width * sx, height: k.height * sy })
   }
   return patch(doc, [id], { ...box, ...(n.type === 'TEXT' && box.width !== n.width && { textAutoWidth: false }) })
+}
+/** A user resize: like setBox, and a manual size on an axis replaces hug/fill on that axis. */
+export function resizeNode(doc: Document, id: string, box: Rect): Document {
+  const n = doc.nodes[id], w = box.width !== n.width, h = box.height !== n.height
+  doc = setBox(doc, id, box)
+  return patch(doc, [id], {
+    ...(n.layout && (w || h) && { layout: { ...n.layout, hugW: n.layout.hugW && !w, hugH: n.layout.hugH && !h } }),
+    ...(w && n.fillW && { fillW: false }), ...(h && n.fillH && { fillH: false }),
+  })
+}
+
+function layoutFrame(doc: Document, id: string): Document {
+  const f = doc.nodes[id], L = f.layout!, horizontal = L.mode === 'HORIZONTAL', [pt, pr, pb, pl] = L.padding
+  const P = horizontal ? { pos: 'x', size: 'width', fill: 'fillW', hug: L.hugW, a: pl, b: pr } as const : { pos: 'y', size: 'height', fill: 'fillH', hug: L.hugH, a: pt, b: pb } as const
+  const C = horizontal ? { pos: 'y', size: 'height', fill: 'fillH', hug: L.hugH, a: pt, b: pb } as const : { pos: 'x', size: 'width', fill: 'fillW', hug: L.hugW, a: pl, b: pr } as const
+  // shortcut: rotated children are laid out by their unrotated box; fine until rotation inside auto layout matters.
+  const kids = childrenOf(doc, id).filter((k) => k.visible)
+  const fillP = (k: Node) => !P.hug && !!k[P.fill], fillC = (k: Node) => !C.hug && !!k[C.fill] // hug on an axis overrides fill on it
+  const gaps = L.gap * Math.max(0, kids.length - 1)
+  const fixed = kids.filter((k) => !fillP(k)).reduce((s, k) => s + k[P.size], 0), fills = kids.filter(fillP).length
+  const primary = P.hug ? P.a + P.b + gaps + fixed : f[P.size]
+  const share = fills ? Math.max(0, (primary - P.a - P.b - gaps - fixed) / fills) : 0
+  const cross = C.hug ? C.a + C.b + Math.max(0, ...kids.filter((k) => !fillC(k)).map((k) => k[C.size])) : f[C.size]
+  const inner = Math.max(0, cross - C.a - C.b)
+  if (f[P.size] !== primary || f[C.size] !== cross) doc = patch(doc, [id], { [P.size]: primary, [C.size]: cross })
+  let at = P.a
+  for (const k of kids) {
+    const ps = fillP(k) ? share : k[P.size], cs = fillC(k) ? inner : k[C.size]
+    const box = { [P.pos]: at, [C.pos]: C.a + (L.align === 'MIN' ? 0 : L.align === 'CENTER' ? (inner - cs) / 2 : inner - cs), [P.size]: ps, [C.size]: cs } as Rect
+    if (box.x !== k.x || box.y !== k.y || box.width !== k.width || box.height !== k.height) doc = setBox(doc, k.id, box)
+    at += ps + L.gap
+  }
+  return doc
+}
+/** Places the children of every auto-layout frame, deepest frames first. */
+export function autoLayout(doc: Document): Document {
+  const frames = Object.values(doc.nodes).filter((n) => n.layout).sort((a, b) => depth(doc, b.id) - depth(doc, a.id))
+  // shortcut: two passes settle one level of fill-inside-hug nesting; deeper chains may lag one edit behind.
+  for (let pass = 0; pass < 2; pass++) for (const f of frames) doc = layoutFrame(doc, f.id)
+  return doc
+}
+
+/** Turns on auto layout for a frame: children sorted by position, direction, gap and padding read off the current arrangement. */
+export function addAutoLayout(doc: Document, id: string): Document {
+  const f = doc.nodes[id], kids = childrenOf(doc, id)
+  const b = bounds(kids.flatMap((k) => boxCorners(k).map((p) => apply(localMatrix(k), p))))
+  const horizontal = b ? b.w >= b.h : f.width >= f.height
+  const pos = horizontal ? 'x' : 'y', size = horizontal ? 'width' : 'height'
+  const sorted = [...kids].sort((p, q) => p[pos] - q[pos])
+  const gaps = sorted.slice(1).map((k, i) => k[pos] - sorted[i][pos] - sorted[i][size])
+  const gap = gaps.length ? Math.max(0, Math.round(gaps.reduce((s, g) => s + g, 0) / gaps.length)) : 10
+  const pad = (v: number) => Math.max(0, Math.round(v))
+  const padding: [number, number, number, number] = b ? [pad(b.y), pad(f.width - b.x - b.w), pad(f.height - b.y - b.h), pad(b.x)] : [0, 0, 0, 0]
+  let order = ''
+  doc = put(doc, sorted.map((k) => ({ ...k, order: (order = orderBetween(order)) })))
+  return patch(doc, [id], { layout: { mode: horizontal ? 'HORIZONTAL' : 'VERTICAL', gap, padding, align: 'MIN', hugW: true, hugH: true } })
+}
+
+/** The sibling a node dropped at page point p should go before in an auto-layout frame (undefined = last). */
+export function layoutSlot(doc: Document, frameId: string, p: Pt, exclude: string[]): string | undefined {
+  const axis = doc.nodes[frameId].layout?.mode === 'VERTICAL' ? 'y' : 'x', size = axis === 'x' ? 'w' : 'h'
+  return childrenOf(doc, frameId).find((k) => {
+    if (!k.visible || exclude.includes(k.id)) return false
+    const b = worldBox(doc, [k.id])!
+    return b[axis] + b[size] / 2 > p[axis]
+  })?.id
 }
 
 /** Wraps the nodes in a new GROUP or FRAME placed where the top-most one was. */
