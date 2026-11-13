@@ -66,12 +66,17 @@ export function pathData(subs: Sub[]): string {
 export const mapSubs = (subs: Sub[], fn: (p: Pt) => Pt): Sub[] =>
   subs.map((s) => ({ closed: s.closed, anchors: s.anchors.map((a) => ({ ...fn(a), ...(a.in && { in: fn(a.in) }), ...(a.out && { out: fn(a.out) }) })) }))
 
+/** How a VECTOR's path data (drawn at vector.w × vector.h) scales to the node's current size. */
+export function vectorScale(n: Node): Pt {
+  const v = n.vector!
+  return { x: v.w ? n.width / v.w : 1, y: v.h ? n.height / v.h : 1 }
+}
+
 /** A VECTOR's fill paths as subpaths in its own box (node-local px). */
 export function anchorsOf(n: Node): Sub[] {
-  const v = n.vector
-  if (!v) return []
-  const sx = v.w ? n.width / v.w : 1, sy = v.h ? n.height / v.h : 1
-  return mapSubs(v.fill.flatMap((p) => parsePath(p.d)), (p) => ({ x: p.x * sx, y: p.y * sy }))
+  if (!n.vector) return []
+  const s = vectorScale(n)
+  return mapSubs(n.vector.fill.flatMap((p) => parsePath(p.d)), (p) => ({ x: p.x * s.x, y: p.y * s.y }))
 }
 
 /**
