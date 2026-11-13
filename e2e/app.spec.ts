@@ -79,7 +79,8 @@ test('imports a Figma .fig file and reports what was omitted', async () => {
   await answerDialogs([path.resolve('research', 'fixtures', 'Untitled.fig')])
   await page.getByRole('button', { name: 'Import' }).first().click()
   const results = page.getByRole('dialog', { name: 'Import results' })
-  await expect(results).toContainText(/items omitted: .*VECTOR ×\d+/)
+  await expect(results).toContainText(/omitted: .*INSTANCE override ×\d+/)
+  await expect(results).not.toContainText('VECTOR') // vectors import as paths now
   await results.getByRole('button', { name: 'Done' }).click()
   await page.getByRole('button', { name: 'Open Untitled' }).click()
   await page.getByRole('button', { name: 'RE-probe', exact: true }).click()

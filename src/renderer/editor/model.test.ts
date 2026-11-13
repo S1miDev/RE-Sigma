@@ -753,3 +753,66 @@ test('gradients: rotation turns every handle, so a rotated diamond exports rotat
   const v = makeNode('VECTOR', { width: 10, height: 10, fills: [solid(0, 0, 0)], vector: { w: 10, h: 10, fill: [{ d: 'M0 0L10 0L10 10Z', rule: 'evenodd' }], stroke: [] } })
   expect(toSvg(insert(doc, v, page), [v.id], () => undefined)).toContain('fill-rule="evenodd" clip-rule="evenodd"')
 })
+
+// ── review fixes ─────────────────────────────────────────────────────────────────────────────────────────────────────
+test('components: dragging and resizing inside a main keeps instances following (no stray overrides)', () => {
+  const { store, m, r, copy } = components()
+  store.set({ selection: [] })
+  // the main is at (0,0), its rectangle at (10,10) 20×20; the instance sits at x = 140
+  const g = beginGesture(store, at(15, 15))!
+  for (const x of [25, 35, 45]) g.move(at(x, 15))
+  g.up(at(45, 15))
+  expect(store.get().doc.nodes[r].x).toBe(40)
+  expect(copy()).toMatchObject({ x: 40 })
+  expect(copy().overrides).toBeUndefined()
+  // resize the main's rectangle from its right handle, over several moves
+  store.set({ selection: [r] })
+  const h = beginGesture(store, at(60, 20))!
+  for (const x of [65, 70, 75]) h.move(at(x, 20))
+  h.up(at(75, 20))
+  expect(store.get().doc.nodes[r].width).toBe(35)
+  expect(copy()).toMatchObject({ x: 40, width: 35 })
+  expect(copy().overrides).toBeUndefined()
+  expect(store.get().doc.nodes[m].component).toBe(true)
+  // dragging the copy itself is still an override
+  store.set({ selection: [] })
+  const b = worldBox(store.get().doc, [copy().id])!, cx = b.x + b.w / 2, cy = b.y + b.h / 2, before = copy().x
+  const c = beginGesture(store, at(cx, cy))!
+  expect(store.get().selection).toEqual([copy().id])
+  for (const dx of [12, 24]) c.move(at(cx + dx, cy))
+  c.up(at(cx + 24, cy))
+  expect(copy().x).not.toBe(before)
+  expect(copy().overrides).toContain('x')
+})
+
+test('components: a gesture frame that leaves an overridden field where it was keeps the override', () => {
+  const { store, copy } = components()
+  const base = store.get().doc, id = copy().id
+  const moved = patch(base, [id], { x: 50 })
+  const prev = syncInstances(base, moved, base) // first frame: x overridden
+  expect(prev.nodes[id].overrides).toEqual(['x'])
+  // the next frame is rebuilt from `base` (no overrides yet) and lands on the same x, e.g. held by snapping
+  expect(syncInstances(prev, patch(base, [id], { x: 50 }), base).nodes[id]).toMatchObject({ x: 50, overrides: ['x'] })
+  // back where it started: not an override
+  expect(syncInstances(prev, base, base).nodes[id].overrides).toBeUndefined()
+})
+
+test('keyOf: Ctrl+Alt letters work on AltGr layouts', () => {
+  const k = (key: string, code: string, mods: Partial<KeyboardEvent> = {}) => keyOf({ key, code, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...mods })
+  expect(k('&', 'KeyK', { ctrlKey: true, altKey: true })).toBe('Ctrl+Alt+K') // Czech AltGr+K
+  expect(k('đ', 'KeyB', { ctrlKey: true, altKey: true })).toBe('Ctrl+Alt+B')
+  expect(k('z', 'KeyY')).toBe('Z') // without Alt, letters still go by what they type (QWERTZ)
+})
+
+test('variants: matching ignores the order properties are listed in', () => {
+  const { store, m, i } = components()
+  store.update((d) => patch(d, [m], { name: 'Size=S, Tone=Light' }))
+  store.set({ selection: [m] })
+  run(store, 'combine-variants')
+  const set = store.get().selection[0]
+  const add = (name: string) => { store.set({ selection: [set] }); run(store, 'add-variant'); const v = store.get().selection[0]; store.update((d) => patch(d, [v], { name })); return v }
+  add('Size=L, Tone=Dark') // first variant with Size=L: what a non-exact fallback would pick
+  const target = add('Tone=Light, Size=L') // the exact match, listed the other way round
+  store.update((d) => setVariant(d, i, 'Size', 'L'))
+  expect(store.get().doc.nodes[i].instanceOf).toBe(target)
+})

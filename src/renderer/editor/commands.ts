@@ -191,7 +191,10 @@ export const isEnabled = (c: Command, store: EditorStore) => !c.enabled || c.ena
 const CODES: Record<string, string> = { BracketLeft: '[', BracketRight: ']', Backslash: '\\', Equal: '=', Minus: '-', NumpadAdd: '=', NumpadSubtract: '-' }
 /** "Ctrl+Shift+G" for a key event. Digits and punctuation go by physical key so they work on any layout; letters by what they type. */
 export function keyOf(e: Pick<KeyboardEvent, 'key' | 'code' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'>): string {
-  const k = /^Digit\d$/.test(e.code) ? e.code[5] : (CODES[e.code] ?? (e.key.length === 1 ? e.key.toUpperCase() : e.key))
+  // With Alt held, letters go by physical key too: on Windows Ctrl+Alt is AltGr, which types another character
+  // (e.g. Ctrl+Alt+K gives "&" on a Czech layout). shortcut: QWERTZ users get Y/Z by position there; no command uses them.
+  const letter = e.altKey && /^Key[A-Z]$/.test(e.code) ? e.code[3] : null
+  const k = letter ?? (/^Digit\d$/.test(e.code) ? e.code[5] : (CODES[e.code] ?? (e.key.length === 1 ? e.key.toUpperCase() : e.key)))
   return [(e.ctrlKey || e.metaKey) && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', k].filter(Boolean).join('+')
 }
 

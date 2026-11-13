@@ -38,15 +38,21 @@ function derived(n: Node, parent: Node | undefined): Key[] {
   return out
 }
 
-/** Adds the fields the user just changed on instance nodes to their overrides. */
-function record(prev: Document, doc: Document): Document {
+/**
+ * Adds the fields the user just changed on instance nodes to their overrides. `base` is the document before this undo
+ * step; a gesture rebuilds every frame from it. So a field counts when it differs from `base` and either changed since
+ * `prev` or was already overridden there (a gesture frame that didn't move it). Values equal to `base`'s are what the
+ * gesture started from, not the user's doing.
+ */
+function record(prev: Document, doc: Document, base: Document): Document {
   const changed: Node[] = []
   for (const n of Object.values(doc.nodes)) {
-    const p = prev.nodes[n.id]
+    const p = prev.nodes[n.id], b = base.nodes[n.id]
     if (!p || p === n || !(n.ref || n.instanceOf) || !inInstance(doc, n.id)) continue
-    const parent = n.parentId ? doc.nodes[n.parentId] : undefined, was = n.parentId ? prev.nodes[n.parentId] : undefined
+    const parent = n.parentId ? doc.nodes[n.parentId] : undefined, was = n.parentId ? base.nodes[n.parentId] : undefined
     const parentResized = !!parent && !!was && (parent.width !== was.width || parent.height !== was.height) // constraints moved it, not the user
-    const keys = OVERRIDABLE.filter((k) => n[k] !== p[k] && !(n.instanceOf && !n.ref && ROOT_OWN.includes(k)) && !(parentResized && GEOMETRY.includes(k)))
+    const keys = OVERRIDABLE.filter((k) => (!b || n[k] !== b[k]) && (n[k] !== p[k] || !!p.overrides?.includes(k))
+      && !(n.instanceOf && !n.ref && ROOT_OWN.includes(k)) && !(parentResized && GEOMETRY.includes(k)))
     const next = [...new Set([...(n.overrides ?? []), ...keys])]
     if (next.length !== (n.overrides?.length ?? 0)) changed.push({ ...n, overrides: next })
   }
@@ -116,8 +122,8 @@ function rebuild(doc: Document, rootId: string): Document {
  * Keeps every instance in step with its main component after an edit. Runs first in the store's normalize pass,
  * so `next` still holds exactly what the user changed since `prev`.
  */
-export function syncInstances(prev: Document, next: Document): Document {
-  let doc = strip(record(prev, next))
+export function syncInstances(prev: Document, next: Document, base: Document = prev): Document {
+  let doc = strip(record(prev, next, base))
   // shortcut: every edit re-syncs every instance; cache by changed subtree when documents get large.
   const done = new Set<string>()
   for (;;) {
@@ -207,7 +213,9 @@ export function setVariant(doc: Document, rootId: string, prop: string, value: s
   if (!set) return doc
   const want = { ...variantProps(doc.nodes[root.instanceOf!].name), [prop]: value }
   const variants = variantsOf(doc, set.id)
-  const target = variants.find((v) => variantName(variantProps(v.name)) === variantName(want)) ?? variants.find((v) => variantProps(v.name)[prop] === value)
+  // the same property set in any order: "Size=L, Tone=Dark" matches "Tone=Dark, Size=L"
+  const key = (props: Record<string, string>) => JSON.stringify(Object.entries(props).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+  const target = variants.find((v) => key(variantProps(v.name)) === key(want)) ?? variants.find((v) => variantProps(v.name)[prop] === value)
   if (!target || target.id === root.instanceOf) return doc
   const moved = ownedBy(doc, rootId).filter((n) => n.ref).map((n) => {
     const path = namePath(doc, root.instanceOf!, n.ref!), ref = path && atPath(doc, target.id, path)

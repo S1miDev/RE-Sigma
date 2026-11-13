@@ -55,7 +55,8 @@ export function Canvas() {
     canvas.addEventListener('wheel', wheel, { passive: false })
 
     const key = (e: KeyboardEvent) => {
-      if (e.code !== 'Space' || isTyping(e.target)) return
+      // a focused button or menu item keeps Space for itself
+      if (e.code !== 'Space' || isTyping(e.target) || (e.target instanceof HTMLElement && e.target.closest('button, [role="menu"]'))) return
       e.preventDefault()
       setSpace(e.type === 'keydown')
     }

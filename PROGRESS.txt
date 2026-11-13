@@ -107,5 +107,11 @@ src/renderer/editor/tools/index.ts.
 
 Reviewing the feature commits: `/code-review ultra cc7cc81` reviews everything since before #1.
 
-Known unrelated issue: e2e test "imports a Figma .fig file and reports what was omitted"
-fails on main too. It expects VECTOR in the omitted list, but VECTORs import now.
+Code review of the rest (see `git log --grep "Fix issues found in code review"`):
+- Fixed: gestures inside a main component recorded stray overrides on instances (and could
+  drop real ones), so instances stopped following. syncInstances now gets the undo step's base
+  doc from store.update and only counts fields that differ from it.
+- Fixed: variant switching depended on the order properties are listed in names.
+- Fixed: Ctrl+Alt+letter shortcuts on AltGr layouts (keyOf uses the physical key with Alt).
+- Fixed: Space couldn't press a focused button; PDF print page now has a strict CSP;
+  the stale .fig import e2e assertion (the whole e2e suite passes again).

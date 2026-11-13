@@ -38,11 +38,14 @@ function fitTexts(prev: Document, next: Document): Document {
   const refit = Object.values(next.nodes).filter((n) => n.type === 'TEXT' && prev.nodes[n.id] !== n).map(fitText).filter((n) => next.nodes[n.id] !== n)
   return refit.length ? put(next, refit) : next
 }
-/** Text boxes follow their content, groups wrap their children and auto-layout frames place theirs, whatever edit was made. */
-function normalize(prev: Document, next: Document): Document {
+/**
+ * Text boxes follow their content, groups wrap their children and auto-layout frames place theirs, whatever edit was
+ * made. `base` is the document before the current undo step (see syncInstances).
+ */
+function normalize(prev: Document, next: Document, base: Document): Document {
   if (next === prev) return prev
   // instances sync first, while `next` still holds exactly what the user changed (their overrides)
-  next = syncInstances(prev, next)
+  next = syncInstances(prev, next, base)
   // auto layout can change a text box's width (fill), so text is measured again and laid out once more
   return autoLayout(fitTexts(prev, autoLayout(fitGroups(fitTexts(prev, next)))))
 }
@@ -89,10 +92,11 @@ export function createEditorStore(opened: OpenedProject, api: RefigApi) {
    * (always for 'gesture…' tags, within a second otherwise). `select` replaces the selection.
    */
   function update(fn: (doc: Document) => Document, tag?: string, select?: string[]) {
-    const doc = normalize(state.doc, fn(state.doc))
+    const now = Date.now(), joins = tag !== undefined && tag === lastTag && (tag.startsWith('gesture') || now - lastAt < 1000)
+    // A gesture recomputes each frame from the document it started on, so the step's start is the true "before".
+    const doc = normalize(state.doc, fn(state.doc), joins ? (past.at(-1)?.doc ?? state.doc) : state.doc)
     if (doc === state.doc) return select && set({ selection: select })
-    const now = Date.now()
-    if (!(tag !== undefined && tag === lastTag && (tag.startsWith('gesture') || now - lastAt < 1000))) {
+    if (!joins) {
       past.push(snapshot())
       if (past.length > HISTORY) past.shift()
     }
