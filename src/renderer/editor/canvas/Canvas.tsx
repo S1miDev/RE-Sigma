@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { colorAt } from '../../../shared/document'
-import { zoomToFit } from '../commands'
+import { zoomToFit } from './viewport'
 import { apply, worldMatrix, worldRotation } from '../model/geometry'
 import { patch, remove } from '../model/ops'
-import { isTyping } from '../../util'
+import { isTyping, keyBelongsToPage } from '../../util'
 import { NO_MODE, useEditor, useStore } from '../store'
 import { beginGesture, editNode, textStep, type Gesture, type Pointer } from '../tools'
 import { hitTest } from './hit'
@@ -57,7 +57,7 @@ export function Canvas() {
 
     const key = (e: KeyboardEvent) => {
       // a focused button or menu item keeps Space for itself
-      if (e.code !== 'Space' || isTyping(e.target) || (e.target instanceof HTMLElement && e.target.closest('button, [role="menu"]'))) return
+      if (e.code !== 'Space' || keyBelongsToPage(e)) return
       e.preventDefault()
       setSpace(e.type === 'keydown')
     }

@@ -1,7 +1,7 @@
 import { useState, type DragEvent } from 'react'
 import { isContainer, type Node } from '../../../shared/document'
 import { Icon, IconButton, type IconName } from '../../ui'
-import { zoomToFit } from '../commands'
+import { zoomToFit } from '../canvas/viewport'
 import { addPage, childrenOf, moveTo, movePage, patch, removePage } from '../model/ops'
 import { useEditor, useStore } from '../store'
 import { showPage } from '../tools'

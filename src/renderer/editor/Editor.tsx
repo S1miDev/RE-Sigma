@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { OpenedProject, RefigApi } from '../../shared/api'
 import { Button, Dialog, DialogActions, IconButton, Menu, SidePanel, Toast } from '../ui'
-import { errorText, isTyping } from '../util'
+import { errorText, keyBelongsToPage } from '../util'
 import { Canvas } from './canvas/Canvas'
-import { COMMANDS, handleKey, isEnabled, paste, pasteImage, type Actions } from './commands'
-import { DesignPanel, ExportControls } from './panels/DesignPanel'
+import { paste, pasteImage } from './clipboard'
+import { COMMANDS, handleKey, isEnabled, type Actions } from './commands'
+import { DesignPanel } from './panels/DesignPanel'
+import { ExportControls } from './panels/ExportControls'
 import { LeftPanel } from './panels/LeftPanel'
 import { MainMenu } from './panels/MainMenu'
 import { Toolbar } from './panels/Toolbar'
@@ -33,16 +35,11 @@ export function Editor({ opened, api, onExit }: { opened: OpenedProject; api: Re
   const clearToast = useCallback(() => setToast(null), [])
 
   useEffect(() => {
-    // Keys belong to the editor unless a text field, a dialog or a menu has them. Enter/Space on a focused button press that button.
-    const blocked = (e: Event) => {
-      const t = e.target instanceof HTMLElement ? e.target : null, key = (e as KeyboardEvent).key
-      return isTyping(t) || document.querySelector('[aria-modal="true"]') !== null || t?.closest('[role="menu"]') != null || (t?.tagName === 'BUTTON' && (key === 'Enter' || key === ' '))
-    }
     const onKey = (e: KeyboardEvent) => {
-      if (!blocked(e) && handleKey(e, store, actions)) e.preventDefault()
+      if (!keyBelongsToPage(e) && handleKey(e, store, actions)) e.preventDefault()
     }
     const onPaste = (e: ClipboardEvent) => {
-      if (blocked(e)) return
+      if (keyBelongsToPage(e)) return
       e.preventDefault()
       const image = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith('image/'))
       void (image ? pasteImage(store, image) : paste(store)).catch(report)

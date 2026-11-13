@@ -214,6 +214,8 @@ export function Dialog({ title, onClose, children }: { title: string; onClose():
     </div>
   )
 }
+/** A horizontal row of panel controls. */
+export const Row = ({ children }: { children: ReactNode }) => <div className="flex items-center gap-1.5">{children}</div>
 export const DialogActions = ({ children }: { children: ReactNode }) => <div className="mt-4 flex justify-end gap-2">{children}</div>
 
 export function PanelSection({ title, action, children }: { title: string; action?: ReactNode; children?: ReactNode }) {

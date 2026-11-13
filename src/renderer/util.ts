@@ -22,3 +22,13 @@ export const relativeTime = (iso: string, now = Date.now()) => {
 /** True when a key event belongs to a text field rather than the editor. */
 export const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)
+
+/**
+ * True when a key or clipboard event belongs to the page rather than the editor's shortcuts: typing in a field,
+ * anything while a dialog is open or inside a menu, and Enter/Space on a focused button (which press it).
+ */
+export function keyBelongsToPage(e: Event): boolean {
+  const t = e.target instanceof HTMLElement ? e.target : null, key = (e as KeyboardEvent).key
+  return isTyping(t) || document.querySelector('[aria-modal="true"]') !== null || t?.closest('[role="menu"]') != null
+    || (t?.closest('button') != null && (key === 'Enter' || key === ' '))
+}

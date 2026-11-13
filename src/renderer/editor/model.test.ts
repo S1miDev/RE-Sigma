@@ -5,7 +5,7 @@ import { frameAt, hitTest, marqueeHits } from './canvas/hit'
 import { handleAt, handlesOf } from './canvas/overlay'
 import { snap, snapTargets } from './canvas/snap'
 import { fitView, toScreen, toWorld, zoomAt } from './canvas/viewport'
-import { COMMANDS, keyOf } from './commands'
+import { COMMANDS, keyOf, runCommand } from './commands'
 import { toSvg } from './export/svg'
 import { apply, corners, invert, lineBetween, localMatrix, mul, resizeBox, worldBox } from './model/geometry'
 import { addAutoLayout, addPage, align, autoLayout, childrenOf, distribute, duplicate, group, insert, moveTo, movePage, patch, put, remove, removePage, reorder, resizeNode, topLevel, translate, ungroup } from './model/ops'
@@ -460,7 +460,7 @@ test('auto layout: adding it sorts children by position and reads gap and paddin
 test('auto layout: Shift+A wraps the selection; dragging a child reorders it; dropping in slots it', () => {
   const { store, a, b } = open()
   store.set({ selection: [a, b] })
-  COMMANDS.find((c) => c.id === 'add-auto-layout')!.run(store, { back() {}, openExport() {} })
+  runCommand(store, 'add-auto-layout')
   const s = store.get(), f = s.selection[0]
   expect(s.doc.nodes[f].layout?.mode).toBe('HORIZONTAL')
   expect(childrenOf(s.doc, f).map((k) => k.id)).toEqual([a, b])
@@ -518,7 +518,7 @@ test('constraints: nested frames cascade; auto-layout frames ignore them; draggi
 
 // ── components ───────────────────────────────────────────────────────────────────────────────────────────────────────
 const red = solid(1, 0, 0), green = solid(0, 1, 0), blue = solid(0, 0, 1)
-const run = (store: ReturnType<typeof open>['store'], id: string) => COMMANDS.find((c) => c.id === id)!.run(store, { back() {}, openExport() {} })
+const run = runCommand
 /** A main component (100×50) with one rectangle, and an instance of it made with "Create instance". */
 function components() {
   let doc: Document = emptyDocument()

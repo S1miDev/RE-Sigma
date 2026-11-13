@@ -1,19 +1,17 @@
-import { useRef, useState } from 'react'
-import type { ExportKind } from '../../../shared/api'
+import { useRef } from 'react'
 import {
   colorAt, CONSTRAINTS, convertPaint, gradientAngle, LAYOUT_ALIGNS, rotateGradient, solid, STROKE_ALIGNS, TEXT_ALIGNS, typeLabel,
   type AutoLayout, type Constraint, type Document, type DropShadow, type GradientStop, type Node, type Paint, type PaintKind,
 } from '../../../shared/document'
-import { Button, ColorField, IconButton, NumberField, PanelSection, Select, type IconName } from '../../ui'
-import { COMMANDS } from '../commands'
+import { Button, ColorField, IconButton, NumberField, PanelSection, Row, Select, type IconName } from '../../ui'
+import { runCommand } from '../commands'
 import { setOf, setVariant, variantProps, variantsOf } from '../model/components'
-import { exportSelection } from '../export'
 import { addAutoLayout, patch, resizeNode } from '../model/ops'
 import { useEditor, useStore, type Step } from '../store'
+import { ExportControls } from './ExportControls'
 
 const FONTS = ['Inter', 'Arial', 'Georgia', 'Times New Roman', 'Courier New', 'Verdana', 'Segoe UI', 'Tahoma', 'Trebuchet MS']
 const WEIGHTS: [number, string][] = [[100, 'Thin'], [200, 'Extra Light'], [300, 'Light'], [400, 'Regular'], [500, 'Medium'], [600, 'Semi Bold'], [700, 'Bold'], [800, 'Extra Bold'], [900, 'Black']]
-const Row = ({ children }: { children: React.ReactNode }) => <div className="flex items-center gap-1.5">{children}</div>
 /** Panel edits of the same field on the same layers within a second share one undo step. */
 const panelStep = (field: string, ids: string[]): Step => ({ key: `panel:${field}:${ids.join()}` })
 
@@ -135,7 +133,7 @@ function propertyValues(doc: Document, setId: string): Record<string, string[]> 
 /** Main component: make instances. Instance: where it comes from, and the way back out. */
 function ComponentSection({ node }: { node: Node }) {
   const store = useStore(), doc = useEditor((s) => s.doc)
-  const run = (id: string) => COMMANDS.find((c) => c.id === id)!.run(store, { back() {}, openExport() {} })
+  const run = (id: string) => runCommand(store, id)
   if (node.componentSet) {
     const props = propertyValues(doc, node.id)
     return (
@@ -254,7 +252,15 @@ function TextSection({ nodes, edit, common }: { nodes: Node[]; edit(change: Part
   )
 }
 
-const PAINT_KINDS: [PaintKind, string][] = [['SOLID', 'Solid'], ['LINEAR', 'Linear'], ['RADIAL', 'Radial'], ['ANGULAR', 'Angular'], ['DIAMOND', 'Diamond']]
+/** Show/hide and remove buttons for one row of a fill, stroke or shadow list. */
+const RowActions = ({ name, visible, onToggle, onRemove }: { name: string; visible: boolean; onToggle(): void; onRemove(): void }) => (
+  <>
+    <IconButton label={`${visible ? 'Hide' : 'Show'} ${name}`} icon={visible ? 'eye' : 'eyeOff'} aria-pressed={!visible} onClick={onToggle} />
+    <IconButton label={`Remove ${name}`} icon="minus" onClick={onRemove} />
+  </>
+)
+
+const PAINT_KINDS: [PaintKind, string][] =[['SOLID', 'Solid'], ['LINEAR', 'Linear'], ['RADIAL', 'Radial'], ['ANGULAR', 'Angular'], ['DIAMOND', 'Diamond']]
 
 /** Fill or stroke list. With several layers selected it shows the first layer's paints and applies edits to all. */
 function Paints({ title, field, nodes, report, children }: { title: string; field: 'fills' | 'strokes'; nodes: Node[]; report(e: unknown): void; children?: React.ReactNode }) {
@@ -297,8 +303,7 @@ function Paints({ title, field, nodes, report, children }: { title: string; fiel
                       {PAINT_KINDS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
                     </Select>
                   ) : <span className="flex h-6 flex-1 items-center rounded bg-raised px-1.5 text-dim">Image</span>}
-                  <IconButton label={p.visible ? `Hide ${title.toLowerCase()} ${i + 1}` : `Show ${title.toLowerCase()} ${i + 1}`} icon={p.visible ? 'eye' : 'eyeOff'} aria-pressed={!p.visible} onClick={() => set(at(i, { ...p, visible: !p.visible }))} />
-                  <IconButton label={`Remove ${title.toLowerCase()} ${i + 1}`} icon="minus" onClick={() => set(paints.filter((_, j) => j !== i))} />
+                  <RowActions name={`${title.toLowerCase()} ${i + 1}`} visible={p.visible} onToggle={() => set(at(i, { ...p, visible: !p.visible }))} onRemove={() => set(paints.filter((_, j) => j !== i))} />
                 </Row>
                 {p.type === 'SOLID' && <Row><ColorField label={name} color={p.color} onChange={(color) => set(at(i, { ...p, color }), `color${i}`)} /></Row>}
                 {p.type === 'GRADIENT' && <Row><NumberField label={`${name} angle`} prefix="∠" className="flex-1" min={-180} max={180} value={Math.round(gradientAngle(p))} onChange={(deg) => set(at(i, rotateGradient(p, deg)), `angle${i}`)} /></Row>}
@@ -340,8 +345,7 @@ function Shadows({ nodes }: { nodes: Node[] }) {
           <div key={i} className="flex flex-col gap-1.5">
             <Row>
               <ColorField label={`Shadow ${i + 1}`} color={s.color} onChange={(color) => at(i, { color }, 'color')} />
-              <IconButton label={s.visible ? `Hide shadow ${i + 1}` : `Show shadow ${i + 1}`} icon={s.visible ? 'eye' : 'eyeOff'} aria-pressed={!s.visible} onClick={() => set(effects.map((e, j) => (j === i ? { ...e, visible: !e.visible } : e)))} />
-              <IconButton label={`Remove shadow ${i + 1}`} icon="minus" onClick={() => set(effects.filter((_, j) => j !== i))} />
+              <RowActions name={`shadow ${i + 1}`} visible={s.visible} onToggle={() => set(effects.map((e, j) => (j === i ? { ...e, visible: !e.visible } : e)))} onRemove={() => set(effects.filter((_, j) => j !== i))} />
             </Row>
             <Row>
               <NumberField label={`Shadow ${i + 1} X`} prefix="X" className="flex-1" value={s.x} onChange={(x) => at(i, { x }, 'x')} />
@@ -354,38 +358,5 @@ function Shadows({ nodes }: { nodes: Node[] }) {
           </div>
         ))}
     </PanelSection>
-  )
-}
-
-/** Format + scale + button. Exports the current selection; used in the Design panel and the File → Export… dialog. */
-export function ExportControls({ onDone, onError }: { onDone(path: string | null): void; onError(e: unknown): void }) {
-  const store = useStore()
-  const hasSelection = useEditor((s) => s.selection.length > 0)
-  const [kind, setKind] = useState<ExportKind>('png')
-  const [scale, setScale] = useState(1)
-  const [busy, setBusy] = useState(false)
-  const run = async () => {
-    setBusy(true)
-    try {
-      onDone(await exportSelection(store, kind, scale))
-    } catch (e) {
-      onError(e)
-    }
-    setBusy(false)
-  }
-  return (
-    <>
-      <Row>
-        <Select aria-label="Export scale" className="flex-1" value={scale} disabled={kind !== 'png'} onChange={(e) => setScale(Number(e.target.value))}>
-          {[1, 2, 3].map((s) => <option key={s} value={s}>{s}x</option>)}
-        </Select>
-        <Select aria-label="Export format" className="flex-1" value={kind} onChange={(e) => setKind(e.target.value as ExportKind)}>
-          <option value="png">PNG</option>
-          <option value="svg">SVG</option>
-          <option value="pdf">PDF</option>
-        </Select>
-      </Row>
-      <Button onClick={run} disabled={busy || !hasSelection}>{busy ? 'Exporting…' : 'Export selection'}</Button>
-    </>
   )
 }

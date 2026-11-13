@@ -1,9 +1,10 @@
 // Every editor command in one table. The main menu, the toolbar and the keyboard handler all read from it,
 // so a menu item can't exist without doing something.
 import { makeNode, type Document, type Node } from '../../shared/document'
-import { fitView, toWorld, zoomAt } from './canvas/viewport'
-import { apply, worldBox, worldMatrix, worldRotation, type Pt } from './model/geometry'
-import { addAutoLayout, align, childrenOf, cloneTree, distribute, descendants, duplicate, group, insert, nextName, orderAbove, pageOf, patch, put, remove, reorder, topLevel, topOrder, translate, ungroup } from './model/ops'
+import { copy, hasClipboard, paste } from './clipboard'
+import { fitView, zoomAt, zoomToFit } from './canvas/viewport'
+import { worldBox } from './model/geometry'
+import { addAutoLayout, align, childrenOf, distribute, duplicate, group, orderAbove, pageOf, patch, put, remove, reorder, topLevel, translate, ungroup } from './model/ops'
 import { addVariant, combineAsVariants, detach, makeComponent, resetOverrides, setOf, variantsOf } from './model/components'
 import type { EditorState, EditorStore, Tool } from './store'
 import { deletePoint, editNode, exitMode, setTool, showPage } from './tools'
@@ -19,52 +20,6 @@ export interface Command {
   run(store: EditorStore, actions: Actions): void
 }
 
-// In-app clipboard: survives switching projects within a session.
-let clipboard: { roots: { node: Node; centre: Pt; rotation: number }[]; nodes: Node[]; images: Map<string, Uint8Array> } | null = null
-
-export function copy(store: EditorStore) {
-  const { doc, selection } = store.get(), ids = topLevel(doc, selection)
-  if (!ids.length) return
-  const nodes = ids.flatMap((id) => [doc.nodes[id], ...descendants(doc, id)])
-  const images = new Map<string, Uint8Array>()
-  for (const n of nodes) for (const p of [...n.fills, ...n.strokes]) if (p.type === 'IMAGE' && store.imageBytes(p.hash)) images.set(p.hash, store.imageBytes(p.hash)!)
-  clipboard = {
-    nodes, images,
-    roots: ids.map((id) => ({ node: doc.nodes[id], centre: apply(worldMatrix(doc, id), { x: doc.nodes[id].width / 2, y: doc.nodes[id].height / 2 }), rotation: worldRotation(doc, id) })),
-  }
-}
-
-/** Pastes into the original parent when it's on this page (same spot, on top); otherwise onto the page at the same page position. */
-export async function paste(store: EditorStore) {
-  const clip = clipboard
-  if (!clip) return
-  for (const [hash, bytes] of clip.images) if (!store.imageBytes(hash)) await store.addImage(bytes)
-  const kids = (id: string) => clip.nodes.filter((n) => n.parentId === id)
-  store.update((doc) => {
-    const { pageId } = store.get(), ids: string[] = []
-    for (const root of clip.roots) {
-      const home = root.node.parentId && doc.nodes[root.node.parentId] && pageOf(doc, root.node.parentId) === pageId
-      const parentId = home ? root.node.parentId! : pageId
-      const placed = home ? root.node : { ...root.node, x: root.centre.x - root.node.width / 2, y: root.centre.y - root.node.height / 2, rotation: root.rotation }
-      const copies = cloneTree(placed, kids, parentId, topOrder(doc, parentId))
-      doc = put(doc, copies)
-      ids.push(copies[0].id)
-    }
-    return { doc, ids }
-  })
-}
-
-/** Places an image (from the system clipboard) as a rectangle with an image fill, centred in the viewport. */
-export async function pasteImage(store: EditorStore, file: Blob) {
-  const bytes = new Uint8Array(await file.arrayBuffer())
-  const hash = await store.addImage(bytes)
-  const bitmap = typeof createImageBitmap === 'function' ? await createImageBitmap(file).catch(() => null) : null
-  const { view, size, pageId } = store.get(), width = bitmap?.width ?? 200, height = bitmap?.height ?? 200
-  const c = toWorld(view, { x: size.w / 2, y: size.h / 2 })
-  const node = makeNode('RECTANGLE', { name: nextName(store.get().doc, 'Image'), x: c.x - width / 2, y: c.y - height / 2, width, height, fills: [{ type: 'IMAGE', visible: true, hash }] })
-  store.update((doc) => ({ doc: insert(doc, node, pageId), ids: [node.id] }))
-}
-
 const has = (s: EditorState) => s.selection.length > 0
 const inMode = (s: EditorState) => s.mode.kind !== 'none'
 const centre = (s: EditorState) => ({ x: s.size.w / 2, y: s.size.h / 2 })
@@ -75,11 +30,6 @@ const toggle = (field: 'visible' | 'locked') => (st: EditorStore) => {
 }
 const alignment = (id: string, label: string, key: string, axis: 'x' | 'y', to: 0 | 0.5 | 1): Command =>
   ({ id, label, group: 'Arrange', keys: [key], enabled: has, run: (st) => st.update((d) => align(d, st.get().selection, axis, to)) })
-/** Zoom to fit the whole page (never past 100 % on open, any zoom on request). */
-export const zoomToFit = (st: EditorStore, maxZoom?: number) => {
-  const s = st.get()
-  st.set({ view: fitView(worldBox(s.doc, childrenOf(s.doc, s.pageId).map((n) => n.id)), s.size, 48, maxZoom) })
-}
 
 export const COMMANDS: Command[] = [
   { id: 'back', label: 'Back to projects', group: 'File', run: (_, a) => a.back() },
@@ -91,7 +41,7 @@ export const COMMANDS: Command[] = [
   { id: 'cut', label: 'Cut', group: 'Edit', keys: ['Ctrl+X'], enabled: has, run: (st) => { copy(st); st.update((d) => remove(d, st.get().selection)) } },
   { id: 'copy', label: 'Copy', group: 'Edit', keys: ['Ctrl+C'], enabled: has, run: copy },
   // Ctrl+V itself arrives as a DOM paste event (so images on the system clipboard can be read); see Editor.
-  { id: 'paste', label: 'Paste', group: 'Edit', keys: ['Ctrl+V'], enabled: () => clipboard !== null, run: (st) => void paste(st) },
+  { id: 'paste', label: 'Paste', group: 'Edit', keys: ['Ctrl+V'], enabled: hasClipboard, run: (st) => void paste(st) },
   { id: 'duplicate', label: 'Duplicate', group: 'Edit', keys: ['Ctrl+D'], enabled: has, run: (st) => st.update((d) => duplicate(d, st.get().selection)) },
   // while editing points, Delete removes the selected point rather than the layer
   { id: 'delete', label: 'Delete', group: 'Edit', keys: ['Delete', 'Backspace'], enabled: (s) => (s.mode.kind === 'points' ? !!s.mode.sel : has(s)), run: (st) => (st.get().mode.kind === 'points' ? deletePoint(st) : st.update((d) => remove(d, st.get().selection))) },
@@ -164,6 +114,8 @@ function goToMain(st: EditorStore) {
 }
 
 export const isEnabled = (c: Command, store: EditorStore) => !c.enabled || c.enabled(store.get(), store)
+/** Runs a command from a panel button. Commands that need the Editor's own actions (back, export) do nothing here. */
+export const runCommand = (store: EditorStore, id: string) => COMMANDS.find((c) => c.id === id)!.run(store, { back() {}, openExport() {} })
 
 const CODES: Record<string, string> = { BracketLeft: '[', BracketRight: ']', Backslash: '\\', Equal: '=', Minus: '-', NumpadAdd: '=', NumpadSubtract: '-' }
 /** "Ctrl+Shift+G" for a key event. Digits and punctuation go by physical key so they work on any layout; letters by what they type. */

@@ -5,11 +5,10 @@ import type { Document } from '../../shared/document'
 import { errorText } from '../util'
 import { thumbnail } from './canvas/render'
 import type { Guides } from './canvas/snap'
-import { fitText } from './canvas/text'
 import type { View } from './canvas/viewport'
 import type { Box } from './model/geometry'
-import { syncInstances } from './model/components'
-import { autoLayout, fitGroups, put, type Edit } from './model/ops'
+import type { Edit } from './model/ops'
+import { normalize } from './normalize'
 import type { Anchor } from './model/path'
 
 export type Tool = 'move' | 'hand' | 'frame' | 'rectangle' | 'ellipse' | 'line' | 'pen' | 'text'
@@ -52,23 +51,6 @@ export const gestureStep = (of?: string): Step => ({ key: `gesture:${of ?? ++ges
 export const AUTOSAVE_MS = 1000
 const RETRY_MS = 5000
 const HISTORY = 200
-
-/** Re-measures text nodes changed since `prev`. */
-function fitTexts(prev: Document, next: Document): Document {
-  const refit = Object.values(next.nodes).filter((n) => n.type === 'TEXT' && prev.nodes[n.id] !== n).map(fitText).filter((n) => next.nodes[n.id] !== n)
-  return refit.length ? put(next, refit) : next
-}
-/**
- * Text boxes follow their content, groups wrap their children and auto-layout frames place theirs, whatever edit was
- * made. `base` is the document before the current undo step (see syncInstances).
- */
-function normalize(prev: Document, next: Document, base: Document): Document {
-  if (next === prev) return prev
-  // instances sync first, while `next` still holds exactly what the user changed (their overrides)
-  next = syncInstances(prev, next, base)
-  // auto layout can change a text box's width (fill), so text is measured again and laid out once more
-  return autoLayout(fitTexts(prev, autoLayout(fitGroups(fitTexts(prev, next)))))
-}
 
 export function createEditorStore(opened: OpenedProject, api: RefigApi) {
   const id = opened.summary.id
