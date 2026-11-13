@@ -7,6 +7,7 @@ import { addAutoLayout, align, childrenOf, cloneTree, distribute, descendants, d
 import { orderBetween } from '../../shared/order'
 import { addVariant, combineAsVariants, detach, makeComponent, resetOverrides, setOf, variantsOf } from './model/components'
 import type { EditorState, EditorStore, Tool } from './store'
+import { deletePoint, finishPen, setTool } from './tools'
 
 /** Things only the Editor component can do. */
 export interface Actions { back(): void; openExport(): void }
@@ -68,7 +69,7 @@ export async function pasteImage(store: EditorStore, file: Blob) {
 
 const has = (s: EditorState) => s.selection.length > 0
 const centre = (s: EditorState) => ({ x: s.size.w / 2, y: s.size.h / 2 })
-const tool = (id: Tool, label: string, key: string): Command => ({ id: `tool-${id}`, label, group: 'Tools', keys: [key], run: (st) => st.set({ tool: id }) })
+const tool = (id: Tool, label: string, key: string): Command => ({ id: `tool-${id}`, label, group: 'Tools', keys: [key], run: (st) => setTool(st, id) })
 const toggle = (field: 'visible' | 'locked') => (st: EditorStore) => {
   const { doc, selection } = st.get(), all = selection.every((id) => doc.nodes[id]?.[field])
   st.update((d) => patch(d, selection, { [field]: !all }))
@@ -93,7 +94,8 @@ export const COMMANDS: Command[] = [
   // Ctrl+V itself arrives as a DOM paste event (so images on the system clipboard can be read); see Editor.
   { id: 'paste', label: 'Paste', group: 'Edit', keys: ['Ctrl+V'], enabled: () => clipboard !== null, run: (st) => void paste(st) },
   { id: 'duplicate', label: 'Duplicate', group: 'Edit', keys: ['Ctrl+D'], enabled: has, run: (st) => { let ids: string[] = []; st.update((d) => { const r = duplicate(d, st.get().selection); ids = r.ids; return r.doc }); st.set({ selection: ids }) } },
-  { id: 'delete', label: 'Delete', group: 'Edit', keys: ['Delete', 'Backspace'], enabled: has, run: (st) => st.update((d) => remove(d, st.get().selection)) },
+  // while editing points, Delete removes the selected point rather than the layer
+  { id: 'delete', label: 'Delete', group: 'Edit', keys: ['Delete', 'Backspace'], enabled: (s) => (s.vectorEdit ? !!s.vectorEdit.sel : has(s)), run: (st) => (st.get().vectorEdit ? deletePoint(st) : st.update((d) => remove(d, st.get().selection))) },
   { id: 'select-all', label: 'Select all', group: 'Edit', keys: ['Ctrl+A'], run: (st) => { const s = st.get(); st.set({ selection: childrenOf(s.doc, s.pageId).filter((n) => n.visible && !n.locked).map((n) => n.id) }) } },
 
   { id: 'zoom-in', label: 'Zoom in', group: 'View', keys: ['Ctrl+='], run: (st) => { const s = st.get(); st.set({ view: zoomAt(s.view, centre(s), s.view.zoom * 2) }) } },
@@ -128,9 +130,22 @@ export const COMMANDS: Command[] = [
   { id: 'distribute-v', label: 'Distribute vertical spacing', group: 'Arrange', keys: ['Ctrl+Alt+V'], enabled: (s) => topLevel(s.doc, s.selection).length > 2, run: (st) => st.update((d) => distribute(d, st.get().selection, 'y')) },
 
   tool('move', 'Move', 'V'), tool('hand', 'Hand', 'H'), tool('frame', 'Frame', 'F'), tool('rectangle', 'Rectangle', 'R'),
-  tool('ellipse', 'Ellipse', 'O'), tool('line', 'Line', 'L'), tool('text', 'Text', 'T'),
-  { id: 'escape', label: 'Deselect', group: 'Tools', keys: ['Escape'], run: (st) => st.set({ selection: [], tool: 'move' }) },
-  { id: 'edit-text', label: 'Edit text', group: 'Tools', keys: ['Enter'], enabled: (s) => s.selection.length === 1 && s.doc.nodes[s.selection[0]]?.type === 'TEXT', run: (st) => st.set({ editingText: st.get().selection[0] }) },
+  tool('ellipse', 'Ellipse', 'O'), tool('line', 'Line', 'L'), tool('pen', 'Pen', 'P'), tool('text', 'Text', 'T'),
+  // Escape steps out one level: finishes a pen path, ends point editing, then deselects
+  { id: 'escape', label: 'Deselect', group: 'Tools', keys: ['Escape'], run: (st) => {
+    const s = st.get()
+    if (s.pen) finishPen(st)
+    else if (s.vectorEdit) st.set({ vectorEdit: null })
+    else st.set({ selection: [], tool: 'move' })
+  } },
+  // Enter edits a text's characters or a vector's points; it also finishes a pen path or point editing
+  { id: 'edit', label: 'Edit text or points', group: 'Tools', keys: ['Enter'], enabled: (s) => !!s.pen || !!s.vectorEdit || (s.selection.length === 1 && ['TEXT', 'VECTOR'].includes(s.doc.nodes[s.selection[0]]?.type)), run: (st) => {
+    const s = st.get(), n = s.doc.nodes[s.selection[0]]
+    if (s.pen) finishPen(st)
+    else if (s.vectorEdit) st.set({ vectorEdit: null })
+    else if (n.type === 'TEXT') st.set({ editingText: n.id })
+    else st.set({ vectorEdit: { id: n.id, sel: null } })
+  } },
 ]
 
 function wrap(st: EditorStore, type: 'GROUP' | 'FRAME') {

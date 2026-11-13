@@ -8,6 +8,7 @@ const PATHS = {
   line: 'M3 13L13 3',
   vector: 'M3 13C3 7 7 3 13 3M2 12h2v2H2zM12 2h2v2h-2z',
   text: 'M3.5 4V3h9v1M8 3v10M6.5 13h3',
+  pen: 'M8 2.5l4 6.5-2.5 4.5h-3L4 9zM8 2.5V8M6.5 13.5h3',
   component: 'M8 1.5L10.5 4 8 6.5 5.5 4zM8 9.5L10.5 12 8 14.5 5.5 12zM4 5.5L6.5 8 4 10.5 1.5 8zM12 5.5L14.5 8 12 10.5 9.5 8z',
   instance: 'M8 2l6 6-6 6-6-6z',
   group: 'M2 4V2h2M12 2h2v2M14 12v2h-2M4 14H2v-2M5 5h4v4H5zM8 8h3v3H8z',

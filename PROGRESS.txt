@@ -73,7 +73,16 @@ Status legend: [done] [in progress] [todo]
        - FORMAT_VERSION is 2, so older apps refuse gradient files with "newer version".
        - Zero-height vectors draw gradient strokes; Add stop stops at 32; text editing shows a
          gradient's midpoint colour; SVG vector clips carry clip-rule.
- 6. [todo] Pen tool + vector node editing
+ 6. [done] Pen tool + vector node editing (commit: see `git log --grep "Add pen tool"`)
+       Paths as anchors with Bézier handles: src/renderer/editor/model/path.ts (parsePath,
+       pathData, anchorsOf, withAnchors — re-fits the box, keeps points in place on the page).
+       Pen (P): click = corner, drag = symmetric handles, Shift = 45°, click the first point to
+       close; Enter/Escape/tool change finishes; a lone point is removed; one undo step per path.
+       In-progress points live in store `pen` (path data can't hold the last point's out-handle).
+       Point editing: Enter or double-click a VECTOR; drag points/handles; Delete removes a point;
+       Escape/Enter/click away ends it. Imported outlined strokes are dropped on edit.
+       Skipped: add a point on a segment, bend tool / breaking handle symmetry, multi-point
+       selection, continuing an open path, exact curve bounds (box wraps the handles).
  7. [todo] Pencil (freehand) tool
  8. [todo] Boolean operations (union, subtract, intersect, exclude) + flatten
  9. [todo] Masks
@@ -101,9 +110,8 @@ Status legend: [done] [in progress] [todo]
 31. [todo] Assets panel
 32. [todo] Outline text; font embedding in SVG/PDF export
 
-Next step: #6 Pen tool + vector node editing. Plan first. VECTOR nodes exist (import only) with
-`vector` {w, h, fill paths, stroke paths} in absolute M/L/Q/C/Z; tools live in
-src/renderer/editor/tools/index.ts.
+Next step: #7 Pencil (freehand) tool. Plan first. Reuse model/path.ts: sample the pointer,
+simplify/fit to Béziers, write with withAnchors (pen tool code in tools/index.ts is the pattern).
 
 Reviewing the feature commits: `/code-review ultra cc7cc81` reviews everything since before #1.
 

@@ -10,6 +10,7 @@ import { toSvg } from './export/svg'
 import { apply, corners, invert, lineBetween, localMatrix, mul, resizeBox, worldBox } from './model/geometry'
 import { addAutoLayout, addPage, align, autoLayout, childrenOf, distribute, duplicate, group, insert, moveTo, movePage, patch, put, remove, removePage, reorder, resizeNode, topLevel, translate, ungroup } from './model/ops'
 import { setVariant, syncInstances, variantProps, variantsOf } from './model/components'
+import { anchorsOf, parsePath, pathData, withAnchors } from './model/path'
 import { AUTOSAVE_MS, createEditorStore } from './store'
 import { beginGesture, type Pointer } from './tools'
 
@@ -815,4 +816,99 @@ test('variants: matching ignores the order properties are listed in', () => {
   const target = add('Tone=Light, Size=L') // the exact match, listed the other way round
   store.update((d) => setVariant(d, i, 'Size', 'L'))
   expect(store.get().doc.nodes[i].instanceOf).toBe(target)
+})
+
+// ── pen + point editing ──────────────────────────────────────────────────────────────────────────────────────────────
+test('paths: parse and write back, quadratics become cubics, a closing point folds into the start', () => {
+  const subs = parsePath('M0 0L10 0C10 5 5 10 0 10ZM20 20L30 20')
+  expect(subs).toHaveLength(2)
+  expect(subs[0]).toMatchObject({ closed: true, anchors: [{ x: 0, y: 0 }, { x: 10, y: 0, out: { x: 10, y: 5 } }, { x: 0, y: 10, in: { x: 5, y: 10 } }] })
+  expect(pathData(subs)).toBe('M0 0L10 0C10 5 5 10 0 10ZM20 20L30 20')
+  const q = parsePath('M0 0Q3 3 6 0')[0].anchors
+  expect(q[0].out).toEqual({ x: 2, y: 2 }); expect(q[1].in).toEqual({ x: 4, y: 2 })
+  expect(parsePath('M0 0L10 0L10 10L0 0Z')[0].anchors).toHaveLength(3) // explicit return to the start
+  expect(parsePath('M0 0 5 5 10 0')[0].anchors).toHaveLength(3) // pairs after M are line-tos
+  expect(pathData(parsePath('M0 0L4 0L4 4Z'))).toBe('M0 0L4 0L4 4Z')
+})
+
+test('paths: re-fitting a rotated vector keeps every point where it was on the page', () => {
+  const n = makeNode('VECTOR', { x: 100, y: 50, width: 10, height: 10, rotation: 30, vector: { w: 10, h: 10, fill: [{ d: 'M0 0L10 10', rule: 'evenodd' }], stroke: [{ d: 'M0 0Z', rule: 'nonzero' }] } })
+  const pageOf = (node: Node, p: { x: number; y: number }) => apply(localMatrix(node), p)
+  const before = anchorsOf(n)[0].anchors.map((a) => pageOf(n, a))
+  const moved = withAnchors(n, [{ closed: false, anchors: [{ x: -5, y: 0 }, { x: 10, y: 10 }] }])
+  expect(moved).toMatchObject({ width: 15, height: 10, rotation: 30, vector: { w: 15, h: 10, fill: [{ d: 'M0 0L15 10', rule: 'evenodd' }], stroke: [] } })
+  const after = anchorsOf(moved)[0].anchors.map((a) => pageOf(moved, a))
+  near(after[1].x, before[1].x); near(after[1].y, before[1].y) // the point that didn't move stayed put
+})
+
+test('pen: clicks draw corners, a drag pulls handles, the first point closes, the whole path is one undo step', () => {
+  const { store, doc } = open()
+  store.set({ tool: 'pen' })
+  drag(store, at(600, 600))
+  drag(store, at(700, 600), at(720, 640), at(740, 680)) // drag: handles
+  const id = store.get().pen!.id
+  expect(store.get().pen!.anchors[1]).toEqual({ x: 700, y: 600, out: { x: 740, y: 680 }, in: { x: 660, y: 520 } }) // page = parent coords here
+  drag(store, at(700, 700))
+  drag(store, at(603, 602)) // back on the first point
+  const s = store.get(), n = s.doc.nodes[id]
+  expect(s).toMatchObject({ pen: null, tool: 'move', selection: [id] })
+  expect(n).toMatchObject({ type: 'VECTOR', name: 'Vector 1', fills: [], strokes: [solid(0, 0, 0)] })
+  expect(anchorsOf(n)[0]).toMatchObject({ closed: true })
+  expect(anchorsOf(n)[0].anchors).toHaveLength(3)
+  expect(anchorsOf(n)[0].anchors[1].out).toBeDefined() // the dragged handle shapes the next segment too
+  expect(toSvg(s.doc, [id], () => undefined)).toContain('<path d="M')
+  store.undo()
+  expect(store.get().doc).toBe(doc)
+})
+
+test('pen: Escape or a tool change finishes an open path; a single point leaves nothing; Shift keeps 45°', () => {
+  const { store } = open()
+  store.set({ tool: 'pen' })
+  drag(store, at(600, 600))
+  drag(store, at(700, 630, { shift: true })) // snapped onto the horizontal
+  const id = store.get().pen!.id
+  expect(store.get().pen!.anchors[1]).toMatchObject({ x: expect.closeTo(704.4, 1), y: expect.closeTo(600, 6) })
+  run(store, 'escape')
+  expect(store.get()).toMatchObject({ pen: null, tool: 'move', selection: [id] })
+  expect(anchorsOf(store.get().doc.nodes[id])[0].closed).toBe(false)
+  store.set({ tool: 'pen' })
+  drag(store, at(800, 800))
+  const lone = store.get().pen!.id
+  run(store, 'tool-rectangle')
+  expect(store.get().doc.nodes[lone]).toBeUndefined()
+  expect(store.get().tool).toBe('rectangle')
+})
+
+test('point editing: Enter starts it, dragging moves one point or one handle, Delete removes points, Escape ends it', () => {
+  const { store, page } = open()
+  const v = makeNode('VECTOR', { x: 600, y: 600, width: 100, height: 100, strokes: [solid(0, 0, 0)], vector: { w: 50, h: 50, fill: [{ d: 'M0 0L50 0C50 25 25 50 0 50Z', rule: 'nonzero' }], stroke: [{ d: 'M0 0Z', rule: 'nonzero' }] } })
+  store.update((d) => insert(d, v, page), undefined, [v.id])
+  run(store, 'edit')
+  expect(store.get().vectorEdit).toEqual({ id: v.id, sel: null })
+  drag(store, at(700, 600), at(720, 590), at(740, 580)) // the second anchor (100, 0 in px)
+  let n = store.get().doc.nodes[v.id]
+  expect(store.get().vectorEdit!.sel).toEqual({ s: 0, i: 1 })
+  expect(anchorsOf(n)[0].anchors[1]).toMatchObject({ x: 140, y: 0, out: { x: 140, y: 50 } }) // handles came along
+  expect(n).toMatchObject({ x: 600, y: 580, width: 140, height: 120 }) // the box re-fitted
+  expect(n.vector!.stroke).toEqual([]) // the imported outline no longer matches: dropped
+  drag(store, at(740, 630), at(760, 630)) // its out-handle (140, 50 in px)
+  expect(anchorsOf(store.get().doc.nodes[v.id])[0].anchors[1]).toMatchObject({ x: 140, out: { x: 160, y: 50 } })
+  run(store, 'delete')
+  n = store.get().doc.nodes[v.id]
+  expect(anchorsOf(n)[0].anchors).toHaveLength(2)
+  store.set({ vectorEdit: { id: v.id, sel: { s: 0, i: 0 } } })
+  run(store, 'delete') // one point left: the vector goes
+  expect(store.get().doc.nodes[v.id]).toBeUndefined()
+  expect(store.get().vectorEdit).toBeNull()
+  store.undo(); store.undo()
+  store.set({ selection: [v.id], vectorEdit: { id: v.id, sel: null } })
+  run(store, 'escape')
+  expect(store.get()).toMatchObject({ vectorEdit: null, selection: [v.id] })
+})
+
+test('paths: a control point sitting on its anchor is not a handle (so the anchor stays grabbable)', () => {
+  const [sub] = parsePath('M0 0C10 0 20 20 20 20L0 20Z')
+  expect(sub.anchors[1]).toEqual({ x: 20, y: 20 })
+  expect(sub.anchors[0].out).toEqual({ x: 10, y: 0 })
+  expect(pathData([sub])).toBe('M0 0C10 0 20 20 20 20L0 20Z')
 })

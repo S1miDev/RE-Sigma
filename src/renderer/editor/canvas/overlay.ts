@@ -2,6 +2,7 @@
 import type { Document } from '../../../shared/document'
 import { apply, corners, worldMatrix, type Box, type Pt } from '../model/geometry'
 import { childrenOf } from '../model/ops'
+import { anchorsOf, type Anchor } from '../model/path'
 import type { Guides } from './snap'
 import { toScreen, type View } from './viewport'
 
@@ -24,7 +25,10 @@ export const handleAt = (handles: Handle[], p: Pt, radius = 7) => handles.find((
 
 export function drawOverlay(
   ctx: CanvasRenderingContext2D,
-  s: { doc: Document; pageId: string; selection: string[]; view: View; overlay: { marquee?: Box; guides?: Guides }; tool: string },
+  s: {
+    doc: Document; pageId: string; selection: string[]; view: View; overlay: { marquee?: Box; guides?: Guides }; tool: string
+    pen: { id: string; anchors: Anchor[] } | null; vectorEdit: { id: string; sel: { s: number; i: number } | null } | null
+  },
   dpr: number,
 ) {
   const { doc, view } = s, W = ctx.canvas.width / dpr, H = ctx.canvas.height / dpr
@@ -49,7 +53,24 @@ export function drawOverlay(
     ctx.closePath()
     ctx.stroke()
   }
-  if (s.selection.length === 1 && s.tool === 'move') {
+  // points of the path being drawn or edited replace the resize handles
+  // (the pen's points are in its parent's coordinates; an edited vector's in its own)
+  const pen = s.pen && doc.nodes[s.pen.id], edited = s.vectorEdit && doc.nodes[s.vectorEdit.id]
+  const points = pen ? { subs: [{ anchors: s.pen!.anchors, closed: false }], m: worldMatrix(doc, pen.parentId) }
+    : edited ? { subs: anchorsOf(edited), m: worldMatrix(doc, edited.id) } : null
+  if (points) {
+    const at = (q: Pt) => toScreen(view, apply(points.m, q)), sel = s.vectorEdit?.sel
+    points.subs.forEach((sub, si) => sub.anchors.forEach((a, i) => {
+      const p = at(a)
+      for (const h of [a.in, a.out]) if (h) {
+        const q = at(h)
+        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke()
+        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(q.x, q.y, 3, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
+      }
+      ctx.fillStyle = sel?.s === si && sel.i === i ? ACCENT : '#fff'
+      ctx.beginPath(); ctx.rect(p.x - 3.5, p.y - 3.5, 7, 7); ctx.fill(); ctx.stroke()
+    }))
+  } else if (s.selection.length === 1 && s.tool === 'move') {
     const handles = handlesOf(doc, s.selection[0], view), rotate = handles.find((h) => h.kind === 'rotate')
     if (rotate) {
       const top = handles.find((h) => h.hx === 0 && h.hy === -1 && h.kind === 'resize') ?? rotate

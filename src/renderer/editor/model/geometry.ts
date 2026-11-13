@@ -26,6 +26,11 @@ export function localMatrix(n: Pick<Node, 'x' | 'y' | 'width' | 'height' | 'rota
   const c = Math.cos(rad(n.rotation)), s = Math.sin(rad(n.rotation)), hw = n.width / 2, hh = n.height / 2
   return [c, s, -s, c, n.x + hw - (c * hw - s * hh), n.y + hh - (s * hw + c * hh)]
 }
+/** The x/y of a w×h box with this rotation whose local (0, 0) lands on `origin` (parent coordinates). Inverse of localMatrix's translation. */
+export function boxAt(rotation: number, width: number, height: number, origin: Pt) {
+  const c = Math.cos(rad(rotation)), s = Math.sin(rad(rotation)), hw = width / 2, hh = height / 2
+  return { x: origin.x - hw + (c * hw - s * hh), y: origin.y - hh + (s * hw + c * hh), width, height }
+}
 /** Box-local coordinates → page coordinates. A PAGE is the identity. */
 export function worldMatrix(doc: Document, id: string | null): Mat {
   let m = IDENTITY

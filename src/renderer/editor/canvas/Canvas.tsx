@@ -105,7 +105,8 @@ export function Canvas() {
         onPointerCancel={up}
         onDoubleClick={(e) => {
           const s = store.get(), hit = s.tool === 'move' && hitTest(s.doc, s.pageId, pointer(e).world, { deep: true, tolerance: 4 / s.view.zoom })
-          if (hit) store.set({ selection: [hit], editingText: s.doc.nodes[hit].type === 'TEXT' ? hit : null })
+          const type = hit && s.doc.nodes[hit].type
+          if (hit) store.set({ selection: [hit], editingText: type === 'TEXT' ? hit : null, vectorEdit: type === 'VECTOR' ? { id: hit, sel: null } : null })
         }}
       />
       {editingText && <TextEditor key={editingText} id={editingText} />}

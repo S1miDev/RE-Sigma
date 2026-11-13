@@ -242,6 +242,38 @@ test('a gradient fill renders and exports to SVG', async () => {
   await page.screenshot({ path: 'test-results/gradient-diamond.png' })
 })
 
+test('the pen draws a closed path whose points can then be dragged', async () => {
+  const page = await launch()
+  await page.getByRole('button', { name: 'New project' }).first().click()
+  await expect(page.getByRole('toolbar', { name: 'Tools' })).toBeVisible()
+  const box = (await page.getByLabel('Canvas').boundingBox())!
+  const click = (x: number, y: number) => page.mouse.click(box.x + x, box.y + y)
+  await page.keyboard.press('p')
+  await click(300, 300)
+  // a drag on the second point makes a curve
+  await page.mouse.move(box.x + 500, box.y + 300)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 560, box.y + 360, { steps: 5 })
+  await page.mouse.up()
+  await click(400, 450)
+  await click(301, 301) // back on the first point: closes
+  await expect(page.getByRole('treeitem', { name: 'Vector 1' })).toBeVisible()
+  await expect(page.getByRole('toolbar', { name: 'Tools' }).getByRole('button', { name: 'Move' })).toHaveAttribute('aria-pressed', 'true')
+  await page.screenshot({ path: 'test-results/pen.png' })
+  await page.keyboard.press('Enter') // edit points
+  await page.mouse.move(box.x + 400, box.y + 450)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 420, box.y + 520, { steps: 5 })
+  await page.mouse.up()
+  await page.screenshot({ path: 'test-results/pen-edited.png' })
+  const out = path.join(profile, 'pen.svg')
+  await answerDialogs([out])
+  await page.keyboard.press('Escape')
+  await page.getByLabel('Export format').selectOption('svg')
+  await page.getByRole('button', { name: 'Export selection' }).click()
+  await expect.poll(() => fs.existsSync(out) && fs.readFileSync(out, 'utf8')).toMatch(/<path d="M[^"]*C[^"]*Z"/)
+})
+
 test('the page has no Node access and only the contract API', async () => {
   const page = await launch()
   const seen = await page.evaluate(() => ({
