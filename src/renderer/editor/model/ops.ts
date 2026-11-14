@@ -139,9 +139,9 @@ export function fit(doc: Document, id: string): Document {
     ...kids.map((k) => ({ ...k, x: k.x - b.x, y: k.y - b.y })),
   ])
 }
-/** Groups always wrap their children; a group with no children is removed. */
+/** Groups (and boolean nodes) always wrap their children; one with no children is removed. */
 export function fitGroups(doc: Document): Document {
-  const groups = Object.values(doc.nodes).filter((n) => n.type === 'GROUP').sort((a, b) => depth(doc, b.id) - depth(doc, a.id))
+  const groups = Object.values(doc.nodes).filter((n) => n.type === 'GROUP' || n.type === 'BOOLEAN').sort((a, b) => depth(doc, b.id) - depth(doc, a.id))
   for (const g of groups) doc = childrenOf(doc, g.id).length ? fit(doc, g.id) : remove(doc, [g.id])
   return doc
 }
@@ -159,7 +159,7 @@ export function follow(c: Constraint, p: number, s: number, from: number, to: nu
 /** Sets a node's box. Resizing a group scales its children with it. */
 function setBox(doc: Document, id: string, box: Rect): Document {
   const n = doc.nodes[id]
-  if (n.type === 'GROUP' && n.width && n.height) {
+  if ((n.type === 'GROUP' || n.type === 'BOOLEAN') && n.width && n.height) {
     // shortcut: a rotated child is scaled along the group's axes, not sheared; exact only for unrotated children.
     const sx = box.width / n.width, sy = box.height / n.height
     for (const k of childrenOf(doc, id)) doc = setBox(doc, k.id, { x: k.x * sx, y: k.y * sy, width: k.width * sx, height: k.height * sy })
@@ -181,6 +181,7 @@ export function resizeNode(doc: Document, id: string, box: Rect): Document {
   return patch(doc, [id], {
     ...(n.layout && (w || h) && { layout: { ...n.layout, hugW: n.layout.hugW && !w, hugH: n.layout.hugH && !h } }),
     ...(w && n.fillW && { fillW: false }), ...(h && n.fillH && { fillH: false }),
+    ...(h && n.type === 'TEXT' && { textFixedHeight: true }),
   })
 }
 
@@ -242,11 +243,11 @@ export function layoutSlot(doc: Document, frameId: string, p: Pt, exclude: strin
 }
 
 /** Wraps the nodes in a new GROUP or FRAME placed where the top-most one was. */
-export function group(doc: Document, ids: string[], type: 'GROUP' | 'FRAME'): Edit {
+export function group(doc: Document, ids: string[], type: 'GROUP' | 'FRAME' | 'BOOLEAN', props: Partial<Node> = {}): Edit {
   const items = topLevel(doc, ids)
   if (!items.length) return { doc, ids: [] }
   const top = doc.nodes[items.at(-1)!]
-  const box = makeNode(type, { name: nextName(doc, type === 'GROUP' ? 'Group' : 'Frame'), parentId: top.parentId, clipsContent: false, order: orderAbove(doc, top) })
+  const box = makeNode(type, { name: nextName(doc, type === 'FRAME' ? 'Frame' : 'Group'), parentId: top.parentId, clipsContent: false, order: orderAbove(doc, top), ...props })
   return { doc: fit(moveTo(put(doc, [box]), items, box.id), box.id), ids: [box.id] }
 }
 
@@ -255,7 +256,7 @@ export function ungroup(doc: Document, ids: string[]): Edit {
   const freed: string[] = []
   for (const id of topLevel(doc, ids)) {
     const g = doc.nodes[id]
-    if ((g.type !== 'GROUP' && g.type !== 'FRAME') || g.instanceOf) continue // an instance's children can't leave it; detach it first
+    if (!['GROUP', 'FRAME', 'BOOLEAN'].includes(g.type) || g.instanceOf) continue // an instance's children can't leave it; detach it first
     const kids = childrenOf(doc, id).map((k) => k.id)
     doc = remove(moveTo(doc, kids, g.parentId!, { before: id }), [id])
     freed.push(...kids)

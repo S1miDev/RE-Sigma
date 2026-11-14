@@ -3,7 +3,10 @@ import type { Document } from '../../../shared/document'
 import { apply, corners, worldMatrix, type Pt } from '../model/geometry'
 import { childrenOf } from '../model/ops'
 import { anchorsOf } from '../model/path'
-import type { EditorState } from '../store'
+import type { EditorState, Mode } from '../store'
+import { caretPos, selectionRects } from './caret'
+import { imageBox } from './paintPlan'
+import { layoutText } from './text'
 import { toScreen, type View } from './viewport'
 
 const ACCENT = '#0d99ff'
@@ -21,9 +24,17 @@ export function handlesOf(doc: Document, id: string, view: View): Handle[] {
   if (n.type !== 'LINE') out.push({ kind: 'rotate', hx: 0, hy: -1, at: at(n.width / 2, -22 / view.zoom) })
   return out
 }
-export const handleAt = (handles: Handle[], p: Pt, radius = 7) => handles.find((h) => Math.hypot(h.at.x - p.x, h.at.y - p.y) <= radius)
+/** The image being cropped: its four corners in screen coordinates (clockwise from the top left) and the paint, if the mode still holds. */
+export function cropCorners(doc: Document, mode: Mode, view: View, image: (hash: string) => { width: number; height: number } | undefined) {
+  if (mode.kind !== 'crop') return null
+  const n = doc.nodes[mode.id], p = n?.fills[mode.paint], img = p?.type === 'IMAGE' ? image(p.hash) : undefined
+  if (!n || p?.type !== 'IMAGE' || !img) return null
+  const b = imageBox(p, n.width, n.height, img.width, img.height), m = worldMatrix(doc, n.id)
+  return { paint: p, corners: [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]].map(([x, y]) => toScreen(view, apply(m, { x, y }))) }
+}
+export const handleAt =(handles: Handle[], p: Pt, radius = 7) => handles.find((h) => Math.hypot(h.at.x - p.x, h.at.y - p.y) <= radius)
 
-export function drawOverlay(ctx: CanvasRenderingContext2D, s: Pick<EditorState, 'doc' | 'pageId' | 'selection' | 'view' | 'overlay' | 'tool' | 'mode'>, dpr: number) {
+export function drawOverlay(ctx: CanvasRenderingContext2D, s: Pick<EditorState, 'doc' | 'pageId' | 'selection' | 'view' | 'overlay' | 'tool' | 'mode'>, dpr: number, image: (hash: string) => { width: number; height: number } | undefined = () => undefined) {
   const { doc, view } = s, W = ctx.canvas.width / dpr, H = ctx.canvas.height / dpr
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.lineWidth = 1
@@ -52,8 +63,32 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: Pick<EditorState, 
   const points = !n ? null
     : mode.kind === 'pen' ? { subs: [{ anchors: mode.anchors, closed: false }], m: worldMatrix(doc, n.parentId) }
     : mode.kind === 'points' ? { subs: anchorsOf(n), m: worldMatrix(doc, n.id) } : null
-  if (points) {
-    const at = (q: Pt) => toScreen(view, apply(points.m, q)), sel = mode.kind === 'points' ? mode.sel : null
+  if (mode.kind === 'text' && n?.type === 'TEXT') {
+    // selection boxes and the caret, laid out like the text itself
+    const layout = layoutText(n, { editing: true }), m = worldMatrix(doc, n.id)
+    const quad = (x: number, y: number, w: number, h: number) => [[x, y], [x + w, y], [x + w, y + h], [x, y + h]].map(([px, py]) => toScreen(view, apply(m, { x: px, y: py })))
+    ctx.fillStyle = 'rgba(13, 153, 255, 0.3)'
+    for (const r of selectionRects(layout, Math.min(mode.anchor, mode.focus), Math.max(mode.anchor, mode.focus))) {
+      const q = quad(r.x, r.y, r.w, r.h)
+      ctx.beginPath(); q.forEach((pt, i) => (i ? ctx.lineTo(pt.x, pt.y) : ctx.moveTo(pt.x, pt.y))); ctx.closePath(); ctx.fill()
+    }
+    if (mode.anchor === mode.focus) {
+      const c = caretPos(layout, mode.focus), q = quad(c.x, c.y, 0, c.h)
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5 // shortcut: a solid caret, no blink
+      ctx.beginPath(); ctx.moveTo(q[0].x, q[0].y); ctx.lineTo(q[3].x, q[3].y); ctx.stroke()
+      ctx.strokeStyle = ACCENT; ctx.lineWidth = 1
+    }
+  }
+  const crop = cropCorners(doc, mode, view, image)
+  if (crop) {
+    // the whole image, outlined, with a handle on each corner to scale it
+    ctx.beginPath()
+    crop.corners.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)))
+    ctx.closePath(); ctx.stroke()
+    ctx.fillStyle = '#fff'
+    for (const p of crop.corners) { ctx.beginPath(); ctx.rect(p.x - 3.5, p.y - 3.5, 7, 7); ctx.fill(); ctx.stroke() }
+  } else if (points) {
+    const at =(q: Pt) => toScreen(view, apply(points.m, q)), sel = mode.kind === 'points' ? mode.sel : null
     points.subs.forEach((sub, si) => sub.anchors.forEach((a, i) => {
       const p = at(a)
       for (const h of [a.in, a.out]) if (h) {

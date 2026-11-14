@@ -3,6 +3,7 @@ RE-Sigma: features missing vs Figma, implemented in list order
 Source of the list: comparison of RE-Sigma with Figma's editor (2026-11-13).
 Workflow per feature: plan -> implement -> unit tests (npm test) -> typecheck (npm run typecheck)
 -> e2e check in the packaged app (npm run test:e2e -- -g "<name>") -> commit -> update this file.
+Log every bug/issue found while building a feature in issues.txt.
 
 Status legend: [done] [in progress] [todo]
 
@@ -83,16 +84,113 @@ Status legend: [done] [in progress] [todo]
        Escape/Enter/click away ends it. Imported outlined strokes are dropped on edit.
        Skipped: add a point on a segment, bend tool / breaking handle symmetry, multi-point
        selection, continuing an open path, exact curve bounds (box wraps the handles).
- 7. [todo] Pencil (freehand) tool
- 8. [todo] Boolean operations (union, subtract, intersect, exclude) + flatten
- 9. [todo] Masks
-10. [todo] Star, polygon, arrow tools; ellipse arcs; per-corner radius; corner smoothing
-11. [todo] Blend modes and per-fill opacity
-12. [todo] Inner shadow, layer blur, background blur
-13. [todo] Stroke options: dashes, caps, joins, arrowheads, per-side weight
-14. [todo] Image fill modes (fill/fit/crop/tile), SVG/image file import, drag-drop files
-15. [todo] Rich text: mixed styles, decoration, case, lists, vertical align, truncation, system fonts
-16. [todo] Styles: color, text, effect, grid
+ 7. [done] Pencil (freehand) tool (commit: see `git log --grep "Add pencil tool"`)
+       Shift+P. Drag draws a VECTOR: raw polyline while dragging, then fitStroke() in model/path.ts
+       (Douglas-Peucker to 1.5 screen px, Catmull-Rom handles) when released; one undo step. Tool stays
+       on Pencil, the new stroke is selected. Code: src/renderer/editor/tools/pencil.ts.
+       Skipped: pressure/velocity width, closing a stroke by returning to its start, smoothing strength,
+       merging strokes. Known limits are in issues.txt.
+ 8. [done] Boolean operations (union, subtract, intersect, exclude) + flatten (commit: see `git log --grep "Add boolean"`)
+       Live node type BOOLEAN (container) with `boolOp`; its children are the operands (bottom one is the base,
+       upper ones are united/subtracted/intersected/excluded), not drawn. Its `vector` is computed from them, so
+       every renderer draws it like a VECTOR (hasPath() in canvas/paintPlan.ts). Engine: paper.js (paper-core,
+       headless: paper.setup with no canvas). Code: model/boolean.ts (booleanVector, syncBooleans, makeBoolean,
+       flatten); syncBooleans runs in normalize() after fitGroups, only for booleans whose subtree changed.
+       Commands: Union Ctrl+Alt+U, Subtract Ctrl+Alt+S, Intersect Ctrl+Alt+I, Exclude Ctrl+Alt+X, Flatten Ctrl+E
+       (several nodes flatten as their union; a group becomes the union of its children). Ungroup releases operands.
+       Design panel: "Boolean" section with the operation select. New boolean takes the bottom operand's paints.
+       Operands: rectangle, frame (as rectangle), ellipse, vector, group, nested boolean. Hidden ones are ignored.
+       FORMAT_VERSION is 3 (BOOLEAN + boolOp in .refig); older files read unchanged.
+       Skipped: text and line operands (text outlines come with #32), importing live booleans from .fig (they stay
+       flattened VECTORs), selection box = union of operands (not the result), on-canvas operand highlight,
+       dragging into/out of a boolean from the layers panel is not specially handled.
+       Known limits are in issues.txt.
+ 9. [done] Masks (commit: see `git log --grep "Add masks"`)
+       Node `mask` flag (rectangle, frame, ellipse, vector, boolean): the layer draws nothing and clips every sibling
+       above it in the same parent (Figma's rule); a hidden mask clips nothing. Helpers canMask/isMask in
+       canvas/paintPlan.ts. Canvas: drawChildren() in canvas/render.ts (ctx.clip per mask, restored at the end of the
+       sibling list). SVG/PDF: siblings() in export/svg.ts wraps the layers above a mask in <g clip-path> using a
+       <clipPath transform=mask matrix>. Hit-testing: masked layers only answer inside the mask (canvas/hit.ts, shared
+       containsPoint()); the mask layer itself stays clickable.
+       Ctrl+Alt+M "Use as mask": one shape toggles; several are grouped and the bottom-most becomes the mask.
+       Design panel "Mask" button, mask icon in layers. .fig import reads `mask`. FORMAT_VERSION is 4.
+       Skipped: alpha/luminance masks, text/line/group masks, mask-aware group bounds and marquee, mask outline on canvas.
+       Known limits are in issues.txt.
+10. [done] Star, polygon, arrow tools; ellipse arcs; per-corner radius; corner smoothing (commit: see `git log --grep "Add shape"`)
+       Path maker: model/shapes.ts (cornerPath, arcPath, starPath, arrowSubs, syncShapes); everything is path data in
+       the node's box, so canvas (trace() in canvas/render.ts), SVG/PDF, booleans and masks reuse it.
+       STAR and POLYGON are parametric nodes (`points`, STAR `innerRatio`); their computed `vector` is rebuilt in
+       normalize() (syncShapes) and they draw through hasPath() like vectors/booleans. Tools: Star Shift+S, Polygon
+       Shift+G, Arrow Shift+L (drag; Shift = 45 degrees). Arrow is a plain VECTOR: shaft + filled triangular head.
+       Ellipse `arc` {start, sweep, inner} (degrees, clockwise from 3 o'clock; ring when inner > 0). Rectangle/frame
+       `cornerRadii` [tl, tr, br, bl] (wins over cornerRadius) and `cornerSmoothing` 0-1 (Figma's squircle, the
+       open figma-squircle construction). A plain uniform radius still draws as roundRect / <rect rx>.
+       Design panel: Points / Inner radius, Arc start / sweep / ratio, Corner smoothing, Independent corners.
+       .fig import reads the four corner radii and cornerSmoothing. FORMAT_VERSION is 5.
+       Skipped: rounding star/polygon corners, on-canvas arc handles, arrowhead styles (stroke ends are #13),
+       importing .fig stars/polygons as parametric nodes (they stay VECTORs). Known limits are in issues.txt.
+11. [done] Blend modes and per-fill opacity
+       Node `blendMode` (Figma's 16 modes, BLEND_CSS in shared/document.ts; canvas globalCompositeOperation, SVG mix-blend-mode;
+       overridable on instances). Paint `opacity` (0-1) on fills and strokes, multiplies with color.a; Design panel: Blend mode
+       select beside Opacity, `Fill N opacity` per paint. .refig validates both; .fig import reads node blendMode and image paint
+       opacity. FORMAT_VERSION is 6.
+       Skipped: per-paint blend mode, group isolation layer (blended group children blend one by one), .fig LINEAR_BURN/DODGE
+       and PASS_THROUGH (treated as normal), .fig solid/gradient opacity still baked into color.a, PDF fidelity unchecked.
+12. [done] Inner shadow, layer blur, background blur
+       `Node.effects` is now Effect[] (DROP_SHADOW | INNER_SHADOW | LAYER_BLUR | BACKGROUND_BLUR); an untyped entry is a drop
+       shadow, so older files read unchanged. paintsOf() decides what each node draws for canvas and SVG. Canvas: inner shadow
+       via the off-canvas shadow trick inside a clip, layer blur via ctx.filter, background blur re-draws the canvas blurred
+       inside the node's outline. SVG: mask+blur inner shadow, feGaussianBlur layer blur. Design panel: Effects section with four
+       add buttons (groups only get layer blur). .fig import maps INNER_SHADOW, FOREGROUND_BLUR, BACKGROUND_BLUR. FORMAT_VERSION is 7.
+       Skipped: background blur in SVG export and in PNG export of a selection (nothing is behind it), layer blur on a group
+       blurs children one by one and replaces rather than adds to an ancestor's, inner shadow spread ignored on vectors and arcs,
+       .fig blur field names (`radius`) unchecked against a real file, no visual check in the running app yet.
+13. [done] Stroke options: dashes, caps, joins, arrowheads, per-side weight
+       Node `strokeDash` [dash, gap...], `strokeCap` NONE/ROUND/SQUARE, `strokeJoin` MITER/BEVEL/ROUND, `strokeStart`/`strokeEnd`
+       markers (NONE/ARROW/TRIANGLE/CIRCLE/DIAMOND, LINE and open VECTOR) and `strokeSides` [t,r,b,l] (RECTANGLE/FRAME; strokeWeight holds
+       their max). strokeStyle/sidesPath/endMarks in canvas/paintPlan.ts feed canvas and SVG. Design panel: dash field, cap/join,
+       start/end marker, Independent sides. .refig validates all; .fig import reads cap, join, dashPattern, border*Weight.
+       FORMAT_VERSION is 8.
+       Skipped: per-side corners/align (drawn inside, square), dash on per-side edges, on-canvas marker handles, .fig arrow caps and
+       .fig field names unchecked against a real file, PDF fidelity unchecked, markers on outlined (imported) vector strokes.
+14. [done] Image fill modes (fill/fit/crop/tile), SVG/image file import, drag-drop files
+       IMAGE paint gains `scaleMode` FILL/FIT/CROP/TILE, `scale`, `offsetX/Y` (FORMAT_VERSION 9). imageBox in canvas/paintPlan.ts feeds
+       canvas (drawImage / createPattern) and SVG (<image> / <pattern>; toSvg takes an optional imageSize). Design panel: mode, scale,
+       offset, Crop button. Double-click an image enters crop mode (tools/crop.ts): drag moves, a corner scales about the centre.
+       "Place image..." (Ctrl+Shift+K) and file drop go through placeFile in clipboard.ts. SVG files import as a FRAME of VECTORs
+       (importSvg.ts, model/svgPath.ts: relative/H/V/S/T/arc commands, transforms, solid fill/stroke); groups are flattened.
+       Skipped: SVG gradients, clipPath, masks, filters, <use>, <text>, <image>, CSS classes (named in a toast), Toolbar button,
+       .fig scale-mode field names unchecked against a real file, PDF fidelity of tiled fills unchecked, arc flags written without
+       separators in SVG paths, running the app/e2e by hand.
+15. [done] Rich text (whole-node): italic, decoration, case, lists, vertical align, truncation, system fonts
+       Node `fontItalic`, `textDecoration` NONE/UNDERLINE/STRIKETHROUGH, `textCase` ORIGINAL/UPPER/LOWER/TITLE, `textAlignVertical`,
+       `textTruncate` + `maxLines`, `listStyle` NONE/BULLET/NUMBERED, `textFixedHeight` (FORMAT_VERSION 10; all overridable).
+       canvas/text.ts layoutText is the single layout (case, list prefixes with hanging indent, truncation with an ellipsis, vertical offset);
+       each line carries its final x/y, used by canvas drawText (decoration drawn as a bar) and SVG (text-decoration, font-style).
+       Resizing a TEXT's height sets textFixedHeight (panel button "Auto height" undoes it). Design panel: decoration, case, list,
+       vertical-align selects, Italic/Truncate toggles, max lines. editor/fonts.ts lists installed fonts via queryLocalFonts (falls back to FONTS).
+       .fig import maps italic, textDecoration, textCase, textAlignVertical, textTruncation/maxLines, textAutoResize NONE.
+       Skipped: mixed styles per range (15b), .fig list/paragraph data, paragraph spacing/indent, nested lists, running the app/e2e by hand,
+       queryLocalFonts under Electron unchecked. Known limits are in issues.txt.
+15b. [done] Rich text: mixed styles per character range
+       Node `runs` [{len, style}] covers `characters`; a run overrides fontFamily/Weight/Size/Italic, decoration, case, letterSpacing,
+       lineHeight and a solid `fill` (FORMAT_VERSION 11; overridable). model/richText.ts: runsOf (always repairs coverage), splice,
+       styleRange, commonStyle. canvas/text.ts layoutText now returns lines of styled segments (a word and its space are one segment,
+       sizes share a baseline, line height = tallest run); canvas drawText and SVG tspans draw per segment.
+       Editing has no textarea showing text any more: a transparent textarea at the caret takes keys/IME/clipboard, the caret and selection are drawn
+       by canvas/overlay.ts from canvas/caret.ts (caretPos, indexAt, selectionRects, wordAt). tools/textEdit.ts: typing, arrows (Ctrl = word,
+       Up/Down keep the column), Home/End, Backspace/Delete, Ctrl+A/B/I/U, double click = word, triple = paragraph, drag selects,
+       a style chosen at a bare caret applies to what is typed next. Edits are live in one undo step per node. While editing, the Design
+       panel styles the selection (title "Text (selection)", plus a text colour). .fig import maps characterStyleIDs/styleOverrideTable.
+       Skipped: styled copy/paste (plain text only), caret blink, IME composition preview on the canvas, bidi, truncation while editing,
+       .fig run field names unchecked against a real file, per-range gradients. Known limits are in issues.txt.
+16. [done] Styles: color, text, effect (grid styles wait for #18)
+       Document `styles` [{id, name, kind FILL|TEXT|EFFECT, value}] and node links `fillStyle`/`strokeStyle`/`effectStyle`/`textStyle` (FORMAT_VERSION 12;
+       links are overridable). model/styles.ts: createStyle, applyStyle, detachStyle, updateStyleFrom, renameStyle, deleteStyle, and resolveStyles,
+       which normalize runs before syncInstances (ordinary nodes) and after it (instance nodes with overridden links) to copy each style's value onto its nodes,
+       so renderers and exporters are unchanged. A hand edit to a linked field detaches it; a dangling link is dropped. Design panel: StyleButton menu
+       in Fill, Stroke, Effects and Text (apply, create from selection, detach); left panel Styles list (rename by double click, update from selection, delete).
+       Skipped: grid styles (#18), per-range text styles, a style preview/editor, .fig style import, e2e and app not run by hand. Known limits are in issues.txt.
 17. [todo] Variables / design tokens with modes
 18. [todo] Rulers, draggable guides, pixel grid, layout grids
 19. [todo] Right-click context menu
@@ -110,8 +208,7 @@ Status legend: [done] [in progress] [todo]
 31. [todo] Assets panel
 32. [todo] Outline text; font embedding in SVG/PDF export
 
-Next step: #7 Pencil (freehand) tool. Plan first. Reuse model/path.ts: sample the pointer,
-simplify/fit to Béziers, write with withAnchors (pen tool code in tools/index.ts is the pattern).
+Next step: #17 Variables. Plan first.
 
 Reviewing the feature commits: `/code-review ultra cc7cc81` reviews everything since before #1.
 

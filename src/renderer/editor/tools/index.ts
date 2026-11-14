@@ -8,10 +8,15 @@ import { apply, bounds, deg, invert, lineBetween, localMatrix, resizeBox, worldB
 import { insert, layoutSlot, moveTo, nextName, patch, resizeNode, topLevel, translate } from '../model/ops'
 import { gestureStep, NO_MODE, type EditorStore, type Tool } from '../store'
 import { finishPen, penGesture, pointAt, pointGesture } from './pen'
+import { arrowGesture } from './arrow'
+import { pencilGesture } from './pencil'
+import { cropGesture } from './crop'
+import { finishText, textMode, textPointer, textStep } from './textEdit'
 import { DRAG_PX, dist, SNAP_PX, snapAngle, type Gesture, type Pointer } from './pointer'
 
 export type { Gesture, Pointer } from './pointer'
 export { deletePoint } from './pen'
+export { textStep } from './textEdit'
 
 export function beginGesture(store: EditorStore, p: Pointer, pan = false): Gesture | null {
   const { tool } = store.get()
@@ -19,6 +24,8 @@ export function beginGesture(store: EditorStore, p: Pointer, pan = false): Gestu
   if (tool === 'move') return moveToolGesture(store, p)
   if (tool === 'text') return textGesture(store, p)
   if (tool === 'pen') return penGesture(store, p)
+  if (tool === 'pencil') return pencilGesture(store, p)
+  if (tool === 'arrow') return arrowGesture(store, p)
   return shapeGesture(store, p, tool)
 }
 
@@ -34,10 +41,16 @@ export function exitMode(store: EditorStore) {
   else store.set({ mode: NO_MODE })
 }
 
-/** Selects a node and starts editing it: a text's characters, a vector's points. Other nodes are just selected. */
+/** Selects a node and starts editing it: a text's characters, a vector's points, an image fill's crop. Other nodes are just selected. */
 export function editNode(store: EditorStore, id: string) {
-  const type = store.get().doc.nodes[id]?.type
-  store.set({ selection: [id], mode: type === 'TEXT' ? { kind: 'text', id } : type === 'VECTOR' ? { kind: 'points', id, sel: null } : NO_MODE })
+  const n = store.get().doc.nodes[id], type = n?.type
+  const image = n && type !== 'TEXT' && type !== 'VECTOR' ? n.fills.findIndex((p) => p.type === 'IMAGE' && p.visible) : -1
+  if (image >= 0) { // cropping needs the CROP mode; FILL looks the same under it
+    const p = n.fills[image]
+    if (p.type === 'IMAGE' && p.scaleMode !== 'CROP') store.update((d) => patch(d, [id], { fills: n.fills.map((f, i) => (i === image ? { ...p, scaleMode: 'CROP' as const } : f)) }))
+    return void store.set({ selection: [id], mode: { kind: 'crop', id, paint: image } })
+  }
+  store.set({ selection: [id], mode: type === 'TEXT' ? textMode(id, n.characters?.length ?? 0) : type === 'VECTOR' ? { kind: 'points', id, sel: null } : NO_MODE })
 }
 
 /** Shows a page, leaving any mode, with `selection` selected. */
@@ -53,6 +66,12 @@ function panGesture(store: EditorStore, p: Pointer): Gesture {
 
 function moveToolGesture(store: EditorStore, p: Pointer): Gesture | null {
   const { mode } = store.get()
+  if (mode.kind === 'text') {
+    const g = textPointer(store, p)
+    if (g) return g
+    finishText(store, mode.id) // a press elsewhere ends text editing
+  }
+  if (mode.kind === 'crop') return cropGesture(store, p, mode)
   if (mode.kind === 'points') {
     const hit = pointAt(store, p.screen), { doc, pageId, view } = store.get()
     if (hit) return pointGesture(store, p, mode.id, hit)
@@ -110,7 +129,7 @@ function dragGesture(store: EditorStore, p: Pointer, selection: string[], hit: s
       // Dropping inside a frame parents the node to it; dropping outside moves it back to the page. Group members stay in their group.
       // An auto-layout frame takes the nodes at the slot under the pointer.
       const now = store.get().doc, target = frameAt(now, pageId, q.world, ids), slotted = !!now.nodes[target].layout
-      const movers = ids.filter((id) => now.nodes[id] && (slotted || now.nodes[id].parentId !== target) && now.nodes[now.nodes[id].parentId!].type !== 'GROUP')
+      const movers = ids.filter((id) => now.nodes[id] && (slotted || now.nodes[id].parentId !== target) && !['GROUP', 'BOOLEAN'].includes(now.nodes[now.nodes[id].parentId!].type))
       if (movers.length) store.update((d) => moveTo(d, movers, target, slotted ? { before: layoutSlot(d, target, q.world, movers) } : {}), tag)
     },
   }
@@ -175,10 +194,12 @@ function handleGesture(store: EditorStore, p: Pointer, id: string, h: Handle): G
   }
 }
 
-const SHAPES: Record<Exclude<Tool, 'move' | 'hand' | 'text' | 'pen'>, { type: NodeType; label: string; props: Partial<Node> }> = {
+const SHAPES: Record<Exclude<Tool, 'move' | 'hand' | 'text' | 'pen' | 'pencil' | 'arrow'>, { type: NodeType; label: string; props: Partial<Node> }> = {
   frame: { type: 'FRAME', label: 'Frame', props: { fills: [solid(1, 1, 1)] } },
   rectangle: { type: 'RECTANGLE', label: 'Rectangle', props: { fills: [solid(0.85, 0.85, 0.85)] } },
   ellipse: { type: 'ELLIPSE', label: 'Ellipse', props: { fills: [solid(0.85, 0.85, 0.85)] } },
+  star: { type: 'STAR', label: 'Star', props: { fills: [solid(0.85, 0.85, 0.85)], points: 5, innerRatio: 0.38 } },
+  polygon: { type: 'POLYGON', label: 'Polygon', props: { fills: [solid(0.85, 0.85, 0.85)], points: 3 } },
   line: { type: 'LINE', label: 'Line', props: { strokes: [solid(0, 0, 0)], strokeAlign: 'CENTER' } },
 }
 
@@ -216,9 +237,6 @@ function shapeGesture(store: EditorStore, p: Pointer, tool: keyof typeof SHAPES)
   }
 }
 
-/** The step that creates a text node; its first commit joins it. */
-export const textStep = (id: string) => gestureStep(`text-${id}`)
-
 /** Click for auto-width text, drag for a fixed-width box. Editing starts immediately. */
 function textGesture(store: EditorStore, p: Pointer): Gesture {
   const { doc, pageId } = store.get()
@@ -232,7 +250,7 @@ function textGesture(store: EditorStore, p: Pointer): Gesture {
         ...(dragged && { width: Math.max(1, Math.abs(b.x - a.x)), textAutoWidth: false }),
       })
       store.update(() => ({ doc: insert(doc, node, parentId), ids: [node.id] }), textStep(node.id))
-      store.set({ tool: 'move', mode: { kind: 'text', id: node.id } })
+      store.set({ tool: 'move', mode: textMode(node.id, 0) })
     },
   }
 }

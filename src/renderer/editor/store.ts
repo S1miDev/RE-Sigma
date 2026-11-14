@@ -1,7 +1,7 @@
 // Editor state for one open project: document, selection, view, undo history, images and autosave.
 import { createContext, useContext, useSyncExternalStore } from 'react'
 import type { OpenedProject, RefigApi } from '../../shared/api'
-import type { Document } from '../../shared/document'
+import type { Document, RunStyle } from '../../shared/document'
 import { errorText } from '../util'
 import { thumbnail } from './canvas/render'
 import type { Guides } from './canvas/snap'
@@ -11,7 +11,7 @@ import type { Edit } from './model/ops'
 import { normalize } from './normalize'
 import type { Anchor } from './model/path'
 
-export type Tool = 'move' | 'hand' | 'frame' | 'rectangle' | 'ellipse' | 'line' | 'pen' | 'text'
+export type Tool = 'move' | 'hand' | 'frame' | 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'star' | 'polygon' | 'pen' | 'pencil' | 'text'
 /**
  * What a node is being edited as, if anything: its characters (text), a path being drawn (pen; its points live here,
  * in parent coordinates, because path data can't hold the last point's outgoing handle until the next segment
@@ -19,9 +19,10 @@ export type Tool = 'move' | 'hand' | 'frame' | 'rectangle' | 'ellipse' | 'line' 
  */
 export type Mode =
   | { kind: 'none' }
-  | { kind: 'text'; id: string }
+  | { kind: 'text'; id: string; anchor: number; focus: number; goalX?: number; pending?: RunStyle } // selection as indices into characters; pending: a style chosen at a bare caret for what is typed next
   | { kind: 'pen'; id: string; anchors: Anchor[] }
   | { kind: 'points'; id: string; sel: { s: number; i: number } | null }
+  | { kind: 'crop'; id: string; paint: number } // moving and scaling the image of the node's `paint`th fill (scaleMode CROP)
 export const NO_MODE: Mode = { kind: 'none' }
 export interface EditorState {
   name: string

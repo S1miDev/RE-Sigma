@@ -274,6 +274,128 @@ test('the pen draws a closed path whose points can then be dragged', async () =>
   await expect.poll(() => fs.existsSync(out) && fs.readFileSync(out, 'utf8')).toMatch(/<path d="M[^"]*C[^"]*Z"/)
 })
 
+test('the pencil draws a freehand stroke and stays active', async () => {
+  const page = await launch()
+  await page.getByRole('button', { name: 'New project' }).first().click()
+  await expect(page.getByRole('toolbar', { name: 'Tools' })).toBeVisible()
+  const box = (await page.getByLabel('Canvas').boundingBox())!
+  await page.keyboard.press('Shift+P')
+  await page.mouse.move(box.x + 300, box.y + 300)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 400, box.y + 380, { steps: 10 })
+  await page.mouse.move(box.x + 500, box.y + 300, { steps: 10 })
+  await page.mouse.up()
+  await expect(page.getByRole('treeitem', { name: 'Vector 1' })).toBeVisible()
+  await expect(page.getByRole('toolbar', { name: 'Tools' }).getByRole('button', { name: 'Pencil' })).toHaveAttribute('aria-pressed', 'true')
+  await page.screenshot({ path: 'test-results/pencil.png' })
+})
+
+test('subtracting an ellipse from a rectangle makes a live boolean layer that exports as one path', async () => {
+  const page = await launch()
+  await page.getByRole('button', { name: 'New project' }).first().click()
+  await drawRectangle(page)
+  const box = (await page.getByLabel('Canvas').boundingBox())!
+  await page.keyboard.press('o')
+  await page.mouse.move(box.x + 350, box.y + 220)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 520, box.y + 360, { steps: 5 })
+  await page.mouse.up()
+  await expect(page.getByRole('treeitem', { name: 'Ellipse 1' })).toBeVisible()
+  await page.keyboard.press('Control+a')
+  await page.keyboard.press('Control+Alt+s')
+  await expect(page.getByRole('treeitem', { name: 'Subtract 1' })).toBeVisible()
+  await page.screenshot({ path: 'test-results/boolean.png' })
+  const out = path.join(profile, 'boolean.svg')
+  await answerDialogs([out])
+  await page.getByLabel('Export format').selectOption('svg')
+  await page.getByRole('button', { name: 'Export selection' }).click()
+  await expect.poll(() => fs.existsSync(out) && fs.readFileSync(out, 'utf8').match(/<path /g)?.length).toBe(1)
+})
+
+test('an ellipse used as a mask clips the rectangle above it', async () => {
+  const page = await launch()
+  await page.getByRole('button', { name: 'New project' }).first().click()
+  await expect(page.getByRole('toolbar', { name: 'Tools' })).toBeVisible()
+  const box = (await page.getByLabel('Canvas').boundingBox())!
+  const draw = async (key: string, x1: number, y1: number, x2: number, y2: number) => {
+    await page.keyboard.press(key)
+    await page.mouse.move(box.x + x1, box.y + y1)
+    await page.mouse.down()
+    await page.mouse.move(box.x + x2, box.y + y2, { steps: 5 })
+    await page.mouse.up()
+  }
+  await draw('o', 200, 150, 360, 310) // the mask, below
+  await draw('r', 100, 100, 500, 260) // clipped by it
+  await page.getByRole('treeitem', { name: 'Ellipse 1' }).click()
+  await page.keyboard.press('Control+Alt+m')
+  await expect(page.getByRole('button', { name: 'Remove mask' })).toBeVisible()
+  await page.getByRole('button', { name: 'Remove mask' }).hover() // moves the pointer off the canvas
+  await page.screenshot({ path: 'test-results/mask.png' })
+})
+
+test('star, arrow, arc and rounded-corner shapes can be drawn and edited', async () => {
+  const page = await launch()
+  await page.getByRole('button', { name: 'New project' }).first().click()
+  await expect(page.getByRole('toolbar', { name: 'Tools' })).toBeVisible()
+  const box = (await page.getByLabel('Canvas').boundingBox())!
+  const draw = async (key: string, x1: number, y1: number, x2: number, y2: number) => {
+    await page.keyboard.press(key)
+    await page.mouse.move(box.x + x1, box.y + y1)
+    await page.mouse.down()
+    await page.mouse.move(box.x + x2, box.y + y2, { steps: 5 })
+    await page.mouse.up()
+  }
+  await draw('Shift+S', 100, 100, 260, 260)
+  await expect(page.getByRole('treeitem', { name: 'Star 1' })).toBeVisible()
+  await page.getByLabel('Points').fill('7')
+  await page.getByLabel('Points').press('Enter')
+  await draw('Shift+G', 300, 100, 440, 240)
+  await expect(page.getByRole('treeitem', { name: 'Polygon 1' })).toBeVisible()
+  await draw('Shift+L', 100, 320, 300, 380)
+  await expect(page.getByRole('treeitem', { name: 'Arrow 1' })).toBeVisible()
+  await draw('o', 500, 100, 640, 240)
+  await page.getByLabel('Arc sweep').fill('270')
+  await page.getByLabel('Arc sweep').press('Enter')
+  await page.getByLabel('Arc ratio').fill('40')
+  await page.getByLabel('Arc ratio').press('Enter')
+  await draw('r', 500, 300, 700, 420)
+  await page.getByLabel('Corner radius', { exact: true }).fill('30')
+  await page.getByLabel('Corner radius', { exact: true }).press('Enter')
+  await page.getByLabel('Corner smoothing').fill('60')
+  await page.getByLabel('Corner smoothing').press('Enter')
+  await page.getByRole('checkbox', { name: 'Independent' }).check()
+  await page.getByLabel('Corner radius top left').fill('0')
+  await page.getByLabel('Corner radius top left').press('Enter')
+  await page.getByRole('button', { name: 'Back to projects' }).hover() // pointer off the canvas
+  await page.screenshot({ path: 'test-results/shapes.png' })
+  const out = path.join(profile, 'shapes.svg')
+  await answerDialogs([out])
+  await page.getByLabel('Export format').selectOption('svg')
+  await page.getByRole('button', { name: 'Export selection' }).click()
+  await expect.poll(() => fs.existsSync(out) && fs.readFileSync(out, 'utf8')).toMatch(/<path d="M[^"]*C/)
+})
+
+test('stroke dashes, caps and arrowheads show up in the SVG export', async () => {
+  const page = await launch()
+  await page.getByRole('button', { name: 'New project' }).first().click()
+  await expect(page.getByRole('toolbar', { name: 'Tools' })).toBeVisible()
+  const box = (await page.getByLabel('Canvas').boundingBox())!
+  await page.keyboard.press('l')
+  await page.mouse.move(box.x + 100, box.y + 100)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 300, box.y + 100, { steps: 5 })
+  await page.mouse.up()
+  await page.getByLabel('Stroke dash').fill('6 3')
+  await page.getByLabel('Stroke dash').press('Enter')
+  await page.getByLabel('Stroke cap').selectOption('ROUND')
+  await page.getByLabel('End marker').selectOption('TRIANGLE')
+  const out = path.join(profile, 'strokes.svg')
+  await answerDialogs([out])
+  await page.getByLabel('Export format').selectOption('svg')
+  await page.getByRole('button', { name: 'Export selection' }).click()
+  await expect.poll(() => fs.existsSync(out) && fs.readFileSync(out, 'utf8')).toMatch(/stroke-dasharray="6 3"[^]*<polygon/)
+})
+
 test('the page has no Node access and only the contract API', async () => {
   const page = await launch()
   const seen = await page.evaluate(() => ({
@@ -291,5 +413,25 @@ test('the page has no Node access and only the contract API', async () => {
   expect(seen).toEqual({ require: 'undefined', process: 'undefined', keys: [...API_KEYS].sort(), types: ['function'], inlineScriptRan: false })
   // bad arguments are rejected in main, before any file access
   await expect(page.evaluate(() => window.refig.openProject('../../secrets'))).rejects.toThrow(/Invalid argument: id/)
-  await expect(page.evaluate(() => window.refig.saveProject('00000000-0000-0000-0000-000000000000', { formatVersion: 2, pages: [], nodes: {} }))).rejects.toThrow(/not found|Invalid/)
+  await expect(page.evaluate(() => window.refig.saveProject('00000000-0000-0000-0000-000000000000', { formatVersion: 12, pages: [], nodes: {}, styles: [] }))).rejects.toThrow(/not found|Invalid/)
+})
+
+test('text: typing and a bold selection export as styled spans', async () => {
+  const page = await launch()
+  await page.getByRole('button', { name: 'New project' }).first().click()
+  await expect(page.getByRole('toolbar', { name: 'Tools' })).toBeVisible()
+  const box = (await page.getByLabel('Canvas').boundingBox())!
+  await page.keyboard.press('t')
+  await page.mouse.click(box.x + 200, box.y + 200)
+  await page.keyboard.type('hello world')
+  await page.keyboard.press('Home')
+  for (let i = 0; i < 5; i++) await page.keyboard.press('Shift+ArrowRight')
+  await page.keyboard.press('Control+b')
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('treeitem', { name: 'hello world' })).toBeVisible()
+  const out = path.join(profile, 'text.svg')
+  await answerDialogs([out])
+  await page.getByLabel('Export format').selectOption('svg')
+  await page.getByRole('button', { name: 'Export selection' }).click()
+  await expect.poll(() => fs.existsSync(out) && fs.readFileSync(out, 'utf8')).toMatch(/<tspan[^>]*font-weight="700"[^>]*>hello<\/tspan>[^]*<tspan[^>]*font-weight="400"[^>]*> world<\/tspan>/)
 })

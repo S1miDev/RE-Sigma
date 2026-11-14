@@ -1,16 +1,15 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
-import { colorAt } from '../../../shared/document'
 import { zoomToFit } from './viewport'
 import { apply, worldMatrix, worldRotation } from '../model/geometry'
-import { patch, remove } from '../model/ops'
 import { isTyping, keyBelongsToPage } from '../../util'
-import { NO_MODE, useEditor, useStore } from '../store'
-import { beginGesture, editNode, textStep, type Gesture, type Pointer } from '../tools'
+import { useEditor, useStore } from '../store'
+import { beginGesture, editNode, type Gesture, type Pointer } from '../tools'
+import { finishText, insertText, onEditedText, selectedText, textKey } from '../tools/textEdit'
 import { hitTest } from './hit'
 import { drawOverlay } from './overlay'
-import { css } from './color'
 import { renderPage } from './render'
-import { fontOf, lineHeightOf } from './text'
+import { caretPos } from './caret'
+import { layoutText } from './text'
 import { toScreen, toWorld, zoomAt } from './viewport'
 
 
@@ -29,8 +28,8 @@ export function Canvas() {
       frame = 0
       if (!ctx) return
       const s = store.get(), dpr = window.devicePixelRatio || 1
-      renderPage(ctx, s.doc, s.pageId, s.view, dpr, store.image, s.mode.kind === 'text' ? s.mode.id : null)
-      drawOverlay(ctx, s, dpr)
+      renderPage(ctx, s.doc, s.pageId, s.view, dpr, store.image)
+      drawOverlay(ctx, s, dpr, store.image)
     }
     const schedule = () => (frame ||= requestAnimationFrame(draw))
     const resize = () => {
@@ -84,9 +83,11 @@ export function Canvas() {
   const down = (e: ReactPointerEvent<HTMLCanvasElement>) => {
     if (e.button === 2) return
     // Commit a focused text field (canvas text or a panel input) before the gesture snapshots the document.
-    if (isTyping(document.activeElement)) (document.activeElement as HTMLElement).blur()
+    const p = pointer(e)
+    if (onEditedText(store, p.world)) document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Edit text"]')?.focus() // a press on the edited text keeps (or takes back) the keyboard
+    else if (isTyping(document.activeElement)) (document.activeElement as HTMLElement).blur()
     e.currentTarget.setPointerCapture?.(e.pointerId)
-    gesture.current = beginGesture(store, pointer(e), e.button === 1 || space)
+    gesture.current = beginGesture(store, p, e.button === 1 || space)
   }
   const up = (e: ReactPointerEvent) => {
     gesture.current?.up(pointer(e))
@@ -100,12 +101,13 @@ export function Canvas() {
         aria-label="Canvas"
         className="block h-full w-full touch-none"
         style={{ cursor: space || tool === 'hand' ? 'grab' : tool === 'move' ? 'default' : tool === 'text' ? 'text' : 'crosshair' }}
+        onMouseDown={(e) => { if (store.get().mode.kind === 'text' && onEditedText(store, pointer(e).world)) e.preventDefault() }} // keeps the keyboard focus in the text
         onPointerDown={down}
         onPointerMove={(e) => gesture.current?.move(pointer(e))}
         onPointerUp={up}
         onPointerCancel={up}
         onDoubleClick={(e) => {
-          const s = store.get(), hit = s.tool === 'move' && hitTest(s.doc, s.pageId, pointer(e).world, { deep: true, tolerance: 4 / s.view.zoom })
+          const s = store.get(), hit = s.tool === 'move' && s.mode.kind !== 'text' && hitTest(s.doc, s.pageId, pointer(e).world, { deep: true, tolerance: 4 / s.view.zoom })
           if (hit) editNode(store, hit)
         }}
       />
@@ -114,52 +116,40 @@ export function Canvas() {
   )
 }
 
-/** A textarea laid over the text node being edited. Commits on blur, Escape or Ctrl+Enter; empty text removes the node. */
+/**
+ * The keyboard sink of text editing: a transparent textarea kept at the caret, so typing, IME and the clipboard work.
+ * What it receives is turned into edits of the node; the text itself, caret and selection are drawn on the canvas.
+ */
 function TextEditor({ id }: { id: string }) {
   const store = useStore()
-  const doc = useEditor((s) => s.doc), view = useEditor((s) => s.view)
+  const doc = useEditor((s) => s.doc), view = useEditor((s) => s.view), mode = useEditor((s) => s.mode)
   const n = doc.nodes[id]
-  if (!n) return null
-  const at = toScreen(view, apply(worldMatrix(doc, id), { x: 0, y: 0 }))
-  // the editor shows one colour: a solid fill's, or a gradient's midpoint
-  const fill = n.fills.find((p) => p.visible && p.type !== 'IMAGE')
-  const color = fill?.type === 'SOLID' ? fill.color : fill?.type === 'GRADIENT' ? colorAt(fill.stops, 0.5) : null
-
-  const commit = (value: string) => {
-    const { mode } = store.get(), now = store.get().doc.nodes[id]
-    if (mode.kind === 'text' && mode.id === id) store.set({ mode: NO_MODE })
-    if (!now) return
-    const tag = now.characters === '' ? textStep(id) : undefined // the first commit joins the undo step that created the node
-    if (!value) store.update((d) => remove(d, [id]), tag)
-    else if (value !== now.characters) {
-      // The layer is named after its text until the user renames it.
-      const named = now.name === 'Text' || now.name === now.characters?.split('\n')[0].slice(0, 40)
-      store.update((d) => patch(d, [id], { characters: value, ...(named && { name: value.split('\n')[0].slice(0, 40) }) }), tag)
-    }
+  if (!n || mode.kind !== 'text') return null
+  const caret = caretPos(layoutText(n, { editing: true }), mode.focus)
+  const at = toScreen(view, apply(worldMatrix(doc, id), { x: caret.x, y: caret.y }))
+  const take = (el: HTMLTextAreaElement) => {
+    if (el.value) insertText(store, el.value)
+    el.value = ''
   }
-
   return (
     <textarea
       autoFocus
       aria-label="Edit text"
       spellCheck={false}
-      defaultValue={n.characters}
-      onFocus={(e) => e.currentTarget.select()}
-      onBlur={(e) => commit(e.currentTarget.value)}
+      onBlur={(e) => { if (!(e.relatedTarget instanceof Element && e.relatedTarget.closest('[data-keep-text]'))) finishText(store, id) }} // the design panel styles the selection without ending the edit
+      onInput={(e) => { if (!(e.nativeEvent as InputEvent).isComposing) take(e.currentTarget) }}
+      onCompositionEnd={(e) => take(e.currentTarget)}
+      onCopy={(e) => { e.preventDefault(); e.clipboardData.setData('text/plain', selectedText(store)) }}
+      onCut={(e) => { e.preventDefault(); e.clipboardData.setData('text/plain', selectedText(store)); insertText(store, '') }}
+      onPaste={(e) => { e.preventDefault(); insertText(store, e.clipboardData.getData('text/plain')) }}
       onKeyDown={(e) => {
         e.stopPropagation()
+        if (e.nativeEvent.isComposing) return
         if (e.key === 'Escape' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) e.currentTarget.blur()
+        else if (textKey(store, { key: e.key, ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })) e.preventDefault()
       }}
-      className="absolute m-0 resize-none overflow-hidden border-0 bg-transparent p-0 outline outline-1 outline-accent"
-      style={{
-        left: at.x, top: at.y, transformOrigin: '0 0', transform: `rotate(${worldRotation(doc, id)}deg)`,
-        font: fontOf(n, view.zoom), lineHeight: `${lineHeightOf(n) * view.zoom}px`, letterSpacing: `${(n.letterSpacing ?? 0) * view.zoom}px`,
-        textAlign: (n.textAlign ?? 'LEFT').toLowerCase() as CSSProperties['textAlign'],
-        color: color ? css(color) : '#000',
-        width: n.textAutoWidth ? undefined : n.width * view.zoom, minWidth: 4,
-        whiteSpace: n.textAutoWidth ? 'pre' : 'pre-wrap',
-        fieldSizing: 'content', // grows with its content
-      } as CSSProperties}
+      className="absolute m-0 resize-none overflow-hidden border-0 bg-transparent p-0 text-transparent caret-transparent outline-none"
+      style={{ left: at.x, top: at.y, width: 2, height: Math.max(8, caret.h * view.zoom), opacity: 0.01, transformOrigin: '0 0', transform: `rotate(${worldRotation(doc, id)}deg)` }}
     />
   )
 }

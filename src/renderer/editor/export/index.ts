@@ -18,7 +18,7 @@ export async function exportSelection(store: EditorStore, kind: ExportKind, scal
     bytes = new Uint8Array(await blob.arrayBuffer())
   } else {
     // shortcut: text keeps its font by name; a PDF/SVG opened where the font is missing falls back to sans-serif. Embed the font if that matters.
-    bytes = new TextEncoder().encode(toSvg(doc, ids, (hash) => (store.imageBytes(hash) ? dataUrl(store.imageBytes(hash)!) : undefined)))
+    bytes = new TextEncoder().encode(toSvg(doc, ids, (hash) => (store.imageBytes(hash) ? dataUrl(store.imageBytes(hash)!) : undefined), (hash) => { const b = store.image(hash); return b ? { w: b.width, h: b.height } : undefined }))
   }
   const saved = await store.api.exportImage(bytes, scale > 1 && kind === 'png' ? `${base}@${scale}x` : base, kind)
   return saved?.path ?? null

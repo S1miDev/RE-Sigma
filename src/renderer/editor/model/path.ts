@@ -62,6 +62,36 @@ export function pathData(subs: Sub[]): string {
   }).join('')
 }
 
+/** Distance from `p` to the segment a-b. */
+function segDist(p: Pt, a: Pt, b: Pt): number {
+  const dx = b.x - a.x, dy = b.y - a.y, len = dx * dx + dy * dy
+  const t = len ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len)) : 0
+  return Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy)
+}
+
+/**
+ * A freehand stroke (sampled points) → a few smooth anchors: Ramer–Douglas–Peucker to `tol`, then a Catmull-Rom spline
+ * through the kept points written as Bézier handles. Fewer than two distinct points → no anchors.
+ * shortcut: Catmull-Rom through the kept points can wobble at sharp corners; swap for Schneider curve fitting if it shows.
+ */
+export function fitStroke(points: Pt[], tol: number): Anchor[] {
+  const pts = points.filter((p, i) => i === 0 || !same(p, points[i - 1]))
+  if (pts.length < 2) return []
+  const keep = new Set([0, pts.length - 1])
+  const rdp = (lo: number, hi: number) => {
+    let at = -1, far = tol
+    for (let i = lo + 1; i < hi; i++) { const d = segDist(pts[i], pts[lo], pts[hi]); if (d > far) { far = d; at = i } }
+    if (at >= 0) { keep.add(at); rdp(lo, at); rdp(at, hi) }
+  }
+  rdp(0, pts.length - 1)
+  const k = [...keep].sort((a, b) => a - b).map((i) => pts[i])
+  if (k.length === 2) return k.map((p) => ({ x: p.x, y: p.y }))
+  return k.map((p, i) => {
+    const a = k[Math.max(0, i - 1)], b = k[Math.min(k.length - 1, i + 1)], tx = (b.x - a.x) / 6, ty = (b.y - a.y) / 6
+    return { x: p.x, y: p.y, ...(i > 0 && { in: { x: p.x - tx, y: p.y - ty } }), ...(i < k.length - 1 && { out: { x: p.x + tx, y: p.y + ty } }) }
+  })
+}
+
 /** Every point (anchors and handles) of the subpaths mapped by `fn`. */
 export const mapSubs = (subs: Sub[], fn: (p: Pt) => Pt): Sub[] =>
   subs.map((s) => ({ closed: s.closed, anchors: s.anchors.map((a) => ({ ...fn(a), ...(a.in && { in: fn(a.in) }), ...(a.out && { out: fn(a.out) }) })) }))

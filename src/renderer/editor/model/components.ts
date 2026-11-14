@@ -31,7 +31,7 @@ function derived(n: Node, parent: Node | undefined): Key[] {
   if (parent?.layout) out.push('x', 'y', ...(n.fillW ? ['width' as const] : []), ...(n.fillH ? ['height' as const] : []))
   if (n.layout?.hugW) out.push('width')
   if (n.layout?.hugH) out.push('height')
-  if (n.type === 'TEXT') out.push('height', ...(n.textAutoWidth ? ['width' as const] : []))
+  if (n.type === 'TEXT') out.push(...(n.textFixedHeight ? [] : ['height' as const]), ...(n.textAutoWidth ? ['width' as const] : []))
   return out
 }
 

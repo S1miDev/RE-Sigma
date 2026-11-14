@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { createHash } from 'node:crypto'
 import type { Omitted } from '../../shared/api'
-import { CONSTRAINTS, FORMAT_VERSION, makeNode, type Color, type Constraint, type Gradient, type Document, type DropShadow, type Node, type NodeType, type Paint, type VectorPath } from '../../shared/document'
+import { BLEND_CSS, CONSTRAINTS, FORMAT_VERSION, makeNode, type Color, type Constraint, type Gradient, type Document, type Effect, type Node, type NodeType, type Paint, type RunStyle, type TextRun, type VectorPath } from '../../shared/document'
 import { orderBetween } from '../../shared/order'
 import { readCanvas } from './kiwi'
 import { FormatError, safeUnzip, validateDocument } from './refig'
@@ -89,18 +89,28 @@ export function importFig(bytes: Uint8Array): { document: Document; images: Reco
       if (!data) return omit(`${p.type} paint`), []
       const hash = createHash('sha256').update(data).digest('hex')
       images[hash] = data
-      return [{ type: 'IMAGE', visible, hash }]
+      // shortcut: field names (imageScaleMode, scale) unchecked against a real file; STRETCH reads as FILL
+      const mode = p.imageScaleMode === 'FIT' ? 'FIT' : p.imageScaleMode === 'TILE' ? 'TILE' : undefined
+      return [{
+        type: 'IMAGE', visible, hash, ...(p.opacity !== undefined && { opacity: clamp(p.opacity) }),
+        ...(mode && { scaleMode: mode }),
+        ...(mode === 'TILE' && typeof p.scale === 'number' && p.scale > 0 && { scale: Math.min(100, Math.max(0.01, p.scale)) }),
+      }]
     })
     // one heavily layered node must not fail the whole import at validation
     for (const p of out.slice(MAX_PAINTS)) omit(`${p.type} paint beyond ${MAX_PAINTS}`)
     return out.slice(0, MAX_PAINTS)
   }
-  const shadows = (list: any[] | undefined): DropShadow[] =>
-    (list ?? []).flatMap((e): DropShadow[] =>
-      e.type === 'DROP_SHADOW'
-        ? [{ visible: e.visible !== false, x: n0(e.offset?.x), y: n0(e.offset?.y), blur: Math.max(0, n0(e.radius)), spread: n0(e.spread), color: color(e.color) }]
-        : (omit(`${e.type} effect`), []),
-    )
+  const shadows = (list: any[] | undefined): Effect[] =>
+    (list ?? []).flatMap((e): Effect[] => {
+      const visible = e.visible !== false, blur = Math.max(0, n0(e.radius))
+      const shadow = { visible, x: n0(e.offset?.x), y: n0(e.offset?.y), blur, spread: n0(e.spread), color: color(e.color) }
+      if (e.type === 'DROP_SHADOW') return [shadow]
+      if (e.type === 'INNER_SHADOW') return [{ type: 'INNER_SHADOW', ...shadow }]
+      if (e.type === 'FOREGROUND_BLUR') return [{ type: 'LAYER_BLUR', visible, blur }]
+      if (e.type === 'BACKGROUND_BLUR') return [{ type: 'BACKGROUND_BLUR', visible, blur }]
+      return omit(`${e.type} effect`), []
+    })
 
   /** Figma geometry blob → SVG path data. Stops at the first unknown command or truncated argument. */
   const geometry = (list: any[] | undefined): VectorPath[] =>
@@ -140,6 +150,7 @@ export function importFig(bytes: Uint8Array): { document: Document; images: Reco
       width: w, height: h,
       rotation: (Math.atan2(m10, m00) * 180) / Math.PI,
       opacity: clamp(c.opacity ?? 1),
+      ...(c.blendMode in BLEND_CSS && c.blendMode !== 'NORMAL' && { blendMode: c.blendMode }),
       fills: type === 'GROUP' ? [] : paints(c.fillPaints),
       strokes: type === 'GROUP' ? [] : paints(c.strokePaints),
       strokeWeight: Math.max(0, n0(c.strokeWeight)),
@@ -148,6 +159,18 @@ export function importFig(bytes: Uint8Array): { document: Document; images: Reco
       cornerRadius: Math.max(0, n0(c.cornerRadius ?? c.rectangleTopLeftCornerRadius)),
       clipsContent: type === 'FRAME' && !c.frameMaskDisabled,
     })
+    if (type === 'RECTANGLE' || type === 'FRAME') {
+      const radii = [c.rectangleTopLeftCornerRadius, c.rectangleTopRightCornerRadius, c.rectangleBottomRightCornerRadius, c.rectangleBottomLeftCornerRadius].map((v) => Math.max(0, n0(v)))
+      if (radii.some((r) => r !== radii[0])) node.cornerRadii = radii as NonNullable<Node['cornerRadii']>
+      if (n0(c.cornerSmoothing) > 0) node.cornerSmoothing = clamp(c.cornerSmoothing)
+    }
+    // shortcut: field names (strokeCap, strokeJoin, dashPattern, border*Weight) unchecked against a real file; Figma's arrow caps import as none.
+    if (['ROUND', 'SQUARE'].includes(c.strokeCap)) node.strokeCap = c.strokeCap
+    if (['BEVEL', 'ROUND'].includes(c.strokeJoin)) node.strokeJoin = c.strokeJoin
+    if (Array.isArray(c.dashPattern) && c.dashPattern.length && c.dashPattern.length <= 8) node.strokeDash = c.dashPattern.map((v: unknown) => Math.max(0, n0(v)))
+    if ((type === 'RECTANGLE' || type === 'FRAME') && c.borderStrokeWeightsIndependent === true)
+      node.strokeSides = [c.borderTopWeight, c.borderRightWeight, c.borderBottomWeight, c.borderLeftWeight].map((v) => Math.max(0, n0(v))) as NonNullable<Node['strokeSides']>
+    if (c.mask === true && ['FRAME', 'RECTANGLE', 'ELLIPSE', 'VECTOR'].includes(type)) node.mask = true
     const ch = constraint(c.horizontalConstraint), cv = constraint(c.verticalConstraint)
     if (ch !== 'MIN' || cv !== 'MIN') node.constraints = { h: ch, v: cv }
     if (type === 'TEXT') {
@@ -163,7 +186,40 @@ export function importFig(bytes: Uint8Array): { document: Document; images: Reco
         letterSpacing: units(c.letterSpacing, 0),
         textAlign: ['CENTER', 'RIGHT'].includes(c.textAlignHorizontal) ? c.textAlignHorizontal : 'LEFT',
         textAutoWidth: c.textAutoResize === 'WIDTH_AND_HEIGHT',
+        // shortcut: these Figma field names are unverified against a real file; lists and mixed runs are not imported.
+        ...(/italic/i.test(String(c.fontName?.style ?? '')) && { fontItalic: true }),
+        ...(['UNDERLINE', 'STRIKETHROUGH'].includes(c.textDecoration) && { textDecoration: c.textDecoration }),
+        ...(['UPPER', 'LOWER', 'TITLE'].includes(c.textCase) && { textCase: c.textCase }),
+        ...(['CENTER', 'BOTTOM'].includes(c.textAlignVertical) && { textAlignVertical: c.textAlignVertical }),
+        ...(c.textAutoResize === 'NONE' && { textFixedHeight: true }),
+        ...(c.textTruncation === 'ENDING' && { textTruncate: true, maxLines: clamp(Math.round(n0(c.maxLines)), 0, 10_000) }),
       })
+      // Mixed styles: characterStyleIDs gives each character a key into styleOverrideTable (0 = the node's own style).
+      // shortcut: these field names are unverified against a real file, and a key per UTF-16 unit (not per code point) is assumed.
+      const ids: unknown[] = Array.isArray(c.textData?.characterStyleIDs) ? c.textData.characterStyleIDs : []
+      const table = new Map<unknown, any>((Array.isArray(c.textData?.styleOverrideTable) ? c.textData.styleOverrideTable : []).map((o: any) => [o?.styleID, o]))
+      const style = (o: any): RunStyle => {
+        const st: RunStyle = {}, face = String(o.fontName?.style ?? '')
+        if (o.fontSize > 0) st.fontSize = clamp(o.fontSize, 0.1, 10_000)
+        if (o.fontName?.family) st.fontFamily = String(o.fontName.family).slice(0, 100)
+        if (o.fontName?.style) { st.fontWeight = WEIGHTS[face.toLowerCase().replace(/[s-]|italic/g, '')] ?? 400; st.fontItalic = /italic/i.test(face) }
+        if (['UNDERLINE', 'STRIKETHROUGH'].includes(o.textDecoration)) st.textDecoration = o.textDecoration
+        if (['UPPER', 'LOWER', 'TITLE'].includes(o.textCase)) st.textCase = o.textCase
+        if (o.letterSpacing) st.letterSpacing = units(o.letterSpacing, 0)
+        if (o.lineHeight) st.lineHeight = o.lineHeight.units === 'PERCENT' && o.lineHeight.value === 100 ? 0 : Math.max(0, units(o.lineHeight, 0))
+        const paint = Array.isArray(o.fillPaints) ? o.fillPaints.find((p: any) => p?.type === 'SOLID' && p.color) : undefined
+        if (paint) st.fill = { r: clamp(n0(paint.color.r), 0, 1), g: clamp(n0(paint.color.g), 0, 1), b: clamp(n0(paint.color.b), 0, 1), a: clamp(n0(paint.opacity ?? paint.color.a ?? 1), 0, 1) }
+        return st
+      }
+      if (ids.some((i) => i && table.has(i))) {
+        const runs: TextRun[] = []
+        for (let i = 0; i < (node.characters ?? '').length; i++) {
+          const st = ids[i] && table.has(ids[i]) ? style(table.get(ids[i])) : {}, last = runs.at(-1)
+          if (last && JSON.stringify(last.style) === JSON.stringify(st)) last.len++
+          else runs.push({ len: 1, style: st })
+        }
+        node.runs = runs
+      }
     }
     if (type === 'VECTOR') node.vector = { w, h, fill: geometry(c.fillGeometry), stroke: geometry(c.strokeGeometry) }
     nodes[node.id] = node

@@ -128,3 +128,4 @@ Unknown fields are dropped.
 ## Saving
 
 The app writes `<name>.refig.tmp`, flushes it to disk, then renames it over `<name>.refig`. A crash leaves either the old file or the new one.
+- **12:** adds `styles` to `document.json`: a list of `{ id, name, kind: FILL | TEXT | EFFECT, value }`, and the node fields `fillStyle`, `strokeStyle`, `effectStyle`, `textStyle` (style ids). A linked node's own fields always hold the style's value. Files without `styles` read as having none.

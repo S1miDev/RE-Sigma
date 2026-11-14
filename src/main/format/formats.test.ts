@@ -48,6 +48,39 @@ test('refig round-trips document, thumbnail and images', () => {
   expect(readRefigMeta(bytes).meta.id).toBe(meta.id)
 })
 
+test('refig round-trips boolean nodes and rejects an unknown operation', () => {
+  const { doc, frame } = sampleDoc()
+  const b = makeNode('BOOLEAN', { parentId: frame.id, boolOp: 'SUBTRACT', width: 10, height: 10, vector: { w: 10, h: 10, fill: [{ d: 'M0 0L10 0L10 10Z', rule: 'evenodd' }], stroke: [] } })
+  doc.nodes[b.id] = b
+  expect(readRefig(writeRefig({ meta, document: doc, thumbnail: undefined, images: {} })).document).toEqual(doc)
+  expect(() => validateDocument({ ...doc, nodes: { ...doc.nodes, [b.id]: { ...b, boolOp: 'MERGE' } } })).toThrow(/boolOp/)
+})
+
+test('refig keeps the mask flag on shapes and drops it from text', () => {
+  const { doc, frame, text } = sampleDoc()
+  const r = makeNode('RECTANGLE', { parentId: frame.id, mask: true, width: 10, height: 10 })
+  doc.nodes[r.id] = r
+  const back = readRefig(writeRefig({ meta, document: doc, thumbnail: undefined, images: {} })).document
+  expect(back.nodes[r.id].mask).toBe(true)
+  expect(validateDocument({ ...doc, nodes: { ...doc.nodes, [text.id]: { ...text, mask: true } } }).nodes[text.id].mask).toBeUndefined()
+  expect(() => validateDocument({ ...doc, nodes: { ...doc.nodes, [r.id]: { ...r, mask: 'yes' } } })).toThrow(/mask/)
+})
+
+test('refig keeps star, arc and corner fields and rejects bad ones', () => {
+  const { doc, frame } = sampleDoc()
+  const star = makeNode('STAR', { parentId: frame.id, width: 40, height: 40, points: 6, innerRatio: 0.5, vector: { w: 40, h: 40, fill: [{ d: 'M0 0L40 0L40 40Z', rule: 'nonzero' }], stroke: [] } })
+  const arc = makeNode('ELLIPSE', { parentId: frame.id, width: 40, height: 40, arc: { start: 10, sweep: 90, inner: 0.3 } })
+  const rect = makeNode('RECTANGLE', { parentId: frame.id, width: 40, height: 40, cornerRadii: [1, 2, 3, 4], cornerSmoothing: 0.6 })
+  for (const n of [star, arc, rect]) doc.nodes[n.id] = n
+  expect(readRefig(writeRefig({ meta, document: doc, thumbnail: undefined, images: {} })).document).toEqual(doc)
+  const bad = (id: string, change: object) => () => validateDocument({ ...doc, nodes: { ...doc.nodes, [id]: { ...doc.nodes[id], ...change } } })
+  expect(bad(star.id, { points: 2 })).toThrow(/points/)
+  expect(bad(star.id, { innerRatio: 2 })).toThrow(/innerRatio/)
+  expect(bad(rect.id, { cornerRadii: [1, 2, 3] })).toThrow(/cornerRadii/)
+  expect(bad(rect.id, { cornerSmoothing: 3 })).toThrow(/cornerSmoothing/)
+  expect(bad(arc.id, { arc: { start: 0, sweep: 90, inner: 5 } })).toThrow(/inner/)
+})
+
 test('validateDocument rejects bad shapes, dangling parents and cycles', () => {
   const { doc, frame, text } = sampleDoc()
   expect(validateDocument(doc)).toEqual(doc)

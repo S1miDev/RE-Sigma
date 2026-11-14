@@ -30,6 +30,28 @@ test('components: an instance mirrors its main, and follows edits, added and rem
   expect(syncInstances(s, s)).toBe(s) // a settled document doesn't change
 })
 
+test('components: an instance of a main holding a boolean follows its operands', () => {
+  const { store, page, m, r, i } = components()
+  const extra = makeNode('RECTANGLE', { x: 15, y: 15, width: 40, height: 20, fills: [red] })
+  store.update((d) => insert(d, extra, m))
+  store.set({ selection: [r, extra.id] })
+  run(store, 'subtract')
+  const inst = () => childrenOf(store.get().doc, i).find((k) => k.type === 'BOOLEAN')!
+  const before = inst().vector!.fill[0].d
+  expect(before).toBeTruthy()
+  store.update((d) => patch(d, [extra.id], { x: 80 }))
+  expect(inst().vector!.fill[0].d).not.toBe(before)
+  expect(inst().vector!.fill[0].d).toBe(childrenOf(store.get().doc, m).find((k) => k.type === 'BOOLEAN')!.vector!.fill[0].d)
+  expect(page).toBeTruthy()
+})
+
+test('components: an instance mirrors a mask flag set in its main', () => {
+  const { store, r, i, copy } = components()
+  store.update((d) => patch(d, [r], { mask: true }))
+  expect(copy().mask).toBe(true)
+  expect(i).toBeTruthy()
+})
+
 test('components: overrides survive main edits to the same field; reset and detach', () => {
   const { store, m, r, i, copy } = components()
   store.update((d) => patch(d, [copy().id], { fills: [blue] }))

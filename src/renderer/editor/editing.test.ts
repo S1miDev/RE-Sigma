@@ -8,6 +8,7 @@ import { addPage, childrenOf, group, insert, patch, remove } from './model/ops'
 import { anchorsOf } from './model/path'
 import { AUTOSAVE_MS, gestureStep, NO_MODE } from './store'
 import { beginGesture, editNode, showPage } from './tools'
+import { insertText, select, textKey } from './tools/textEdit'
 import { open, at, drag, run, penMode } from './testkit'
 
 beforeEach(() => void vi.useFakeTimers())
@@ -197,6 +198,21 @@ test('modes: switching page or undoing leaves point editing; a pen path in progr
   expect(store.get().doc.nodes[lone]).toBeUndefined() // a single point leaves nothing
 })
 
+test('pencil: a drag draws one smoothed vector in the frame under it, one undo removes it, a click draws nothing', () => {
+  const { store, frame } = open()
+  store.set({ tool: 'pencil' })
+  const before = Object.keys(store.get().doc.nodes).length
+  drag(store, at(150, 150))
+  expect(Object.keys(store.get().doc.nodes)).toHaveLength(before)
+  drag(store, at(150, 150), at(170, 150), at(190, 190), at(210, 190), at(230, 150))
+  const id = store.get().selection[0], n = store.get().doc.nodes[id]
+  expect(n).toMatchObject({ type: 'VECTOR', parentId: frame })
+  expect(store.get().tool).toBe('pencil')
+  expect(anchorsOf(n)[0].anchors.length).toBeGreaterThanOrEqual(2)
+  store.undo()
+  expect(store.get().doc.nodes[id]).toBeUndefined()
+})
+
 test('pen: clicks draw corners, a drag pulls handles, the first point closes, the whole path is one undo step', () => {
   const { store, doc } = open()
   store.set({ tool: 'pen' })
@@ -260,4 +276,51 @@ test('point editing: Enter starts it, dragging moves one point or one handle, De
   store.set({ selection: [v.id], mode: { kind: 'points', id: v.id, sel: null } })
   run(store, 'escape')
   expect(store.get()).toMatchObject({ mode: NO_MODE, selection: [v.id] })
+})
+
+test('text editing: typing, selecting with Shift+arrows, Ctrl+B styles the range, undo restores text and runs', () => {
+  const { store } = open()
+  store.set({ tool: 'text' })
+  drag(store, at(10, 500))
+  const id = store.get().selection[0]
+  const key = (k: string, mods: { ctrl?: boolean; shift?: boolean } = {}) => textKey(store, { key: k, ctrl: false, shift: false, ...mods })
+  const node = () => store.get().doc.nodes[id]
+  insertText(store, 'hello world')
+  expect(node().characters).toBe('hello world')
+  expect(node().name).toBe('hello world') // the layer is named after its text
+  key('Home')
+  for (let i = 0; i < 5; i++) key('ArrowRight', { shift: true })
+  expect(store.get().mode).toMatchObject({ anchor: 0, focus: 5 })
+  key('b', { ctrl: true })
+  expect(node().runs).toEqual([{ len: 5, style: { fontWeight: 700 } }, { len: 6, style: {} }])
+  key('ArrowRight') // collapses to the end of the selection
+  insertText(store, 'X') // typed after bold text: bold
+  expect(node().characters).toBe('helloX world')
+  expect(node().runs).toEqual([{ len: 6, style: { fontWeight: 700 } }, { len: 6, style: {} }])
+  key('Backspace')
+  expect(node().characters).toBe('hello world')
+  store.undo()
+  store.undo() // back before the bold
+  expect(node().runs).toBeUndefined()
+})
+
+test('text editing: a style chosen at a bare caret applies to what is typed next; Up/Down keep the column', () => {
+  const { store } = open()
+  store.set({ tool: 'text' })
+  drag(store, at(10, 500))
+  const id = store.get().selection[0]
+  const key = (k: string, mods: { shift?: boolean } = {}) => textKey(store, { key: k, ctrl: false, shift: false, ...mods })
+  insertText(store, 'ab')
+  key('i', {} as never) // not a ctrl key: ignored
+  textKey(store, { key: 'i', ctrl: true, shift: false }) // italic pending at the caret
+  insertText(store, 'c')
+  expect(store.get().doc.nodes[id].runs).toEqual([{ len: 2, style: {} }, { len: 1, style: { fontItalic: true } }])
+  insertText(store, '\nxyz')
+  select(store, 7, 7) // end of the text
+  key('ArrowUp')
+  expect(store.get().mode).toMatchObject({ focus: 3 }) // end of "abc"
+  key('ArrowDown')
+  expect(store.get().mode).toMatchObject({ focus: 7 })
+  key('ArrowRight', { shift: true })
+  expect(store.get().mode).toMatchObject({ anchor: 7, focus: 7 })
 })

@@ -3,6 +3,7 @@ import { makeNode, type Node } from '../../shared/document'
 import { toWorld } from './canvas/viewport'
 import { apply, worldMatrix, worldRotation, type Pt } from './model/geometry'
 import { cloneTree, descendants, insert, nextName, pageOf, put, topLevel, topOrder } from './model/ops'
+import { importSvg } from './importSvg'
 import type { EditorStore } from './store'
 
 let clipboard: { roots: { node: Node; centre: Pt; rotation: number }[]; nodes: Node[]; images: Map<string, Uint8Array> } | null = null
@@ -41,13 +42,25 @@ export async function paste(store: EditorStore) {
   })
 }
 
-/** Places an image (from the system clipboard) as a rectangle with an image fill, centred in the viewport. */
-export async function pasteImage(store: EditorStore, file: Blob) {
-  const bytes = new Uint8Array(await file.arrayBuffer())
-  const hash = await store.addImage(bytes)
+const isSvg = (f: Blob & { name?: string }) => f.type === 'image/svg+xml' || /\.svg$/i.test(f.name ?? '')
+
+/**
+ * Places an image file (system clipboard, file picker or drop) centred on `at` (page coordinates; default the viewport centre):
+ * a raster becomes a rectangle with an image fill, an SVG a frame of vector nodes. Returns what an SVG used that isn't imported.
+ */
+export async function placeFile(store: EditorStore, file: Blob & { name?: string }, at?: Pt): Promise<string[]> {
+  const { view, size, pageId } = store.get()
+  const c = at ?? toWorld(view, { x: size.w / 2, y: size.h / 2 })
+  if (isSvg(file)) {
+    const { nodes, root, skipped } = importSvg(await file.text(), file.name ?? 'SVG')
+    const placed = { ...root, name: nextName(store.get().doc, root.name), x: c.x - root.width / 2, y: c.y - root.height / 2 }
+    store.update((doc) => ({ doc: put(insert(doc, placed, pageId), nodes.filter((n) => n.id !== root.id)), ids: [root.id] }))
+    return skipped
+  }
+  const hash = await store.addImage(new Uint8Array(await file.arrayBuffer()))
   const bitmap = typeof createImageBitmap === 'function' ? await createImageBitmap(file).catch(() => null) : null
-  const { view, size, pageId } = store.get(), width = bitmap?.width ?? 200, height = bitmap?.height ?? 200
-  const c = toWorld(view, { x: size.w / 2, y: size.h / 2 })
+  const width = bitmap?.width ?? 200, height = bitmap?.height ?? 200
   const node = makeNode('RECTANGLE', { name: nextName(store.get().doc, 'Image'), x: c.x - width / 2, y: c.y - height / 2, width, height, fills: [{ type: 'IMAGE', visible: true, hash }] })
   store.update((doc) => ({ doc: insert(doc, node, pageId), ids: [node.id] }))
+  return []
 }

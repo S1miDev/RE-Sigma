@@ -1,8 +1,8 @@
 // .refig = ZIP { meta.json, document.json, thumbnail.png?, images/<sha256> }. See docs/project-format.md.
 import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from 'fflate'
 import {
-  CONSTRAINTS, FILL_RULES, FORMAT_VERSION, GRADIENT_KINDS, isContainer, LAYOUT_ALIGNS, LAYOUT_MODES, NODE_TYPES, OVERRIDABLE, STROKE_ALIGNS, TEXT_ALIGNS,
-  type AutoLayout, type Color, type Document, type DropShadow, type Node, type Paint, type VectorPath,
+  BLEND_MODES, BOOL_OPS, CONSTRAINTS, FILL_RULES, FORMAT_VERSION, GRADIENT_KINDS, IMAGE_MODES, isContainer, LAYOUT_ALIGNS, LAYOUT_MODES, NODE_TYPES, OVERRIDABLE, STROKE_ALIGNS, STROKE_CAPS, STROKE_ENDS, STROKE_JOINS, STYLE_KINDS, TEXT_ALIGNS, TEXT_CASES, TEXT_DECORATIONS, TEXT_LISTS, TEXT_VALIGNS,
+  type AutoLayout, type Color, type Document, type Effect, type Node, type Paint, type RunStyle, type Style, type TextStyleValue, type VectorPath,
 } from '../../shared/document'
 
 export interface Meta {
@@ -74,27 +74,39 @@ const list = (x: unknown, at: string): Obj[] => (Array.isArray(x) && x.length <=
 const color = (x: unknown, at: string): Color =>
   isObj(x) ? { r: num(x, 'r', at, 0, 1), g: num(x, 'g', at, 0, 1), b: num(x, 'b', at, 0, 1), a: num(x, 'a', at, 0, 1) } : fail(at)
 const paints = (x: unknown, at: string): Paint[] =>
-  list(x, at).map((p) => {
-    const visible = bool(p, 'visible', at)
-    if (p.type === 'SOLID') return { type: 'SOLID', visible, color: color(p.color, `${at}.color`) }
-    if (p.type === 'IMAGE' && typeof p.hash === 'string' && HASH.test(p.hash)) return { type: 'IMAGE', visible, hash: p.hash }
+  list(x, at).map((p): Paint => {
+    const visible = bool(p, 'visible', at), op = p.opacity === undefined ? {} : { opacity: num(p, 'opacity', at, 0, 1) }
+    if (p.type === 'SOLID') return { type: 'SOLID', visible, color: color(p.color, `${at}.color`), ...op }
+    if (p.type === 'IMAGE' && typeof p.hash === 'string' && HASH.test(p.hash)) {
+      const opt = (k: 'scale' | 'offsetX' | 'offsetY', lo: number, hi: number) => (p[k] === undefined ? {} : { [k]: num(p, k, at, lo, hi) })
+      return {
+        type: 'IMAGE', visible, hash: p.hash, ...op,
+        ...(p.scaleMode !== undefined && { scaleMode: oneOf(p, 'scaleMode', at, IMAGE_MODES) }),
+        ...opt('scale', 0.01, 100), ...opt('offsetX', -1e6, 1e6), ...opt('offsetY', -1e6, 1e6),
+      }
+    }
     if (p.type === 'GRADIENT') {
       const pt = (x: unknown, w: string) => (isObj(x) ? { x: num(x, 'x', w), y: num(x, 'y', w) } : fail(w))
       const stops = list(p.stops, `${at}.stops`)
       if (stops.length < 2) fail(`${at}.stops`)
       return {
-        type: 'GRADIENT', visible, kind: oneOf(p, 'kind', at, GRADIENT_KINDS), from: pt(p.from, `${at}.from`), to: pt(p.to, `${at}.to`),
+        type: 'GRADIENT', visible, ...op, kind: oneOf(p, 'kind', at, GRADIENT_KINDS), from: pt(p.from, `${at}.from`), to: pt(p.to, `${at}.to`),
         ...(p.w !== undefined && { w: pt(p.w, `${at}.w`) }),
         stops: stops.map((s) => ({ pos: num(s, 'pos', `${at}.stops`, 0, 1), color: color(s.color, `${at}.stops.color`) })),
       }
     }
     return fail(at)
   })
-const shadows = (x: unknown, at: string): DropShadow[] =>
-  list(x, at).map((s) => ({
-    visible: bool(s, 'visible', at), x: num(s, 'x', at), y: num(s, 'y', at),
-    blur: num(s, 'blur', at, 0), spread: num(s, 'spread', at), color: color(s.color, `${at}.color`),
-  }))
+const EFFECT_TYPES = ['DROP_SHADOW', 'INNER_SHADOW', 'LAYER_BLUR', 'BACKGROUND_BLUR'] as const
+const effects = (x: unknown, at: string): Effect[] =>
+  list(x, at).map((s): Effect => {
+    const visible = bool(s, 'visible', at), blur = num(s, 'blur', at, 0)
+    if (s.type === 'LAYER_BLUR' || s.type === 'BACKGROUND_BLUR') return { type: s.type, visible, blur }
+    // no type = a drop shadow (files before version 7)
+    const type = s.type === undefined ? 'DROP_SHADOW' : oneOf(s, 'type', at, EFFECT_TYPES)
+    const shadow = { visible, x: num(s, 'x', at), y: num(s, 'y', at), blur, spread: num(s, 'spread', at), color: color(s.color, `${at}.color`) }
+    return type === 'INNER_SHADOW' ? { type, ...shadow } : s.type === undefined ? shadow : { type: 'DROP_SHADOW', ...shadow }
+  })
 
 /** False for anything but a positive integer; a version newer than this app's throws, with a message for the user. */
 function knownVersion(v: unknown): boolean {
@@ -126,10 +138,23 @@ function validateNode(id: string, n: unknown): Node {
     fills: paints(n.fills, `${at}.fills`),
     strokes: paints(n.strokes, `${at}.strokes`),
     strokeWeight: num(n, 'strokeWeight', at, 0),
+    ...(n.blendMode !== undefined && { blendMode: oneOf(n, 'blendMode', at, BLEND_MODES) }),
     strokeAlign: oneOf(n, 'strokeAlign', at, STROKE_ALIGNS),
-    effects: shadows(n.effects, `${at}.effects`),
+    effects: effects(n.effects, `${at}.effects`),
     cornerRadius: num(n, 'cornerRadius', at, 0),
     clipsContent: bool(n, 'clipsContent', at),
+  }
+  if (n.strokeDash !== undefined) {
+    const d = Array.isArray(n.strokeDash) && n.strokeDash.length <= 8 ? { ...n.strokeDash } : fail(`${at}.strokeDash`)
+    node.strokeDash = Object.keys(d).map((i) => num(d, i, `${at}.strokeDash`, 0, 1e6))
+  }
+  if (n.strokeCap !== undefined) node.strokeCap = oneOf(n, 'strokeCap', at, STROKE_CAPS)
+  if (n.strokeJoin !== undefined) node.strokeJoin = oneOf(n, 'strokeJoin', at, STROKE_JOINS)
+  if (n.strokeStart !== undefined) node.strokeStart = oneOf(n, 'strokeStart', at, STROKE_ENDS)
+  if (n.strokeEnd !== undefined) node.strokeEnd = oneOf(n, 'strokeEnd', at, STROKE_ENDS)
+  if ((type === 'RECTANGLE' || type === 'FRAME') && n.strokeSides !== undefined) {
+    const s = Array.isArray(n.strokeSides) && n.strokeSides.length === 4 ? { ...n.strokeSides } : fail(`${at}.strokeSides`)
+    node.strokeSides = [0, 1, 2, 3].map((i) => num(s, String(i), `${at}.strokeSides`, 0)) as NonNullable<Node['strokeSides']>
   }
   if (n.constraints !== undefined) {
     const c = isObj(n.constraints) ? n.constraints : fail(`${at}.constraints`)
@@ -141,6 +166,7 @@ function validateNode(id: string, n: unknown): Node {
   if (n.ref !== undefined) node.ref = str(n, 'ref', at, 64)
   if (n.overrides !== undefined)
     node.overrides = Array.isArray(n.overrides) && n.overrides.every((k) => OVERRIDABLE.includes(k)) ? [...new Set(n.overrides as string[])] : fail(`${at}.overrides`)
+  for (const k of ['fillStyle', 'strokeStyle', 'effectStyle', 'textStyle'] as const) if (n[k] !== undefined) node[k] = str(n, k, at, 64)
   if (n.fillW !== undefined) node.fillW = bool(n, 'fillW', at)
   if (n.fillH !== undefined) node.fillH = bool(n, 'fillH', at)
   if (type === 'FRAME' && n.layout !== undefined) {
@@ -163,18 +189,90 @@ function validateNode(id: string, n: unknown): Node {
       textAlign: oneOf(n, 'textAlign', at, TEXT_ALIGNS),
       textAutoWidth: bool(n, 'textAutoWidth', at),
     })
-  if (type === 'VECTOR') {
+  if (type === 'TEXT') {
+    if (n.textFixedHeight !== undefined) node.textFixedHeight = bool(n, 'textFixedHeight', at)
+    if (n.fontItalic !== undefined) node.fontItalic = bool(n, 'fontItalic', at)
+    if (n.textDecoration !== undefined) node.textDecoration = oneOf(n, 'textDecoration', at, TEXT_DECORATIONS)
+    if (n.textCase !== undefined) node.textCase = oneOf(n, 'textCase', at, TEXT_CASES)
+    if (n.textAlignVertical !== undefined) node.textAlignVertical = oneOf(n, 'textAlignVertical', at, TEXT_VALIGNS)
+    if (n.textTruncate !== undefined) node.textTruncate = bool(n, 'textTruncate', at)
+    if (n.maxLines !== undefined) node.maxLines = num(n, 'maxLines', at, 0, 10_000)
+    if (n.listStyle !== undefined) node.listStyle = oneOf(n, 'listStyle', at, TEXT_LISTS)
+    if (n.runs !== undefined) {
+      const ra = `${at}.runs`, rs = Array.isArray(n.runs) && n.runs.length <= 10_000 && n.runs.every(isObj) ? (n.runs as Obj[]) : fail(ra)
+      node.runs = rs.map((r, i) => {
+        const a = `${ra}.${i}`, s = isObj(r.style) ? r.style : fail(`${a}.style`), sa = `${a}.style`
+        const len = num(r, 'len', a, 1, 100_000)
+        if (!Number.isInteger(len)) fail(`${a}.len`)
+        const style: RunStyle = {}
+        if (s.fontFamily !== undefined) style.fontFamily = str(s, 'fontFamily', sa, 100)
+        if (s.fontWeight !== undefined) style.fontWeight = num(s, 'fontWeight', sa, 1, 1000)
+        if (s.fontSize !== undefined) style.fontSize = num(s, 'fontSize', sa, 0.1, 10_000)
+        if (s.fontItalic !== undefined) style.fontItalic = bool(s, 'fontItalic', sa)
+        if (s.textDecoration !== undefined) style.textDecoration = oneOf(s, 'textDecoration', sa, TEXT_DECORATIONS)
+        if (s.textCase !== undefined) style.textCase = oneOf(s, 'textCase', sa, TEXT_CASES)
+        if (s.letterSpacing !== undefined) style.letterSpacing = num(s, 'letterSpacing', sa)
+        if (s.lineHeight !== undefined) style.lineHeight = num(s, 'lineHeight', sa, 0)
+        if (s.fill !== undefined) style.fill = color(s.fill, `${sa}.fill`)
+        return { len, style }
+      })
+      if (node.runs.length && node.runs.reduce((t, r) => t + r.len, 0) !== node.characters!.length) fail(ra) // must cover the text exactly
+    }
+  }
+  if ((type === 'RECTANGLE' || type === 'FRAME') && n.cornerRadii !== undefined) {
+    const r = Array.isArray(n.cornerRadii) && n.cornerRadii.length === 4 ? { ...n.cornerRadii } : fail(`${at}.cornerRadii`)
+    node.cornerRadii = [0, 1, 2, 3].map((i) => num(r, String(i), `${at}.cornerRadii`, 0)) as NonNullable<Node['cornerRadii']>
+  }
+  if ((type === 'RECTANGLE' || type === 'FRAME') && n.cornerSmoothing !== undefined) node.cornerSmoothing = num(n, 'cornerSmoothing', at, 0, 1)
+  if (type === 'ELLIPSE' && n.arc !== undefined) {
+    const a = isObj(n.arc) ? n.arc : fail(`${at}.arc`)
+    node.arc = { start: num(a, 'start', `${at}.arc`, -360, 360), sweep: num(a, 'sweep', `${at}.arc`, -360, 360), inner: num(a, 'inner', `${at}.arc`, 0, 1) }
+  }
+  if (type === 'STAR' || type === 'POLYGON') node.points = Math.round(num(n, 'points', at, 3, 60))
+  if (type === 'STAR') node.innerRatio = num(n, 'innerRatio', at, 0.01, 0.99)
+  if (n.mask !== undefined && type !== 'TEXT' && type !== 'LINE' && type !== 'GROUP') node.mask = bool(n, 'mask', at)
+  if (type === 'BOOLEAN') node.boolOp = oneOf(n, 'boolOp', at, BOOL_OPS)
+  if (type === 'VECTOR' || type === 'BOOLEAN' || type === 'STAR' || type === 'POLYGON') {
     const v = isObj(n.vector) ? n.vector : fail(`${at}.vector`)
     node.vector = { w: num(v, 'w', `${at}.vector`, 0), h: num(v, 'h', `${at}.vector`, 0), fill: vectorPaths(v.fill, `${at}.vector.fill`), stroke: vectorPaths(v.stroke, `${at}.vector.stroke`) }
   }
   return node
 }
 
+function validateStyles(x: unknown): Style[] {
+  if (x === undefined) return [] // files before version 12
+  if (!Array.isArray(x) || x.length > 10_000 || !x.every(isObj)) return fail('styles')
+  const ids = new Set<string>()
+  return x.map((s, i): Style => {
+    const at = `styles.${i}`, id = str(s, 'id', at, 64), name = str(s, 'name', at, 200)
+    if (!NODE_ID.test(id) || ids.has(id)) return fail(`${at}.id`)
+    ids.add(id)
+    const kind = oneOf(s, 'kind', at, STYLE_KINDS)
+    if (kind === 'FILL') return { id, name, kind, value: paints(s.value, `${at}.value`) }
+    if (kind === 'EFFECT') return { id, name, kind, value: effects(s.value, `${at}.value`) }
+    const v = isObj(s.value) ? s.value : fail(`${at}.value`), va = `${at}.value`, value: TextStyleValue = {}
+    if (v.fontFamily !== undefined) value.fontFamily = str(v, 'fontFamily', va, 100)
+    if (v.fontWeight !== undefined) value.fontWeight = num(v, 'fontWeight', va, 1, 1000)
+    if (v.fontSize !== undefined) value.fontSize = num(v, 'fontSize', va, 0.1, 10_000)
+    if (v.lineHeight !== undefined) value.lineHeight = num(v, 'lineHeight', va, 0)
+    if (v.letterSpacing !== undefined) value.letterSpacing = num(v, 'letterSpacing', va)
+    if (v.textAlign !== undefined) value.textAlign = oneOf(v, 'textAlign', va, TEXT_ALIGNS)
+    if (v.fontItalic !== undefined) value.fontItalic = bool(v, 'fontItalic', va)
+    if (v.textDecoration !== undefined) value.textDecoration = oneOf(v, 'textDecoration', va, TEXT_DECORATIONS)
+    if (v.textCase !== undefined) value.textCase = oneOf(v, 'textCase', va, TEXT_CASES)
+    if (v.textAlignVertical !== undefined) value.textAlignVertical = oneOf(v, 'textAlignVertical', va, TEXT_VALIGNS)
+    if (v.listStyle !== undefined) value.listStyle = oneOf(v, 'listStyle', va, TEXT_LISTS)
+    if (v.textTruncate !== undefined) value.textTruncate = bool(v, 'textTruncate', va)
+    if (v.maxLines !== undefined) value.maxLines = num(v, 'maxLines', va, 0, 10_000)
+    return { id, name, kind, value }
+  })
+}
+
 /** Checks shape, references, parents and cycles. Returns a clean copy with unknown fields dropped. */
 export function validateDocument(x: unknown): Document {
   if (!isObj(x)) return fail('not an object')
   if (!knownVersion(x.formatVersion)) return fail('formatVersion')
-  // 1 → 2 only added gradient paints, so version 1 needs no migration; future migrations go here.
+  // 1 → 2 added gradient paints, 2 → 3 boolean nodes, 3 → 4 masks, 4 → 5 shape parameters: none needs a migration; future migrations go here.
   if (!isObj(x.nodes)) return fail('nodes')
   const nodes: Record<string, Node> = {}
   for (const [id, n] of Object.entries(x.nodes)) nodes[id] = validateNode(id, n)
@@ -199,7 +297,11 @@ export function validateDocument(x: unknown): Document {
     }
     for (const id of chain) rooted.add(id)
   }
-  return { formatVersion: FORMAT_VERSION, pages: pages as string[], nodes } // older versions read as the current one
+  const styles = validateStyles(x.styles), have = new Set(styles.map((s) => s.id))
+  for (const n of Object.values(nodes))
+    for (const k of ['fillStyle', 'strokeStyle', 'effectStyle', 'textStyle'] as const)
+      if (n[k] !== undefined && !have.has(n[k]!)) fail(`nodes.${n.id}.${k} (no such style)`)
+  return { formatVersion: FORMAT_VERSION, pages: pages as string[], nodes, styles } // older versions read as the current one
 }
 
 export function validateMeta(x: unknown): Meta {

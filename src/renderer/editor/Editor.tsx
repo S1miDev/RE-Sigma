@@ -3,7 +3,8 @@ import type { OpenedProject, RefigApi } from '../../shared/api'
 import { Button, Dialog, DialogActions, IconButton, Menu, SidePanel, Toast } from '../ui'
 import { errorText, keyBelongsToPage } from '../util'
 import { Canvas } from './canvas/Canvas'
-import { paste, pasteImage } from './clipboard'
+import { toWorld } from './canvas/viewport'
+import { paste, placeFile } from './clipboard'
 import { COMMANDS, handleKey, isEnabled, type Actions } from './commands'
 import { DesignPanel } from './panels/DesignPanel'
 import { ExportControls } from './panels/ExportControls'
@@ -30,8 +31,15 @@ export function Editor({ opened, api, onExit }: { opened: OpenedProject; api: Re
     if (await store.save()) onExit()
     else setUnsaved('exit')
   }, [store, onExit])
-  const actions = useMemo<Actions>(() => ({ back: () => void back(), openExport: () => setExporting(true) }), [back])
+  const picker = useRef<HTMLInputElement>(null)
+  const actions = useMemo<Actions>(() => ({ back: () => void back(), openExport: () => setExporting(true), placeImages: () => picker.current?.click() }), [back])
   const report = useCallback((e: unknown) => setToast(errorText(e)), [])
+  /** Places each file in turn; an SVG's unsupported features are named in one toast. */
+  const place = useCallback(async (files: File[], at?: { x: number; y: number }) => {
+    const skipped = new Set<string>()
+    for (const f of files) (await placeFile(store, f, at)).forEach((s) => skipped.add(s))
+    if (skipped.size) setToast(`SVG imported without: ${[...skipped].join(', ')}`)
+  }, [store])
   const clearToast = useCallback(() => setToast(null), [])
 
   useEffect(() => {
@@ -42,7 +50,16 @@ export function Editor({ opened, api, onExit }: { opened: OpenedProject; api: Re
       if (keyBelongsToPage(e)) return
       e.preventDefault()
       const image = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith('image/'))
-      void (image ? pasteImage(store, image) : paste(store)).catch(report)
+      void (image ? place([image]) : paste(store)).catch(report)
+    }
+    const isImage = (f: File) => f.type.startsWith('image/') || /\.svg$/i.test(f.name)
+    const onDragOver = (e: DragEvent) => { if ([...(e.dataTransfer?.items ?? [])].some((i) => i.kind === 'file')) e.preventDefault() }
+    const onDrop = (e: DragEvent) => {
+      const files = [...(e.dataTransfer?.files ?? [])].filter(isImage)
+      if (!files.length) return
+      e.preventDefault()
+      const { view } = store.get(), box = (e.target as Element).closest('main')?.getBoundingClientRect()
+      void place(files, box && toWorld(view, { x: e.clientX - box.left, y: e.clientY - box.top })).catch(report)
     }
     // Closing the window waits for the save. Electron cancels the close when beforeunload is prevented.
     const onUnload = (e: BeforeUnloadEvent) => {
@@ -53,16 +70,22 @@ export function Editor({ opened, api, onExit }: { opened: OpenedProject; api: Re
     }
     window.addEventListener('keydown', onKey)
     window.addEventListener('paste', onPaste)
+    window.addEventListener('dragover', onDragOver)
+    window.addEventListener('drop', onDrop)
     window.addEventListener('beforeunload', onUnload)
     return () => {
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('paste', onPaste)
+      window.removeEventListener('dragover', onDragOver)
+      window.removeEventListener('drop', onDrop)
       window.removeEventListener('beforeunload', onUnload)
     }
-  }, [store, actions, report])
+  }, [store, actions, report, place])
 
   return (
     <EditorContext.Provider value={store}>
+      <input ref={picker} type="file" hidden multiple aria-label="Place image" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml,.svg"
+        onChange={(e) => { void place([...(e.target.files ?? [])]).catch(report); e.target.value = '' }} />
       <Layout actions={actions} report={report} />
       {exporting && (
         <Dialog title="Export selection" onClose={() => setExporting(false)}>

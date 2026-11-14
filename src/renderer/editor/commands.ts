@@ -1,16 +1,18 @@
 // Every editor command in one table. The main menu, the toolbar and the keyboard handler all read from it,
 // so a menu item can't exist without doing something.
-import { makeNode, type Document, type Node } from '../../shared/document'
+import { makeNode, type BoolOp, type Document, type Node } from '../../shared/document'
 import { copy, hasClipboard, paste } from './clipboard'
 import { fitView, zoomAt, zoomToFit } from './canvas/viewport'
 import { worldBox } from './model/geometry'
-import { addAutoLayout, align, childrenOf, distribute, duplicate, group, orderAbove, pageOf, patch, put, remove, reorder, topLevel, translate, ungroup } from './model/ops'
+import { canMask } from './canvas/paintPlan'
+import { addAutoLayout, align, childrenOf, distribute, duplicate, group, orderAbove, pageOf, patch, put, remove, reorder, topLevel, translate, ungroup, type Edit } from './model/ops'
+import { flatten, makeBoolean } from './model/boolean'
 import { addVariant, combineAsVariants, detach, makeComponent, resetOverrides, setOf, variantsOf } from './model/components'
 import type { EditorState, EditorStore, Tool } from './store'
 import { deletePoint, editNode, exitMode, setTool, showPage } from './tools'
 
 /** Things only the Editor component can do. */
-export interface Actions { back(): void; openExport(): void }
+export interface Actions { back(): void; openExport(): void; placeImages(): void }
 export interface Command {
   id: string
   label: string
@@ -24,6 +26,9 @@ const has = (s: EditorState) => s.selection.length > 0
 const inMode = (s: EditorState) => s.mode.kind !== 'none'
 const centre = (s: EditorState) => ({ x: s.size.w / 2, y: s.size.h / 2 })
 const tool = (id: Tool, label: string, key: string): Command => ({ id: `tool-${id}`, label, group: 'Tools', keys: [key], run: (st) => setTool(st, id) })
+/** Combines the selected shapes (two or more) into a live boolean node. */
+const boolean = (id: string, label: string, key: string, op: BoolOp): Command =>
+  ({ id, label, group: 'Object', keys: [key], enabled: (s) => topLevel(s.doc, s.selection).length > 1, run: (st) => st.update((d) => makeBoolean(d, st.get().selection, op)) })
 const toggle = (field: 'visible' | 'locked') => (st: EditorStore) => {
   const { doc, selection } = st.get(), all = selection.every((id) => doc.nodes[id]?.[field])
   st.update((d) => patch(d, selection, { [field]: !all }))
@@ -35,6 +40,7 @@ export const COMMANDS: Command[] = [
   { id: 'back', label: 'Back to projects', group: 'File', run: (_, a) => a.back() },
   { id: 'save', label: 'Save', group: 'File', keys: ['Ctrl+S'], run: (st) => void st.save() },
   { id: 'export', label: 'Export…', group: 'File', keys: ['Ctrl+Shift+E'], enabled: has, run: (_, a) => a.openExport() },
+  { id: 'place-image', label: 'Place image…', group: 'File', keys: ['Ctrl+Shift+K'], run: (_, a) => a.placeImages() },
 
   { id: 'undo', label: 'Undo', group: 'Edit', keys: ['Ctrl+Z'], enabled: (_, st) => st.canUndo(), run: (st) => st.undo() },
   { id: 'redo', label: 'Redo', group: 'Edit', keys: ['Ctrl+Y', 'Ctrl+Shift+Z'], enabled: (_, st) => st.canRedo(), run: (st) => st.redo() },
@@ -55,8 +61,18 @@ export const COMMANDS: Command[] = [
   { id: 'toggle-ui', label: 'Show/Hide UI', group: 'View', keys: ['Ctrl+\\'], run: (st) => st.set({ uiHidden: !st.get().uiHidden }) },
 
   { id: 'group', label: 'Group selection', group: 'Object', keys: ['Ctrl+G'], enabled: has, run: (st) => st.update((d) => group(d, st.get().selection, 'GROUP')) },
-  { id: 'ungroup', label: 'Ungroup', group: 'Object', keys: ['Ctrl+Shift+G'], enabled: (s) => s.selection.some((id) => ['GROUP', 'FRAME'].includes(s.doc.nodes[id]?.type)), run: (st) => st.update((d) => ungroup(d, st.get().selection)) },
+  { id: 'ungroup', label: 'Ungroup', group: 'Object', keys: ['Ctrl+Shift+G'], enabled: (s) => s.selection.some((id) => ['GROUP', 'FRAME', 'BOOLEAN'].includes(s.doc.nodes[id]?.type)), run: (st) => st.update((d) => ungroup(d, st.get().selection)) },
   { id: 'frame-selection', label: 'Frame selection', group: 'Object', keys: ['Ctrl+Alt+G'], enabled: has, run: (st) => st.update((d) => group(d, st.get().selection, 'FRAME')) },
+  boolean('union', 'Union', 'Ctrl+Alt+U', 'UNION'), boolean('subtract', 'Subtract', 'Ctrl+Alt+S', 'SUBTRACT'),
+  boolean('intersect', 'Intersect', 'Ctrl+Alt+I', 'INTERSECT'), boolean('exclude', 'Exclude', 'Ctrl+Alt+X', 'EXCLUDE'),
+  { id: 'use-as-mask', label: 'Use as mask', group: 'Object', keys: ['Ctrl+Alt+M'], enabled: (s) => has(s) && (s.selection.length > 1 || (!!lone(s) && canMask(lone(s)!))),
+    run: (st) => st.update((d) => useAsMask(d, st.get().selection)) },
+  { id: 'flatten', label: 'Flatten', group: 'Object', keys: ['Ctrl+E'], enabled: has,
+    run: (st) => st.update((d) => {
+      const ids = topLevel(d, st.get().selection) // several nodes flatten as their union
+      const made = ids.length > 1 ? makeBoolean(d, ids, 'UNION') : { doc: d, ids }
+      return flatten(made.doc, made.ids)
+    }) },
   { id: 'add-auto-layout', label: 'Add auto layout', group: 'Object', keys: ['Shift+A'], enabled: has, run: (st) => onFrame(st, (n) => !n.layout, addAutoLayout) },
   { id: 'remove-auto-layout', label: 'Remove auto layout', group: 'Object', keys: ['Alt+Shift+A'], enabled: (s) => s.selection.some((id) => s.doc.nodes[id]?.layout), run: (st) => st.update((d) => patch(d, st.get().selection.filter((id) => d.nodes[id]?.layout), { layout: undefined })) },
   { id: 'create-component', label: 'Create component', group: 'Object', keys: ['Ctrl+Alt+K'], enabled: has, run: (st) => onFrame(st, (n) => !n.component && !n.instanceOf, makeComponent) },
@@ -79,7 +95,7 @@ export const COMMANDS: Command[] = [
   { id: 'distribute-v', label: 'Distribute vertical spacing', group: 'Arrange', keys: ['Ctrl+Alt+V'], enabled: (s) => topLevel(s.doc, s.selection).length > 2, run: (st) => st.update((d) => distribute(d, st.get().selection, 'y')) },
 
   tool('move', 'Move', 'V'), tool('hand', 'Hand', 'H'), tool('frame', 'Frame', 'F'), tool('rectangle', 'Rectangle', 'R'),
-  tool('ellipse', 'Ellipse', 'O'), tool('line', 'Line', 'L'), tool('pen', 'Pen', 'P'), tool('text', 'Text', 'T'),
+  tool('ellipse', 'Ellipse', 'O'), tool('line', 'Line', 'L'), tool('arrow', 'Arrow', 'Shift+L'), tool('star', 'Star', 'Shift+S'), tool('polygon', 'Polygon', 'Shift+G'), tool('pen', 'Pen', 'P'), tool('pencil', 'Pencil', 'Shift+P'),tool('text', 'Text', 'T'),
   // Escape steps out one level: leaves a mode (finishing a pen path), then deselects
   { id: 'escape', label: 'Deselect', group: 'Tools', keys: ['Escape'], run: (st) => (inMode(st.get()) ? exitMode(st) : st.set({ selection: [], tool: 'move' })) },
   // Enter edits a text's characters or a vector's points, or leaves the mode
@@ -88,6 +104,14 @@ export const COMMANDS: Command[] = [
 ]
 
 const lone = (s: EditorState) => (s.selection.length === 1 ? s.doc.nodes[s.selection[0]] : undefined)
+
+/** One shape toggles its mask flag; several are grouped first and the bottom-most becomes the mask over the rest. Shapes that can't mask are left alone. */
+function useAsMask(d: Document, selection: string[]): Document | Edit {
+  const ids = topLevel(d, selection)
+  if (ids.length === 1) return d.nodes[ids[0]] && canMask(d.nodes[ids[0]]) ? patch(d, ids, { mask: d.nodes[ids[0]].mask ? undefined : true }) : d
+  const made = group(d, ids, 'GROUP'), base = made.ids[0] && childrenOf(made.doc, made.ids[0])[0]
+  return base && canMask(base) ? { doc: patch(made.doc, [base.id], { mask: true }), ids: made.ids } : d
+}
 
 /** A lone frame that `takes` the change gets it directly; anything else is wrapped in a new frame first, which gets it and is selected. */
 function onFrame(st: EditorStore, takes: (frame: Node) => boolean, change: (doc: Document, id: string) => Document) {
@@ -115,7 +139,7 @@ function goToMain(st: EditorStore) {
 
 export const isEnabled = (c: Command, store: EditorStore) => !c.enabled || c.enabled(store.get(), store)
 /** Runs a command from a panel button. Commands that need the Editor's own actions (back, export) do nothing here. */
-export const runCommand = (store: EditorStore, id: string) => COMMANDS.find((c) => c.id === id)!.run(store, { back() {}, openExport() {} })
+export const runCommand = (store: EditorStore, id: string) => COMMANDS.find((c) => c.id === id)!.run(store, { back() {}, openExport() {}, placeImages() {} })
 
 const CODES: Record<string, string> = { BracketLeft: '[', BracketRight: ']', Backslash: '\\', Equal: '=', Minus: '-', NumpadAdd: '=', NumpadSubtract: '-' }
 /** "Ctrl+Shift+G" for a key event. Digits and punctuation go by physical key so they work on any layout; letters by what they type. */

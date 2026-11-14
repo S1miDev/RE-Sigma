@@ -1,6 +1,6 @@
 {
   "name": "refig",
-  "version": "0.1.2",
+  "version": "0.1.16",
   "description": "Local Figma-style design editor",
   "author": "Refig",
   "private": true,
@@ -36,6 +36,7 @@
   },
   "dependencies": {
     "fflate": "^0.8.3",
+    "paper": "^0.17.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },

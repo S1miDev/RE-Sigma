@@ -1,12 +1,14 @@
 import { useState, type DragEvent } from 'react'
 import { isContainer, type Node } from '../../../shared/document'
 import { Icon, IconButton, type IconName } from '../../ui'
+import { isMask } from '../canvas/paintPlan'
 import { zoomToFit } from '../canvas/viewport'
 import { addPage, childrenOf, moveTo, movePage, patch, removePage } from '../model/ops'
+import { deleteStyle, LINKS, renameStyle, updateStyleFrom, type Link } from '../model/styles'
 import { useEditor, useStore } from '../store'
 import { showPage } from '../tools'
 
-const TYPE_ICON: Record<Node['type'], IconName> = { PAGE: 'page', FRAME: 'frame', GROUP: 'group', RECTANGLE: 'rectangle', ELLIPSE: 'ellipse', LINE: 'line', TEXT: 'text', VECTOR: 'vector' }
+const TYPE_ICON: Record<Node['type'], IconName> = { PAGE: 'page', FRAME: 'frame', GROUP: 'group', RECTANGLE: 'rectangle', ELLIPSE: 'ellipse', LINE: 'line', TEXT: 'text', VECTOR: 'vector', BOOLEAN: 'boolean', STAR: 'star', POLYGON: 'polygon' }
 
 /** Inline rename field: Enter or blur commits a non-empty name, Escape cancels. */
 function RenameInput({ label, value, onDone }: { label: string; value: string; onDone(name: string | null): void }) {
@@ -33,6 +35,7 @@ export function LeftPanel() {
   return (
     <>
       <Pages />
+      <Styles />
       <Layers />
     </>
   )
@@ -75,6 +78,36 @@ function Pages() {
             {doc.pages.length > 1 && renaming !== id && (
               <IconButton label={`Delete ${doc.nodes[id].name}`} icon="x" className="opacity-0 focus:opacity-100 group-hover:opacity-100" onClick={() => store.update((d) => removePage(d, id))} />
             )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
+/** The document's styles, to rename, update from the selected layer, or delete. Hidden while there are none (styles are made from the Design panel). */
+function Styles() {
+  const store = useStore()
+  const doc = useEditor((s) => s.doc), selection = useEditor((s) => s.selection)
+  const [renaming, setRenaming] = useState<string | null>(null)
+  if (!doc.styles.length) return null
+  const from = selection.length === 1 ? doc.nodes[selection[0]] : undefined
+  const linkOf = (kind: string) => (Object.keys(LINKS) as Link[]).find((l) => LINKS[l].kind === kind)!
+  return (
+    <section aria-label="Styles" className="shrink-0 border-b border-line py-2">
+      <div className="flex h-6 items-center px-3"><h3 className="text-[11px] font-semibold">Styles</h3></div>
+      <ul className="mt-1 max-h-40 overflow-auto">
+        {doc.styles.map((s) => (
+          <li key={s.id} className="group flex h-7 items-center gap-1 px-3 hover:bg-raised/60">
+            {renaming === s.id ? (
+              <RenameInput label="Style name" value={s.name} onDone={(name) => { setRenaming(null); if (name) store.update((d) => renameStyle(d, s.id, name)) }} />
+            ) : (
+              <button type="button" className="min-w-0 flex-1 truncate text-left" title={`${s.kind.toLowerCase()} style`} onDoubleClick={() => setRenaming(s.id)}>{s.name}</button>
+            )}
+            {from && renaming !== s.id && (
+              <IconButton label={`Update ${s.name} from selection`} icon="style" className="opacity-0 focus:opacity-100 group-hover:opacity-100" onClick={() => store.update((d) => updateStyleFrom(d, s.id, from.id, linkOf(s.kind)))} />
+            )}
+            {renaming !== s.id && <IconButton label={`Delete ${s.name}`} icon="x" className="opacity-0 focus:opacity-100 group-hover:opacity-100" onClick={() => store.update((d) => deleteStyle(d, s.id))} />}
           </li>
         ))}
       </ul>
@@ -129,7 +162,7 @@ function Layers() {
             ) : (
               <span className="w-4 shrink-0" />
             )}
-            {n.component || n.componentSet || n.instanceOf ? <Icon name={n.instanceOf ? 'instance' : 'component'} className="text-[#9747ff]" /> : <Icon name={TYPE_ICON[n.type]} className="text-dim" />}
+            {n.component || n.componentSet || n.instanceOf ? <Icon name={n.instanceOf ? 'instance' : 'component'} className="text-[#9747ff]" /> : <Icon name={isMask(n) ? 'mask' : TYPE_ICON[n.type]} className="text-dim" />}
             {renaming === n.id ? (
               <RenameInput label="Layer name" value={n.name} onDone={(name) => { setRenaming(null); if (name) store.update((d) => patch(d, [n.id], { name })) }} />
             ) : (

@@ -9,7 +9,7 @@ import { COMMANDS, keyOf } from './commands'
 import { toSvg } from './export/svg'
 import { apply, corners, invert, lineBetween, localMatrix, mul, resizeBox, worldBox } from './model/geometry'
 import { addAutoLayout, addPage, align, autoLayout, childrenOf, distribute, duplicate, group, insert, moveTo, movePage, patch, remove, removePage, reorder, resizeNode, topLevel, translate, ungroup } from './model/ops'
-import { anchorsOf, parsePath, pathData, withAnchors } from './model/path'
+import { anchorsOf, fitStroke, parsePath, pathData, withAnchors } from './model/path'
 import { near, scene, names, open, at, drag, row, boxOf, pinned, black } from './testkit'
 
 beforeEach(() => void vi.useFakeTimers())
@@ -366,6 +366,16 @@ test('paths: parse and write back, quadratics become cubics, a closing point fol
   expect(parsePath('M0 0L10 0L10 10L0 0Z')[0].anchors).toHaveLength(3) // explicit return to the start
   expect(parsePath('M0 0 5 5 10 0')[0].anchors).toHaveLength(3) // pairs after M are line-tos
   expect(pathData(parsePath('M0 0L4 0L4 4Z'))).toBe('M0 0L4 0L4 4Z')
+})
+
+test('paths: a freehand stroke is simplified into few smooth anchors', () => {
+  const line = Array.from({ length: 20 }, (_, i) => ({ x: i, y: 2 * i }))
+  expect(fitStroke(line, 1)).toEqual([{ x: 0, y: 0 }, { x: 19, y: 38 }]) // straight: ends only, no handles
+  const arc = Array.from({ length: 40 }, (_, i) => ({ x: 50 * Math.cos(i / 25), y: 50 * Math.sin(i / 25) }))
+  const a = fitStroke(arc, 1)
+  expect(a.length).toBeGreaterThan(2); expect(a.length).toBeLessThan(arc.length / 2)
+  expect(a[0].in).toBeUndefined(); expect(a[0].out).toBeDefined(); expect(a.at(-1)!.out).toBeUndefined()
+  expect(fitStroke([{ x: 1, y: 1 }, { x: 1, y: 1 }], 1)).toEqual([]) // no movement, no stroke
 })
 
 test('paths: re-fitting a rotated vector keeps every point where it was on the page', () => {

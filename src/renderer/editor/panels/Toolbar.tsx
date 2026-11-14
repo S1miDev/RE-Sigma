@@ -3,7 +3,7 @@ import { COMMANDS } from '../commands'
 import { useEditor, useStore, type Tool } from '../store'
 import { setTool } from '../tools'
 
-const TOOLS: Tool[] = ['move', 'hand', 'frame', 'rectangle', 'ellipse', 'line', 'pen', 'text']
+const TOOLS: Tool[] = ['move', 'hand', 'frame', 'rectangle', 'ellipse', 'line', 'arrow', 'star', 'polygon', 'pen', 'pencil', 'text']
 
 /** The tool strip at the bottom of the canvas. Labels and shortcuts come from the command table. */
 export function Toolbar() {

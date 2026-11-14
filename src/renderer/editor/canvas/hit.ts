@@ -1,6 +1,21 @@
-import type { Document } from '../../../shared/document'
+import type { Document, Node } from '../../../shared/document'
 import { apply, contains, intersects, invert, localMatrix, worldBox, worldMatrix, type Box, type Pt } from '../model/geometry'
 import { childrenOf } from '../model/ops'
+import { hasPath, isMask } from './paintPlan'
+
+/** Whether a point (in the node's own coordinates) is on the node's shape. Vectors use their box, with slack so flat ones stay clickable. */
+function containsPoint(n: Node, q: Pt, tol: number): boolean {
+  if (n.type === 'ELLIPSE') {
+    const rx = n.width / 2, ry = n.height / 2
+    return !!rx && !!ry && ((q.x - rx) / rx) ** 2 + ((q.y - ry) / ry) ** 2 <= 1
+  }
+  if (n.type === 'LINE') {
+    const reach = Math.max(n.strokeWeight / 2, tol)
+    return Math.abs(q.y) <= reach && q.x >= -reach && q.x <= n.width + reach
+  }
+  const reach = hasPath(n) ? Math.max(n.strokeWeight / 2, tol) : 0
+  return q.x >= -reach && q.x <= n.width + reach && q.y >= -reach && q.y <= n.height + reach
+}
 
 /**
  * Top-most visible, unlocked node under a page point. A group answers for its children unless `deep`;
@@ -9,28 +24,21 @@ import { childrenOf } from '../model/ops'
 export function hitTest(doc: Document, pageId: string, p: Pt, opts: { deep?: boolean; tolerance?: number } = {}): string | null {
   const tol = opts.tolerance ?? 0
   const hit = (parentId: string, at: Pt): string | null => {
-    for (const n of childrenOf(doc, parentId).toReversed()) {
-      if (!n.visible || n.locked) continue
+    const kids = childrenOf(doc, parentId), masks: Node[] = []
+    const clipped = (n: Node) => masks.some((m) => !containsPoint(m, apply(invert(localMatrix(m)), at), 0)) // outside a mask below it
+    const order = kids.map((n) => { const out = { n, hidden: clipped(n) }; if (isMask(n) && n.visible) masks.push(n); return out })
+    for (const { n, hidden } of order.toReversed()) {
+      if (!n.visible || n.locked || hidden) continue
       const q = apply(invert(localMatrix(n)), at)
       const inside = q.x >= 0 && q.x <= n.width && q.y >= 0 && q.y <= n.height
       if (n.type === 'FRAME') {
         if (n.clipsContent && !inside) continue
         const inner = hit(n.id, q)
         if (inner || inside) return inner ?? n.id
-      } else if (n.type === 'GROUP') {
+      } else if (n.type === 'GROUP' || n.type === 'BOOLEAN') {
         const inner = hit(n.id, q)
         if (inner) return opts.deep ? inner : n.id
-      } else if (n.type === 'ELLIPSE') {
-        const rx = n.width / 2, ry = n.height / 2
-        if (rx && ry && ((q.x - rx) / rx) ** 2 + ((q.y - ry) / ry) ** 2 <= 1) return n.id
-      } else if (n.type === 'LINE') {
-        const reach = Math.max(n.strokeWeight / 2, tol)
-        if (Math.abs(q.y) <= reach && q.x >= -reach && q.x <= n.width + reach) return n.id
-      } else if (n.type === 'VECTOR') {
-        // box test with slack, so flat vectors (straight lines, 0 high) stay clickable
-        const reach = Math.max(n.strokeWeight / 2, tol)
-        if (q.x >= -reach && q.x <= n.width + reach && q.y >= -reach && q.y <= n.height + reach) return n.id
-      } else if (inside) return n.id
+      } else if (containsPoint(n, q, tol)) return n.id
     }
     return null
   }
