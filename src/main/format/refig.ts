@@ -1,8 +1,8 @@
 // .refig = ZIP { meta.json, document.json, thumbnail.png?, images/<sha256> }. See docs/project-format.md.
 import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from 'fflate'
 import {
-  BLEND_MODES, BOOL_OPS, CONSTRAINTS, FILL_RULES, FORMAT_VERSION, GRADIENT_KINDS, IMAGE_MODES, isContainer, LAYOUT_ALIGNS, LAYOUT_MODES, NODE_TYPES, OVERRIDABLE, STROKE_ALIGNS, STROKE_CAPS, STROKE_ENDS, STROKE_JOINS, STYLE_KINDS, TEXT_ALIGNS, TEXT_CASES, TEXT_DECORATIONS, TEXT_LISTS, TEXT_VALIGNS,
-  type AutoLayout, type Color, type Document, type Effect, type Node, type Paint, type RunStyle, type Style, type TextStyleValue, type VectorPath,
+  ACTIONS, EASINGS, TRANSITIONS, TRIGGERS, type Interaction, BLEND_MODES, BOOL_OPS, EXPORT_FORMATS, CONSTRAINTS, FILL_RULES, FORMAT_VERSION, GRADIENT_KINDS, GRID_KINDS, IMAGE_MODES, isContainer, LAYOUT_ALIGNS, LAYOUT_MODES, NODE_TYPES, OVERRIDABLE, STROKE_ALIGNS, STROKE_CAPS, STROKE_ENDS, STROKE_JOINS, STYLE_KINDS, TEXT_ALIGNS, TEXT_CASES, TEXT_DECORATIONS, TEXT_LISTS, TEXT_VALIGNS, VARIABLE_TYPES, isBindable,
+  type AutoLayout, type Collection, type Comment, type Variable, type Color, type Document, type Effect, type LayoutGrid, type Node, type Paint, type RunStyle, type Style, type TextStyleValue, type VectorPath,
 } from '../../shared/document'
 
 export interface Meta {
@@ -97,6 +97,11 @@ const paints = (x: unknown, at: string): Paint[] =>
     }
     return fail(at)
   })
+const layoutGrids = (x: unknown, at: string): LayoutGrid[] =>
+  list(x, at).map((g) => ({
+    kind: oneOf(g, 'kind', at, GRID_KINDS), size: num(g, 'size', at, 1, 10_000), count: Math.round(num(g, 'count', at, 1, 1000)),
+    gutter: num(g, 'gutter', at, 0, 10_000), margin: num(g, 'margin', at, 0, 100_000), color: color(g.color, `${at}.color`),
+  }))
 const EFFECT_TYPES = ['DROP_SHADOW', 'INNER_SHADOW', 'LAYER_BLUR', 'BACKGROUND_BLUR'] as const
 const effects = (x: unknown, at: string): Effect[] =>
   list(x, at).map((s): Effect => {
@@ -162,11 +167,48 @@ function validateNode(id: string, n: unknown): Node {
   }
   if (type === 'FRAME' && n.componentSet !== undefined) node.componentSet = bool(n, 'componentSet', at)
   if (type === 'FRAME' && n.component !== undefined) node.component = bool(n, 'component', at)
+  if (type === 'FRAME' && n.section !== undefined) node.section = bool(n, 'section', at)
+  if (type === 'RECTANGLE' && n.slice !== undefined) node.slice = bool(n, 'slice', at)
+  if (n.exports !== undefined) {
+    const list = Array.isArray(n.exports) && n.exports.length <= 20 ? n.exports : fail(`${at}.exports`)
+    node.exports = list.map((e, i) => {
+      const o = isObj(e) ? e : fail(`${at}.exports.${i}`)
+      return { suffix: typeof o.suffix === 'string' && o.suffix.length <= 100 ? o.suffix : fail(`${at}.exports.${i}.suffix`), format: oneOf(o, 'format', `${at}.exports.${i}`, EXPORT_FORMATS), scale: num(o, 'scale', `${at}.exports.${i}`, 0.01, 16) }
+    })
+  }
+  if (type === 'FRAME' && n.flowStart !== undefined) node.flowStart = bool(n, 'flowStart', at)
+  if (type !== 'PAGE' && n.interactions !== undefined) {
+    const ia = `${at}.interactions`, l = Array.isArray(n.interactions) && n.interactions.length <= 20 ? n.interactions : fail(ia)
+    node.interactions = l.map((e, i) => {
+      const o = isObj(e) ? e : fail(`${ia}.${i}`), p = `${ia}.${i}`
+      const it: Interaction = {
+        trigger: oneOf(o, 'trigger', p, TRIGGERS), action: oneOf(o, 'action', p, ACTIONS),
+        transition: oneOf(o, 'transition', p, TRANSITIONS), easing: oneOf(o, 'easing', p, EASINGS), duration: num(o, 'duration', p, 0, 10_000),
+      }
+      if (o.key !== undefined) it.key = str(o, 'key', p, 32)
+      if (o.delay !== undefined) it.delay = num(o, 'delay', p, 0, 3_600_000)
+      if (o.target !== undefined) it.target = str(o, 'target', p, 64)
+      if (o.url !== undefined) it.url = /^https?:\/\//.test(str(o, 'url', p, 2048)) ? (o.url as string) : fail(`${p}.url`)
+      return it
+    })
+  }
   if (type === 'FRAME' && n.instanceOf !== undefined) node.instanceOf = str(n, 'instanceOf', at, 64)
   if (n.ref !== undefined) node.ref = str(n, 'ref', at, 64)
   if (n.overrides !== undefined)
     node.overrides = Array.isArray(n.overrides) && n.overrides.every((k) => OVERRIDABLE.includes(k)) ? [...new Set(n.overrides as string[])] : fail(`${at}.overrides`)
   for (const k of ['fillStyle', 'strokeStyle', 'effectStyle', 'textStyle'] as const) if (n[k] !== undefined) node[k] = str(n, k, at, 64)
+  if (type === 'FRAME' && n.gridStyle !== undefined) node.gridStyle = str(n, 'gridStyle', at, 64)
+  if (type === 'FRAME' && n.layoutGrids !== undefined) node.layoutGrids = layoutGrids(n.layoutGrids, `${at}.layoutGrids`)
+  if (type === 'PAGE' && n.guides !== undefined) {
+    const ga = `${at}.guides`, gs = Array.isArray(n.guides) && n.guides.length <= 1000 && n.guides.every(isObj) ? (n.guides as Obj[]) : fail(ga)
+    node.guides = gs.map((g) => ({ axis: oneOf(g, 'axis', ga, ['x', 'y'] as const), pos: num(g, 'pos', ga, -1e9, 1e9) }))
+  }
+  for (const k of ['bindings', 'modes'] as const) {
+    if (n[k] === undefined) continue
+    const m = isObj(n[k]) ? n[k] : fail(`${at}.${k}`), entries = Object.keys(m).map((key) => [key, str(m, key, `${at}.${k}`, 64)])
+    if (entries.length > 1000 || entries.some(([key]) => key.length > 64)) fail(`${at}.${k}`)
+    if (entries.length) node[k] = Object.fromEntries(entries)
+  }
   if (n.fillW !== undefined) node.fillW = bool(n, 'fillW', at)
   if (n.fillH !== undefined) node.fillH = bool(n, 'fillH', at)
   if (type === 'FRAME' && n.layout !== undefined) {
@@ -250,6 +292,7 @@ function validateStyles(x: unknown): Style[] {
     const kind = oneOf(s, 'kind', at, STYLE_KINDS)
     if (kind === 'FILL') return { id, name, kind, value: paints(s.value, `${at}.value`) }
     if (kind === 'EFFECT') return { id, name, kind, value: effects(s.value, `${at}.value`) }
+    if (kind === 'GRID') return { id, name, kind, value: layoutGrids(s.value, `${at}.value`) }
     const v = isObj(s.value) ? s.value : fail(`${at}.value`), va = `${at}.value`, value: TextStyleValue = {}
     if (v.fontFamily !== undefined) value.fontFamily = str(v, 'fontFamily', va, 100)
     if (v.fontWeight !== undefined) value.fontWeight = num(v, 'fontWeight', va, 1, 1000)
@@ -265,6 +308,57 @@ function validateStyles(x: unknown): Style[] {
     if (v.textTruncate !== undefined) value.textTruncate = bool(v, 'textTruncate', va)
     if (v.maxLines !== undefined) value.maxLines = num(v, 'maxLines', va, 0, 10_000)
     return { id, name, kind, value }
+  })
+}
+
+function validateCollections(x: unknown): Collection[] {
+  if (x === undefined) return [] // files before version 13
+  if (!Array.isArray(x) || x.length > 1000 || !x.every(isObj)) return fail('collections')
+  const ids = new Set<string>()
+  const uniq = (id: string, at: string) => {
+    if (!NODE_ID.test(id) || ids.has(id)) fail(at)
+    ids.add(id)
+    return id
+  }
+  return x.map((c, i): Collection => {
+    const at = `collections.${i}`, id = uniq(str(c, 'id', at, 64), `${at}.id`), name = str(c, 'name', at, 200)
+    const ms = Array.isArray(c.modes) && c.modes.length >= 1 && c.modes.length <= 100 && c.modes.every(isObj) ? (c.modes as Obj[]) : fail(`${at}.modes`)
+    const modes = ms.map((m, j) => ({ id: uniq(str(m, 'id', `${at}.modes.${j}`, 64), `${at}.modes.${j}.id`), name: str(m, 'name', `${at}.modes.${j}`, 200) }))
+    const vs = Array.isArray(c.variables) && c.variables.length <= 10_000 && c.variables.every(isObj) ? (c.variables as Obj[]) : fail(`${at}.variables`)
+    const variables = vs.map((v, j): Variable => {
+      const va = `${at}.variables.${j}`, vid = uniq(str(v, 'id', va, 64), `${va}.id`), vname = str(v, 'name', va, 200)
+      const type = oneOf(v, 'type', va, VARIABLE_TYPES), vals = isObj(v.values) ? v.values : fail(`${va}.values`)
+      if (Object.keys(vals).length !== modes.length) fail(`${va}.values`) // exactly one value per mode
+      const values = Object.fromEntries(modes.map((m) => [m.id, type === 'COLOR' ? color(vals[m.id], `${va}.values.${m.id}`) : num(vals, m.id, `${va}.values`)]))
+      return { id: vid, name: vname, type, values } as Variable
+    })
+    return { id, name, modes, variables }
+  })
+}
+
+function validateComments(x: unknown, pages: string[]): Comment[] {
+  if (x === undefined) return [] // files before version 18
+  if (!Array.isArray(x) || x.length > 1000 || !x.every(isObj)) return fail('comments')
+  const ids = new Set<string>()
+  const uniq = (id: string, at: string) => {
+    if (!NODE_ID.test(id) || ids.has(id)) fail(at)
+    ids.add(id)
+    return id
+  }
+  return x.map((c, i): Comment => {
+    const at = `comments.${i}`, id = uniq(str(c, 'id', at, 64), `${at}.id`)
+    const page = str(c, 'page', at, 64)
+    if (!pages.includes(page)) fail(`${at}.page (no such page)`)
+    const out: Comment = { id, page, x: num(c, 'x', at), y: num(c, 'y', at), text: str(c, 'text', at, 5000), at: str(c, 'at', at, 40) }
+    if (c.resolved !== undefined) out.resolved = bool(c, 'resolved', at)
+    if (c.replies !== undefined) {
+      if (!Array.isArray(c.replies) || c.replies.length > 100 || !c.replies.every(isObj)) fail(`${at}.replies`)
+      out.replies = (c.replies as Obj[]).map((r, j) => {
+        const ra = `${at}.replies.${j}`
+        return { id: uniq(str(r, 'id', ra, 64), `${ra}.id`), text: str(r, 'text', ra, 5000), at: str(r, 'at', ra, 40) }
+      })
+    }
+    return out
   })
 }
 
@@ -299,9 +393,20 @@ export function validateDocument(x: unknown): Document {
   }
   const styles = validateStyles(x.styles), have = new Set(styles.map((s) => s.id))
   for (const n of Object.values(nodes))
-    for (const k of ['fillStyle', 'strokeStyle', 'effectStyle', 'textStyle'] as const)
+    for (const k of ['fillStyle', 'strokeStyle', 'effectStyle', 'textStyle', 'gridStyle'] as const)
       if (n[k] !== undefined && !have.has(n[k]!)) fail(`nodes.${n.id}.${k} (no such style)`)
-  return { formatVersion: FORMAT_VERSION, pages: pages as string[], nodes, styles } // older versions read as the current one
+  const collections = validateCollections(x.collections)
+  const variables = new Map(collections.flatMap((c) => c.variables.map((v): [string, Variable] => [v.id, v])))
+  for (const n of Object.values(nodes)) {
+    for (const [key, id] of Object.entries(n.bindings ?? {})) {
+      const v = variables.get(id)
+      if (!v || !isBindable(key, v.type)) fail(`nodes.${n.id}.bindings.${key} (no such variable)`)
+    }
+    for (const [cid, mid] of Object.entries(n.modes ?? {}))
+      if (!collections.find((c) => c.id === cid)?.modes.some((m) => m.id === mid)) fail(`nodes.${n.id}.modes.${cid} (no such mode)`)
+  }
+  const comments = validateComments(x.comments, pages as string[])
+  return { formatVersion: FORMAT_VERSION, pages: pages as string[], nodes, styles, collections, comments } // older versions read as the current one
 }
 
 export function validateMeta(x: unknown): Meta {

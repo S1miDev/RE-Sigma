@@ -1,15 +1,24 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { PluginUI } from './plugins/PluginUI'
+import { refreshPlugins, stopPlugin } from './plugins/host'
 import type { OpenedProject, RefigApi } from '../../shared/api'
 import { Button, Dialog, DialogActions, IconButton, Menu, SidePanel, Toast } from '../ui'
 import { errorText, keyBelongsToPage } from '../util'
 import { Canvas } from './canvas/Canvas'
 import { toWorld } from './canvas/viewport'
-import { paste, placeFile } from './clipboard'
+import { isForeignText, paste, placeFile, placeText } from './clipboard'
 import { COMMANDS, handleKey, isEnabled, type Actions } from './commands'
+import { ContextMenuHost } from './panels/ContextMenu'
 import { DesignPanel } from './panels/DesignPanel'
+import { InspectPanel } from './panels/InspectPanel'
 import { ExportControls } from './panels/ExportControls'
 import { LeftPanel } from './panels/LeftPanel'
 import { MainMenu } from './panels/MainMenu'
+import { FindDialog } from './panels/FindDialog'
+import { CommentPopover } from './panels/CommentPopover'
+import { Palette } from './panels/Palette'
+import { PreviewOverlay } from './panels/PreviewOverlay'
+import { RenameDialog } from './panels/RenameDialog'
 import { Toolbar } from './panels/Toolbar'
 import { createEditorStore, EditorContext, useEditor, useStore } from './store'
 
@@ -18,13 +27,21 @@ const SAVE_TEXT = { saved: 'Saved', dirty: 'Unsaved changes', saving: 'Saving…
 export function Editor({ opened, api, onExit }: { opened: OpenedProject; api: RefigApi; onExit(): void }) {
   const [store] = useState(() => createEditorStore(opened, api))
   const [exporting, setExporting] = useState(false)
+  const [palette, setPalette] = useState(false)
+  const [renaming, setRenaming] = useState(false)
+  const [finding, setFinding] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const [unsaved, setUnsaved] = useState<'exit' | 'close' | null>(null) // a save failed while leaving
   const force = useRef(false)
   useEffect(() => {
     store.attach()
-    return () => store.dispose()
+    void refreshPlugins(store)
+    return () => (stopPlugin(store), store.dispose())
   }, [store])
+  const shown = useSyncExternalStore(store.subscribe, () => store.get().toast)
+  useEffect(() => {
+    if (shown) (setToast(shown), store.set({ toast: null }))
+  }, [shown, store])
 
   // Leaving the editor saves first. If that fails the user decides; nothing is dropped silently.
   const back = useCallback(async () => {
@@ -32,7 +49,7 @@ export function Editor({ opened, api, onExit }: { opened: OpenedProject; api: Re
     else setUnsaved('exit')
   }, [store, onExit])
   const picker = useRef<HTMLInputElement>(null)
-  const actions = useMemo<Actions>(() => ({ back: () => void back(), openExport: () => setExporting(true), placeImages: () => picker.current?.click() }), [back])
+  const actions = useMemo<Actions>(() => ({ back: () => void back(), openExport: () => setExporting(true), placeImages: () => picker.current?.click(), openPalette: () => setPalette(true), openRename: () => setRenaming(true), openFind: () => setFinding(true) }), [back])
   const report = useCallback((e: unknown) => setToast(errorText(e)), [])
   /** Places each file in turn; an SVG's unsupported features are named in one toast. */
   const place = useCallback(async (files: File[], at?: { x: number; y: number }) => {
@@ -50,6 +67,8 @@ export function Editor({ opened, api, onExit }: { opened: OpenedProject; api: Re
       if (keyBelongsToPage(e)) return
       e.preventDefault()
       const image = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith('image/'))
+      const text = e.clipboardData?.getData('text/plain') ?? ''
+      if (!image && isForeignText(text)) return placeText(store, text)
       void (image ? place([image]) : paste(store)).catch(report)
     }
     const isImage = (f: File) => f.type.startsWith('image/') || /\.svg$/i.test(f.name)
@@ -92,6 +111,10 @@ export function Editor({ opened, api, onExit }: { opened: OpenedProject; api: Re
           <ExportControls onDone={(path) => { setExporting(false); if (path) setToast(`Exported to ${path}`) }} onError={report} />
         </Dialog>
       )}
+      <PluginUI />
+      {palette && <Palette actions={actions} onClose={() => setPalette(false)} />}
+      {renaming && <RenameDialog onClose={() => setRenaming(false)} />}
+      {finding && <FindDialog onClose={() => setFinding(false)} />}
       {unsaved && (
         <Dialog title="Your changes couldn't be saved" onClose={() => setUnsaved(null)}>
           <p className="text-dim">{store.get().saveError ?? 'The project file could not be written.'} If you leave now, the changes since the last save are lost.</p>
@@ -107,25 +130,29 @@ export function Editor({ opened, api, onExit }: { opened: OpenedProject; api: Re
 }
 
 function Layout({ actions, report }: { actions: Actions; report(e: unknown): void }) {
-  const hidden = useEditor((s) => s.uiHidden)
+  const hidden = useEditor((s) => s.uiHidden), dev = useEditor((s) => s.dev), preview = useEditor((s) => s.preview)
   return (
-    <div className="flex h-full flex-col">
-      {!hidden && <TopBar actions={actions} />}
-      <div className="flex min-h-0 flex-1">
-        {!hidden && <SidePanel side="left" label="Pages and layers"><LeftPanel /></SidePanel>}
-        <main className="relative min-w-0 flex-1">
-          <Canvas />
-          {!hidden && <Toolbar />}
-        </main>
-        {!hidden && <SidePanel side="right" label="Design"><DesignPanel report={report} /></SidePanel>}
+    <ContextMenuHost actions={actions}>
+      {preview && <PreviewOverlay start={preview} onReport={report} />}
+      <div className="flex h-full flex-col">
+        {!hidden && <TopBar actions={actions} />}
+        <div className="flex min-h-0 flex-1">
+          {!hidden && <SidePanel side="left" label="Pages and layers"><LeftPanel /></SidePanel>}
+          <main className="relative min-w-0 flex-1">
+            <Canvas />
+            <CommentPopover />
+            {!hidden && !dev && <Toolbar />}
+          </main>
+          {!hidden && <SidePanel side="right" label={dev ? 'Inspect' : 'Design'}>{dev ? <InspectPanel report={report} /> : <DesignPanel report={report} />}</SidePanel>}
+        </div>
       </div>
-    </div>
+    </ContextMenuHost>
   )
 }
 
 function TopBar({ actions }: { actions: Actions }) {
   const store = useStore()
-  const name = useEditor((s) => s.name), save = useEditor((s) => s.save), saveError = useEditor((s) => s.saveError), zoom = useEditor((s) => s.view.zoom)
+  const name = useEditor((s) => s.name), save = useEditor((s) => s.save), saveError = useEditor((s) => s.saveError), zoom = useEditor((s) => s.view.zoom), dev = useEditor((s) => s.dev)
   useEditor((s) => s.selection) // zoom-to-selection enables with a selection
   const [renaming, setRenaming] = useState<{ value: string; error?: string } | null>(null)
 
@@ -166,6 +193,8 @@ function TopBar({ actions }: { actions: Actions }) {
       )}
       <span role="status" title={saveError} className={save === 'error' ? 'text-danger' : 'text-dim'}>{SAVE_TEXT[save]}</span>
       <div className="flex-1" />
+      <Button aria-pressed={dev} title="Dev mode (Shift+D)" onClick={() => store.set({ dev: !dev })}>Dev mode</Button>
+      <Button disabled={!isEnabled(COMMANDS.find((c) => c.id === 'present')!, store)} title="Present prototype (Ctrl+Alt+Enter)" onClick={() => COMMANDS.find((c) => c.id === 'present')!.run(store, actions)}>Present</Button>
       <Menu label="Zoom" align="right" className="px-2" items={COMMANDS.filter((c) => c.id.startsWith('zoom-')).map((c) => ({
         label: c.label, shortcut: c.keys?.[0], disabled: !isEnabled(c, store), onSelect: () => c.run(store, actions),
       }))}>

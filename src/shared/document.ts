@@ -1,6 +1,18 @@
 // The Refig document model. Flat node map with parentId + fractional order, like Figma's NodeChange list.
 export type Color = { r: number; g: number; b: number; a: number } // floats 0–1
-export const GRADIENT_KINDS = ['LINEAR', 'RADIAL', 'ANGULAR', 'DIAMOND'] as const
+export const EXPORT_FORMATS = ['png', 'jpg', 'webp', 'svg', 'pdf'] as const
+export type ExportSetting = { suffix: string; format: (typeof EXPORT_FORMATS)[number]; scale: number }
+export const TRIGGERS = ['click', 'hover', 'press', 'key', 'delay'] as const
+export const ACTIONS = ['navigate', 'back', 'overlay', 'closeOverlay', 'url'] as const
+export const TRANSITIONS = ['instant', 'dissolve', 'slideLeft', 'slideRight', 'slideUp', 'slideDown'] as const
+export const EASINGS = ['linear', 'easeIn', 'easeOut', 'easeInOut'] as const
+/** A prototype interaction: when `trigger` fires on the layer, run `action` (navigate/overlay use `target`, a frame id). */
+export type Interaction = {
+  trigger: (typeof TRIGGERS)[number]; key?: string; delay?: number
+  action: (typeof ACTIONS)[number]; target?: string; url?: string
+  transition: (typeof TRANSITIONS)[number]; duration: number; easing: (typeof EASINGS)[number]
+}
+export const GRADIENT_KINDS =['LINEAR', 'RADIAL', 'ANGULAR', 'DIAMOND'] as const
 export type GradientStop = { pos: number; color: Color } // pos 0–1
 type Pt = { x: number; y: number }
 /**
@@ -117,6 +129,11 @@ export interface Node {
   constraints?: { h: Constraint; v: Constraint } // absent = MIN/MIN
   // Components (FRAME only for the first two). An instance's subtree mirrors its main component's.
   component?: boolean // a main component
+  section?: boolean // a section: a top-level frame that only organises the page
+  slice?: boolean // RECTANGLE: an export region, never drawn; exports the page content under it
+  exports?: ExportSetting[] // saved export list of this layer
+  interactions?: Interaction[] // prototype interactions (not overridable per instance; shortcut: add to OVERRIDABLE when needed)
+  flowStart?: boolean // top-level FRAME: a prototype starting point
   componentSet?: boolean // a frame holding variants: main components named "Prop=Value, Prop2=Value"
   instanceOf?: string // an instance root: the main component's id
   ref?: string // a node inside an instance: the id of the node it mirrors in the main component
@@ -126,6 +143,12 @@ export interface Node {
   strokeStyle?: string
   effectStyle?: string
   textStyle?: string
+  gridStyle?: string // FRAME: links layoutGrids to a GRID style
+  layoutGrids?: LayoutGrid[] // FRAME only; editor overlay, never exported
+  guides?: Guide[] // PAGE only
+  // Variables: field key (see model/variables.ts BINDABLE) -> variable id. The bound field always holds the variable's value in this node's mode.
+  bindings?: Record<string, string>
+  modes?: Record<string, string> // collection id -> mode id chosen on this node; inherited by descendants, absent = the collection's first mode
   // TEXT only
   characters?: string
   fontFamily?: string
@@ -165,13 +188,42 @@ export type Style =
   | { id: string; name: string; kind: 'FILL'; value: Paint[] }
   | { id: string; name: string; kind: 'TEXT'; value: TextStyleValue }
   | { id: string; name: string; kind: 'EFFECT'; value: Effect[] }
-export const STYLE_KINDS = ['FILL', 'TEXT', 'EFFECT'] as const
+  | { id: string; name: string; kind: 'GRID'; value: LayoutGrid[] }
+export const STYLE_KINDS = ['FILL', 'TEXT', 'EFFECT', 'GRID'] as const
+
+export const GRID_KINDS = ['GRID', 'COLUMNS', 'ROWS'] as const
+/** A layout grid drawn over a frame in the editor only. GRID uses `size` (square cells); COLUMNS/ROWS use `count`, `gutter` and `margin` (they stretch to fill the frame). */
+export interface LayoutGrid { kind: (typeof GRID_KINDS)[number]; size: number; count: number; gutter: number; margin: number; color: Color }
+/** A guide line on a page: a vertical (axis 'x') or horizontal ('y') line at `pos` in page coordinates. */
+export interface Guide { axis: 'x' | 'y'; pos: number }
+
+export const VARIABLE_TYPES = ['COLOR', 'NUMBER'] as const
+/** Node fields a variable can bind to, by variable type. Paint and effect keys are by index; they need a solid paint or a shadow to exist. */
+const BINDABLE = {
+  COLOR: /^(fills|strokes|effects)\.\d+\.color$/,
+  NUMBER: /^(cornerRadius|strokeWeight|fontSize|layout\.gap|layout\.padding\.[0-3])$/,
+}
+export const isBindable = (key: string, type: (typeof VARIABLE_TYPES)[number]) => BINDABLE[type].test(key)
+/** A named value with one value per mode of its collection. */
+export type Variable = { id: string; name: string } & (
+  | { type: 'COLOR'; values: Record<string, Color> }
+  | { type: 'NUMBER'; values: Record<string, number> }
+)
+export type Mode = { id: string; name: string }
+/** Variables that share modes (Light/Dark...). Always has at least one mode; the first is the default. */
+export type Collection = { id: string; name: string; modes: Mode[]; variables: Variable[] }
+
+export type Reply = { id: string; text: string; at: string }
+/** A pinned comment thread at page coordinates. shortcut: no author (single local user) and the pin doesn't follow moved nodes, upgrade with accounts/sync (#30). */
+export type Comment = { id: string; page: string; x: number; y: number; text: string; at: string; resolved?: boolean; replies?: Reply[] }
 
 export interface Document {
   formatVersion: typeof FORMAT_VERSION
   pages: string[]
   nodes: Record<string, Node>
   styles: Style[]
+  collections: Collection[]
+  comments: Comment[]
 }
 
 /** Fields an instance node can override; everything else (ids, tree position, component links) is never copied from the main. */
@@ -180,11 +232,11 @@ export const OVERRIDABLE = [
   'strokeDash', 'strokeCap', 'strokeJoin', 'strokeStart', 'strokeEnd', 'strokeSides',
   'cornerRadius', 'clipsContent', 'layout', 'fillW', 'fillH', 'constraints', 'characters', 'fontFamily', 'fontWeight', 'fontSize', 'lineHeight',
   'letterSpacing', 'textAlign', 'textAutoWidth', 'textFixedHeight', 'fontItalic', 'textDecoration', 'textCase', 'textAlignVertical', 'textTruncate', 'maxLines', 'listStyle', 'runs', 'vector', 'boolOp', 'mask', 'cornerRadii', 'cornerSmoothing', 'arc', 'points', 'innerRatio',
-  'fillStyle', 'strokeStyle', 'effectStyle', 'textStyle',
+  'fillStyle', 'strokeStyle', 'effectStyle', 'textStyle', 'bindings', 'modes', 'layoutGrids', 'gridStyle',
 ] as const satisfies readonly (keyof Node)[]
 
-// 2: gradient paints. 3: boolean nodes. 4: masks. 5: star, polygon, arcs, corner radii and smoothing. 6: blend modes and paint opacity. 7: inner shadow, layer blur, background blur effects. 8: stroke dashes, caps, joins, end markers, per-side weights. 9: image scale modes. 10: text italic, decoration, case, vertical align, truncation, lists. 11: text style runs. 12: styles (Document.styles, Node.fillStyle/strokeStyle/effectStyle/textStyle). Older files read unchanged; older apps refuse newer ones as "made by a newer version".
-export const FORMAT_VERSION = 12
+// 2: gradient paints. 3: boolean nodes. 4: masks. 5: star, polygon, arcs, corner radii and smoothing. 6: blend modes and paint opacity. 7: inner shadow, layer blur, background blur effects. 8: stroke dashes, caps, joins, end markers, per-side weights. 9: image scale modes. 10: text italic, decoration, case, vertical align, truncation, lists. 11: text style runs. 12: styles (Document.styles, Node.fillStyle/strokeStyle/effectStyle/textStyle). 13: variables (Document.collections, Node.bindings, Node.modes). 14: guides (PAGE Node.guides), layout grids (FRAME Node.layoutGrids), GRID styles (Node.gridStyle). 15: sections (FRAME Node.section). 16: export settings (Node.exports), slices (RECTANGLE Node.slice). 17: prototype interactions (Node.interactions) and flow starts (FRAME Node.flowStart). 18: comments (Document.comments). Older files read unchanged; older apps refuse newer ones as "made by a newer version".
+export const FORMAT_VERSION = 18
 export const isContainer = (n: Node) => n.type === 'PAGE' || n.type === 'FRAME' || n.type === 'GROUP' || n.type === 'BOOLEAN'
 export const solid = (r: number, g: number, b: number, a = 1): Paint => ({ type: 'SOLID', visible: true, color: { r, g, b, a } })
 /** A new gradient fading `color` out: linear top → bottom, the others from the centre to the right edge. */
@@ -280,5 +332,5 @@ export function makeNode(type: NodeType, props: Partial<Node> = {}): Node {
 
 export function emptyDocument(): Document {
   const page = makeNode('PAGE', { name: 'Page 1', fills: [solid(0.96, 0.96, 0.96)] })
-  return { formatVersion: FORMAT_VERSION, pages: [page.id], nodes: { [page.id]: page }, styles: [] }
+  return { formatVersion: FORMAT_VERSION, pages: [page.id], nodes: { [page.id]: page }, styles: [], collections: [], comments: [] }
 }

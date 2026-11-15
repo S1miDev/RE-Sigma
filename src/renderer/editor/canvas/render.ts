@@ -1,6 +1,6 @@
 // Canvas 2D renderer for documents. Used for the editor canvas, PNG export and thumbnails.
 import { BLEND_CSS, type Document, type DropShadow, type InnerShadow, type Node } from '../../../shared/document'
-import { invert, worldBox, worldMatrix, localMatrix } from '../model/geometry'
+import { invert, worldBox, worldMatrix, localMatrix, type Box } from '../model/geometry'
 import { childrenOf } from '../model/ops'
 import { parsePath, vectorScale, type Anchor } from '../model/path'
 import { arcPath, cornerPath } from '../model/shapes'
@@ -233,13 +233,17 @@ export function renderPage(ctx: CanvasRenderingContext2D, doc: Document, pageId:
   drawChildren(ctx, doc, childrenOf(doc, pageId), images, skipId)
 }
 
-/** Renders nodes (with their place on the page) to a new canvas cropped to their bounding box. For PNG export. */
-export function renderToCanvas(doc: Document, ids: string[], scale: number, images: Images): HTMLCanvasElement | null {
-  const box = worldBox(doc, ids), canvas = document.createElement('canvas'), ctx = canvas.getContext('2d')
+/** Renders nodes (with their place on the page) to a new canvas cropped to `region` (default: their bounding box). `background` fills it first (JPG has no alpha). For raster export. */
+export function renderToCanvas(doc: Document, ids: string[], scale: number, images: Images, region?: Box, background?: string): HTMLCanvasElement | null {
+  const box = region ?? worldBox(doc, ids), canvas = document.createElement('canvas'), ctx = canvas.getContext('2d')
   if (!box || !ctx) return null
   const k = Math.min(scale, 16_384 / Math.max(box.w, box.h, 1)) // stay inside the browser's canvas size limit
   canvas.width = Math.max(1, Math.ceil(box.w * k))
   canvas.height = Math.max(1, Math.ceil(box.h * k))
+  if (background) {
+    ctx.fillStyle = background
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+  }
   ctx.scale(k, k)
   ctx.translate(-box.x, -box.y)
   for (const id of ids) {

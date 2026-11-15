@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { zoomToFit } from './viewport'
-import { apply, worldMatrix, worldRotation } from '../model/geometry'
+import { apply, worldMatrix, worldRotation, type Pt } from '../model/geometry'
 import { isTyping, keyBelongsToPage } from '../../util'
-import { useEditor, useStore } from '../store'
+import { useEditor, useStore, type EditorStore } from '../store'
 import { beginGesture, editNode, type Gesture, type Pointer } from '../tools'
 import { finishText, insertText, onEditedText, selectedText, textKey } from '../tools/textEdit'
+import { useContextMenu } from '../panels/ContextMenu'
 import { hitTest } from './hit'
 import { drawOverlay } from './overlay'
 import { renderPage } from './render'
@@ -13,13 +14,21 @@ import { layoutText } from './text'
 import { toScreen, toWorld, zoomAt } from './viewport'
 
 
+/** Tracks the layer under `world` while Alt is held; changes the store only when something differs. */
+function setHover(store: EditorStore, world: Pt | null, alt: boolean) {
+  const s = store.get(), id = alt && world ? hitTest(s.doc, s.pageId, world, { deep: true, tolerance: 4 / s.view.zoom }) : null
+  if (s.altDown !== alt || s.hover !== id) store.set({ altDown: alt, hover: id })
+}
+
 export function Canvas() {
   const store = useStore()
   const ref = useRef<HTMLCanvasElement>(null)
   const gesture = useRef<Gesture | null>(null)
+  const last = useRef<Pt | null>(null) // the pointer's last world position
   const tool = useEditor((s) => s.tool)
   const editingText = useEditor((s) => (s.mode.kind === 'text' ? s.mode.id : null))
   const [space, setSpace] = useState(false)
+  const openMenu = useContextMenu()
 
   useEffect(() => {
     const canvas = ref.current!, ctx = canvas.getContext('2d'), box = canvas.parentElement!
@@ -60,8 +69,18 @@ export function Canvas() {
       e.preventDefault()
       setSpace(e.type === 'keydown')
     }
+    // Holding Alt measures from the selection to the layer under the pointer.
+    const alt = (e: KeyboardEvent) => {
+      if (e.key !== 'Alt') return
+      if (e.type === 'keyup' && !keyBelongsToPage(e)) e.preventDefault() // a bare Alt press would focus the window menu
+      setHover(store, last.current, e.type === 'keydown' && !gesture.current)
+    }
+    const release = () => setHover(store, last.current, false)
     window.addEventListener('keydown', key)
     window.addEventListener('keyup', key)
+    window.addEventListener('keydown', alt)
+    window.addEventListener('keyup', alt)
+    window.addEventListener('blur', release)
     document.fonts?.addEventListener?.('loadingdone', schedule) // redraw once the bundled font is ready
     const unsubscribe = store.subscribe(schedule)
     schedule()
@@ -72,6 +91,9 @@ export function Canvas() {
       canvas.removeEventListener('wheel', wheel)
       window.removeEventListener('keydown', key)
       window.removeEventListener('keyup', key)
+      window.removeEventListener('keydown', alt)
+      window.removeEventListener('keyup', alt)
+      window.removeEventListener('blur', release)
       document.fonts?.removeEventListener?.('loadingdone', schedule)
     }
   }, [store])
@@ -103,9 +125,23 @@ export function Canvas() {
         style={{ cursor: space || tool === 'hand' ? 'grab' : tool === 'move' ? 'default' : tool === 'text' ? 'text' : 'crosshair' }}
         onMouseDown={(e) => { if (store.get().mode.kind === 'text' && onEditedText(store, pointer(e).world)) e.preventDefault() }} // keeps the keyboard focus in the text
         onPointerDown={down}
-        onPointerMove={(e) => gesture.current?.move(pointer(e))}
+        onPointerMove={(e) => {
+          const p = pointer(e)
+          last.current = p.world
+          if (gesture.current) gesture.current.move(p)
+          else setHover(store, p.world, e.altKey)
+        }}
         onPointerUp={up}
         onPointerCancel={up}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          const s = store.get()
+          if (s.mode.kind === 'text') return
+          const hit = hitTest(s.doc, s.pageId, pointer(e).world, { deep: true, tolerance: 4 / s.view.zoom })
+          if (!hit) store.set({ selection: [] })
+          else if (!s.selection.includes(hit)) store.set({ selection: [hit] })
+          openMenu({ x: e.clientX, y: e.clientY })
+        }}
         onDoubleClick={(e) => {
           const s = store.get(), hit = s.tool === 'move' && s.mode.kind !== 'text' && hitTest(s.doc, s.pageId, pointer(e).world, { deep: true, tolerance: 4 / s.view.zoom })
           if (hit) editNode(store, hit)

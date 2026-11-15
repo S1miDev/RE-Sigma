@@ -1,21 +1,26 @@
 import { useRef } from 'react'
 import {
-  BLEND_MODES, BOOL_OPS, colorAt, CONSTRAINTS, convertPaint, gradientAngle, IMAGE_MODES, LAYOUT_ALIGNS, rotateGradient, solid, STROKE_ALIGNS, STROKE_CAPS, STROKE_ENDS, STROKE_JOINS, TEXT_ALIGNS, TEXT_CASES, TEXT_DECORATIONS, TEXT_LISTS, TEXT_VALIGNS, typeLabel,
-  type AutoLayout, type BlendMode, type BoolOp, type Constraint, type Document, type DropShadow, type Effect, type GradientStop, type ImagePaint, type Node, type Paint, type PaintKind, type RunStyle,
+  BLEND_MODES, BOOL_OPS, GRID_KINDS, colorAt, CONSTRAINTS, convertPaint, gradientAngle, IMAGE_MODES, LAYOUT_ALIGNS, rotateGradient, solid, STROKE_ALIGNS, STROKE_CAPS, STROKE_ENDS, STROKE_JOINS, TEXT_ALIGNS, TEXT_CASES, TEXT_DECORATIONS, TEXT_LISTS, TEXT_VALIGNS, typeLabel,
+  type AutoLayout, type BlendMode, type BoolOp, type Constraint, type Document, type DropShadow, type Effect, type GradientStop, type ImagePaint, type LayoutGrid, type Node, type Paint, type PaintKind, type RunStyle,
 } from '../../../shared/document'
-import { Button, ColorField, IconButton, Input, NumberField, PanelSection, Row, Select, type IconName } from '../../ui'
+import { Button, IconButton, Input, NumberField, PanelSection, Row, Select, type IconName } from '../../ui'
 import { canMask } from '../canvas/paintPlan'
 import { runCommand } from '../commands'
 import { setOf, setVariant, variantProps, variantsOf } from '../model/components'
 import { useSystemFonts } from '../fonts'
 import { applyRunStyle, styleValue } from '../tools/textEdit'
 import { addAutoLayout, patch, resizeNode } from '../model/ops'
+import { setMode } from '../model/variables'
 import { useEditor, useStore, type Step } from '../store'
+import { PickField } from './ColorPicks'
 import { ExportControls } from './ExportControls'
+import { PrototypeSection } from './PrototypeSection'
 import { StyleButton } from './StyleButton'
+import { VariableButton } from './VariableButton'
 
 const FONTS = ['Inter', 'Arial', 'Georgia', 'Times New Roman', 'Courier New', 'Verdana', 'Segoe UI', 'Tahoma', 'Trebuchet MS']
 const WEIGHTS: [number, string][] = [[100, 'Thin'], [200, 'Extra Light'], [300, 'Light'], [400, 'Regular'], [500, 'Medium'], [600, 'Semi Bold'], [700, 'Bold'], [800, 'Extra Bold'], [900, 'Black']]
+const PRESETS: [string, number, number][] = [['iPhone 15', 393, 852], ['Android', 360, 800], ['iPad', 820, 1180], ['Desktop', 1440, 1024], ['Laptop', 1280, 832], ['A4', 595, 842], ['Slide 16:9', 1920, 1080]]
 /** Panel edits of the same field on the same layers within a second share one undo step. */
 const panelStep = (field: string, ids: string[]): Step => ({ key: `panel:${field}:${ids.join()}` })
 
@@ -34,10 +39,14 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
         <PanelSection title="Page">
           {bg?.type === 'SOLID' && (
             <Row>
-              <ColorField label="Page background" color={bg.color} onChange={(color) => store.update((d) => patch(d, [pageId], { fills: [{ ...bg, color: { ...color, a: 1 }, visible: true }] }), panelStep('page-bg', [pageId]))} />
+              <PickField label="Page background" color={bg.color} onChange={(color) => store.update((d) => patch(d, [pageId], { fills: [{ ...bg, color: { ...color, a: 1 }, visible: true }] }), panelStep('page-bg', [pageId]))} />
             </Row>
           )}
+          {!!page.guides?.length && <Row><Button className="flex-1" onClick={() => store.update((d) => patch(d, [pageId], { guides: undefined }))}>Clear guides ({page.guides.length})</Button></Row>}
           <p className="text-dim">Select a layer to edit its properties.</p>
+        </PanelSection>
+        <PanelSection title="Export">
+          <ExportControls onDone={() => {}} onError={report} />
         </PanelSection>
       </div>
     )
@@ -57,6 +66,14 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
           <NumberField label="X" prefix="X" className="flex-1" value={common('x')} onChange={(x) => edit({ x }, 'x')} />
           <NumberField label="Y" prefix="Y" className="flex-1" value={common('y')} onChange={(y) => edit({ y }, 'y')} />
         </Row>
+        {nodes.length === 1 && first.type === 'FRAME' && !first.section && (
+          <Row>
+            <Select aria-label="Size preset" className="flex-1" value="" onChange={(e) => { const p = PRESETS[+e.target.value]; resize({ width: p[1], height: p[2] }) }}>
+              <option value="" disabled>Size preset</option>
+              {PRESETS.map(([name, w, h], i) => <option key={name} value={i}>{name} ({w}×{h})</option>)}
+            </Select>
+          </Row>
+        )}
         <Row>
           <NumberField label="Width" prefix="W" className="flex-1" min={1} value={common('width')} onChange={(width) => resize({ width })} />
           {none('LINE', 'TEXT') ? <NumberField label="Height" prefix="H" className="flex-1" min={1} value={common('height')} onChange={(height) => resize({ height })} /> : <div className="flex-1" />}
@@ -64,6 +81,7 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
         <Row>
           <NumberField label="Rotation" prefix="∠" className="flex-1" min={-180} max={180} value={common('rotation')} onChange={(rotation) => edit({ rotation }, 'rotation')} />
           {all('RECTANGLE', 'FRAME') ? <NumberField label="Corner radius" prefix="◜" className="flex-1" min={0} value={nodes.some((n) => n.cornerRadii) ? null : common('cornerRadius')} onChange={(cornerRadius) => edit({ cornerRadius, cornerRadii: undefined }, 'radius')} /> : <div className="flex-1" />}
+          {all('RECTANGLE', 'FRAME') && <VariableButton field="cornerRadius" type="NUMBER" nodes={nodes} />}
         </Row>
         <Row>
           <NumberField label="Opacity" prefix="%" className="flex-1" min={0} max={100} value={common('opacity') === null ? null : Math.round(common('opacity')! * 100)} onChange={(v) => edit({ opacity: v / 100 }, 'opacity')} />
@@ -80,7 +98,7 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
             {all('STAR') ? <NumberField label="Inner radius" prefix="%" className="flex-1" min={1} max={99} value={nodes.every((n) => n.innerRatio === first.innerRatio) ? Math.round((first.innerRatio ?? 0.38) * 100) : null} onChange={(v) => edit({ innerRatio: v / 100 }, 'inner-ratio')} /> : <div className="flex-1" />}
           </Row>
         )}
-        {all('FRAME') && (
+        {all('FRAME') && !nodes.some((n) => n.section) && (
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={common('clipsContent') === true} onChange={(e) => edit({ clipsContent: e.target.checked }, 'clip')} />
             Clip content
@@ -113,7 +131,22 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
       )}
 
       {nodes.length === 1 && (first.component || first.componentSet || first.instanceOf) && <ComponentSection node={first} />}
-      {nodes.length === 1 && first.type === 'FRAME' && <AutoLayoutSection node={first} edit={edit} />}
+      {nodes.length === 1 && first.type === 'FRAME' && !first.section && <AutoLayoutSection node={first} edit={edit} />}
+      {nodes.length === 1 && !first.slice && <PrototypeSection node={first} edit={edit} />}
+      {nodes.length === 1 && first.type === 'FRAME' && !first.section && <LayoutGridSection node={first} edit={edit} />}
+      {nodes.length === 1 && first.type === 'FRAME' && doc.collections.length > 0 && (
+        <PanelSection title="Variable modes">
+          {doc.collections.map((c) => (
+            <Row key={c.id}>
+              <span className="w-20 truncate text-dim" title={c.name}>{c.name}</span>
+              <Select aria-label={`${c.name} mode`} className="flex-1" value={first.modes?.[c.id] ?? ''} onChange={(e) => store.update((d) => setMode(d, ids, c.id, e.target.value || undefined))}>
+                <option value="">Inherit</option>
+                {c.modes.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </Select>
+            </Row>
+          ))}
+        </PanelSection>
+      )}
       {nodes.length === 1 && canMask(first) && (
         <PanelSection title="Mask">
           <Row>
@@ -132,11 +165,12 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
       )}
 
       {all('TEXT') && <TextSection nodes={nodes} edit={edit} common={common} />}
-      {none('GROUP', 'LINE') && <Paints title="Fill" field="fills" nodes={nodes} report={report} />}
-      {none('GROUP') && (
+      {none('GROUP', 'LINE') && !nodes.some((n) => n.slice) && <Paints title="Fill" field="fills" nodes={nodes} report={report} />}
+      {none('GROUP') && !nodes.some((n) => n.slice) && (
         <Paints title="Stroke" field="strokes" nodes={nodes} report={report}>
           <Row>
             <NumberField label="Stroke weight" prefix="≡" className="flex-1" min={0} value={common('strokeWeight')} onChange={(strokeWeight) => edit({ strokeWeight }, 'stroke-weight')} />
+            <VariableButton field="strokeWeight" type="NUMBER" nodes={nodes} />
             {none('LINE', 'TEXT', 'VECTOR', 'BOOLEAN', 'STAR', 'POLYGON') ? (
               <Select aria-label="Stroke align" className="flex-1" value={common('strokeAlign') ?? ''} onChange={(e) => edit({ strokeAlign: e.target.value as Node['strokeAlign'] }, 'stroke-align')}>
                 {common('strokeAlign') === null && <option value="" disabled>Mixed</option>}
@@ -147,7 +181,7 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
           <StrokeStyle nodes={nodes} edit={edit} />
         </Paints>
       )}
-      <Shadows nodes={nodes} />
+      {!nodes.some((n) => n.slice) && <Shadows nodes={nodes} />}
       <PanelSection title="Export">
         <ExportControls onDone={() => {}} onError={report} />
       </PanelSection>
@@ -336,6 +370,7 @@ function AutoLayoutSection({ node, edit }: { node: Node; edit(change: Partial<No
               <option value="VERTICAL">Vertical</option>
             </Select>
             <NumberField label="Gap" prefix="↔" className="flex-1" min={0} value={L.gap} onChange={(gap) => set({ gap }, 'gap')} />
+            <VariableButton field="layout.gap" type="NUMBER" nodes={[node]} />
           </Row>
           <Row>
             {(['Top', 'Right', 'Bottom', 'Left'] as const).map((side, i) => (
@@ -353,6 +388,46 @@ function AutoLayoutSection({ node, edit }: { node: Node; edit(change: Partial<No
           </Row>
         </>
       )}
+    </PanelSection>
+  )
+}
+
+const NEW_GRID: LayoutGrid = { kind: 'COLUMNS', size: 8, count: 12, gutter: 20, margin: 0, color: { r: 1, g: 0.2, b: 0.2, a: 0.1 } }
+
+/** Layout grids of a frame: an editor overlay (square grid, columns or rows), also linkable to a grid style. */
+function LayoutGridSection({ node, edit }: { node: Node; edit(change: Partial<Node>, tag: string): void }) {
+  const grids = node.layoutGrids ?? []
+  const set = (next: LayoutGrid[], tag: string) => edit({ layoutGrids: next.length ? next : undefined }, tag)
+  const at = (i: number, change: Partial<LayoutGrid>, tag: string) => set(grids.map((g, j) => (j === i ? { ...g, ...change } : g)), `grid${i}-${tag}`)
+  return (
+    <PanelSection title="Layout grid" action={
+      <>
+        <StyleButton link="gridStyle" nodes={[node]} />
+        <IconButton label="Add layout grid" icon="plus" onClick={() => set([...grids, { ...NEW_GRID, ...(grids.length === 0 && { kind: 'GRID' as const }) }], 'add')} />
+      </>
+    }>
+      {grids.map((g, i) => (
+        <div key={i} className="flex flex-col gap-1.5">
+          <Row>
+            <Select aria-label={`Grid ${i + 1} type`} className="flex-1" value={g.kind} onChange={(e) => at(i, { kind: e.target.value as LayoutGrid['kind'] }, 'kind')}>
+              {GRID_KINDS.map((k) => <option key={k} value={k}>{k[0] + k.slice(1).toLowerCase()}</option>)}
+            </Select>
+            <PickField label={`Grid ${i + 1} color`} color={g.color} onChange={(color) => at(i, { color }, 'color')} />
+            <IconButton label={`Remove grid ${i + 1}`} icon="minus" onClick={() => set(grids.filter((_, j) => j !== i), 'remove')} />
+          </Row>
+          {g.kind === 'GRID' ? (
+            <Row><NumberField label={`Grid ${i + 1} size`} prefix="#" className="flex-1" min={1} value={g.size} onChange={(size) => at(i, { size }, 'size')} /></Row>
+          ) : (
+            <>
+              <Row>
+                <NumberField label={`Grid ${i + 1} count`} prefix="#" className="flex-1" min={1} max={1000} value={g.count} onChange={(count) => at(i, { count: Math.round(count) }, 'count')} />
+                <NumberField label={`Grid ${i + 1} gutter`} prefix="↔" className="flex-1" min={0} value={g.gutter} onChange={(gutter) => at(i, { gutter }, 'gutter')} />
+                <NumberField label={`Grid ${i + 1} margin`} prefix="M" className="flex-1" min={0} value={g.margin} onChange={(margin) => at(i, { margin }, 'margin')} />
+              </Row>
+            </>
+          )}
+        </div>
+      ))}
     </PanelSection>
   )
 }
@@ -385,6 +460,7 @@ function TextSection({ nodes, edit, common }: { nodes: Node[]; edit(change: Part
           {WEIGHTS.map(([w, name]) => <option key={w} value={w}>{name}</option>)}
         </Select>
         <NumberField label="Font size" className="w-16" min={1} max={2000} value={val('fontSize') ?? null} onChange={(fontSize) => set({ fontSize }, 'size')} />
+        {!editing && <VariableButton field="fontSize" type="NUMBER" nodes={nodes} />}
       </Row>
       <Row>
         <NumberField label="Line height" prefix="↕" className="flex-1" min={0} placeholder="Auto" value={val('lineHeight') || null} onChange={(lineHeight) => set({ lineHeight }, 'line-height')} />
@@ -403,7 +479,7 @@ function TextSection({ nodes, edit, common }: { nodes: Node[]; edit(change: Part
           {TEXT_CASES.map((v) => <option key={v} value={v}>{{ ORIGINAL: 'Original case', UPPER: 'UPPER', LOWER: 'lower', TITLE: 'Title Case' }[v]}</option>)}
         </Select>
       </Row>
-      {editing && <Row><ColorField label="Text" color={colour} onChange={(fill) => set({ fill }, 'text-colour', false)} /></Row>}
+      {editing && <Row><PickField label="Text" color={colour} onChange={(fill) => set({ fill }, 'text-colour', false)} /></Row>}
       <Row>
         <Select aria-label="List style" className="flex-1" value={common('listStyle') ?? 'NONE'} onChange={(e) => edit({ listStyle: e.target.value as Node['listStyle'] }, 'list')}>
           {TEXT_LISTS.map((v) => <option key={v} value={v}>{{ NONE: 'No list', BULLET: 'Bullets', NUMBERED: 'Numbers' }[v]}</option>)}
@@ -497,7 +573,7 @@ function Paints({ title, field, nodes, report, children }: { title: string; fiel
                     )}
                   </>
                 )}
-                {p.type === 'SOLID' && <Row><ColorField label={name} color={p.color} onChange={(color) => set(at(i, { ...p, color }), `color${i}`)} /></Row>}
+                {p.type === 'SOLID' && <Row><PickField label={name} color={p.color} onChange={(color) => set(at(i, { ...p, color }), `color${i}`)} /><VariableButton field={`${field}.${i}.color`} type="COLOR" nodes={nodes} /></Row>}
                 {p.type === 'GRADIENT' && <Row><NumberField label={`${name} angle`} prefix="∠" className="flex-1" min={-180} max={180} value={Math.round(gradientAngle(p))} onChange={(deg) => set(at(i, rotateGradient(p, deg)), `angle${i}`)} /></Row>}
                 {p.type === 'GRADIENT' && (
                   <div className="flex flex-col gap-1.5">
@@ -506,7 +582,7 @@ function Paints({ title, field, nodes, report, children }: { title: string; fiel
                       return (
                         <Row key={k}>
                           <NumberField label={`${name} stop ${k + 1} position`} prefix="@" className="w-12" min={0} max={100} value={Math.round(s.pos * 100)} onChange={(v) => stop({ pos: v / 100 }, 'pos')} />
-                          <ColorField label={`${name} stop ${k + 1}`} color={s.color} onChange={(color) => stop({ color }, 'stop')} />
+                          <PickField label={`${name} stop ${k + 1}`} color={s.color} onChange={(color) => stop({ color }, 'stop')} />
                           {p.stops.length > 2 && <IconButton label={`Remove ${name} stop ${k + 1}`} icon="minus" onClick={() => set(at(i, { ...p, stops: p.stops.filter((_, j) => j !== k) }))} />}
                         </Row>
                       )
@@ -559,7 +635,8 @@ function Shadows({ nodes }: { nodes: Node[] }) {
         return (
           <div key={i} className="flex flex-col gap-1.5">
             <Row>
-              <ColorField label={`${name} ${i + 1}`} color={s.color} onChange={(color) => at(i, { color }, 'color')} />
+              <PickField label={`${name} ${i + 1}`} color={s.color} onChange={(color) => at(i, { color }, 'color')} />
+              <VariableButton field={`effects.${i}.color`} type="COLOR" nodes={nodes} />
               <RowActions name={`${name.toLowerCase()} ${i + 1}`} visible={s.visible} onToggle={toggle} onRemove={remove} />
             </Row>
             <Row>

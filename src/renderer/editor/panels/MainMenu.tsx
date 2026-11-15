@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { Icon, MenuList, Popover } from '../../ui'
 import { COMMANDS, isEnabled, type Actions, type Command } from '../commands'
+import { runPlugin } from '../plugins/host'
 import { useEditor, useStore } from '../store'
 
-const GROUPS: Command['group'][] = ['File', 'Edit', 'View', 'Object', 'Arrange']
+const GROUPS: Command['group'][] = ['File', 'Edit', 'View', 'Object', 'Arrange', 'Plugins']
 
 /** Main menu: only implemented commands, grouped like Figma, each with its shortcut. */
 export function MainMenu({ actions }: { actions: Actions }) {
@@ -36,9 +37,11 @@ export function MainMenu({ actions }: { actions: Actions }) {
 function Items({ group, actions, onClose }: { group: Command['group']; actions: Actions; onClose(): void }) {
   const store = useStore()
   useEditor((s) => s) // enabled states follow the editor state while the menu is open
+  const plugins = useEditor((s) => s.plugins)
+  const own = group === 'Plugins' ? plugins.flatMap((p) => p.commands.map((c) => ({ label: p.commands.length > 1 ? `${p.name} › ${c.label}` : p.name, onSelect: () => runPlugin(store, p, c.id) }))) : []
   return (
-    <MenuList label={group} onClose={onClose} items={COMMANDS.filter((c) => c.group === group).map((c) => ({
+    <MenuList label={group} onClose={onClose} items={[...own, ...COMMANDS.filter((c) => c.group === group).map((c) => ({
       label: c.label, shortcut: c.keys?.[0], disabled: !isEnabled(c, store), onSelect: () => c.run(store, actions),
-    }))} />
+    }))]} />
   )
 }

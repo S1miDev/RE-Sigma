@@ -9,6 +9,7 @@ export const LINKS = {
   strokeStyle: { fields: ['strokes'], kind: 'FILL' },
   effectStyle: { fields: ['effects'], kind: 'EFFECT' },
   textStyle: { fields: TEXT_STYLE_FIELDS, kind: 'TEXT' },
+  gridStyle: { fields: ['layoutGrids'], kind: 'GRID' },
 } as const satisfies Record<string, { fields: readonly (keyof Node)[]; kind: Style['kind'] }>
 export type Link = keyof typeof LINKS
 const LINK_KEYS = Object.keys(LINKS) as Link[]
@@ -21,6 +22,7 @@ function valueOf(s: Style, link: Link): Fields {
   if (link === 'fillStyle') return { fills: s.value }
   if (link === 'strokeStyle') return { strokes: s.value }
   if (link === 'effectStyle') return { effects: s.value }
+  if (link === 'gridStyle') return { layoutGrids: s.value }
   return Object.fromEntries(TEXT_STYLE_FIELDS.map((f) => [f, (s.value as Fields)[f]]))
 }
 const same = (a: Fields, b: Fields) => JSON.stringify(a) === JSON.stringify(b)
@@ -87,6 +89,7 @@ function styleValue(n: Node, link: Link): Style['value'] {
   if (link === 'fillStyle') return n.fills
   if (link === 'strokeStyle') return n.strokes
   if (link === 'effectStyle') return n.effects
+  if (link === 'gridStyle') return n.layoutGrids ?? []
   return Object.fromEntries(TEXT_STYLE_FIELDS.filter((f) => n[f] !== undefined).map((f) => [f, n[f]]))
 }
 

@@ -184,31 +184,117 @@ Status legend: [done] [in progress] [todo]
        panel styles the selection (title "Text (selection)", plus a text colour). .fig import maps characterStyleIDs/styleOverrideTable.
        Skipped: styled copy/paste (plain text only), caret blink, IME composition preview on the canvas, bidi, truncation while editing,
        .fig run field names unchecked against a real file, per-range gradients. Known limits are in issues.txt.
-16. [done] Styles: color, text, effect (grid styles wait for #18)
+16. [done] Styles: color, text, effect (grid styles came with #18)
        Document `styles` [{id, name, kind FILL|TEXT|EFFECT, value}] and node links `fillStyle`/`strokeStyle`/`effectStyle`/`textStyle` (FORMAT_VERSION 12;
        links are overridable). model/styles.ts: createStyle, applyStyle, detachStyle, updateStyleFrom, renameStyle, deleteStyle, and resolveStyles,
        which normalize runs before syncInstances (ordinary nodes) and after it (instance nodes with overridden links) to copy each style's value onto its nodes,
        so renderers and exporters are unchanged. A hand edit to a linked field detaches it; a dangling link is dropped. Design panel: StyleButton menu
        in Fill, Stroke, Effects and Text (apply, create from selection, detach); left panel Styles list (rename by double click, update from selection, delete).
        Skipped: grid styles (#18), per-range text styles, a style preview/editor, .fig style import, e2e and app not run by hand. Known limits are in issues.txt.
-17. [todo] Variables / design tokens with modes
-18. [todo] Rulers, draggable guides, pixel grid, layout grids
-19. [todo] Right-click context menu
-20. [todo] Command palette (Ctrl+K) and search in layers/pages
-21. [todo] Section tool; frame size presets
-22. [todo] Multi-export per layer (JPG/WebP, 1x/2x), slices, whole-page export
-23. [todo] Eyedropper; color picker with recent + document colors
-24. [todo] Copy/paste properties, paste-over, cross-app clipboard
-25. [todo] Alt-hover measurement, scale tool (K), bulk rename, find & replace
-26. [todo] Prototyping: interactions, preview mode
-27. [todo] Comments
-28. [todo] Dev mode / inspect, code export
-29. [todo] Plugins / widgets API
+17. [done] Variables / design tokens with modes (COLOR and NUMBER)
+       Document `collections` [{id, name, modes[], variables[{id, name, type, values per mode}]}], node `bindings` (field key -> variable id) and `modes`
+       (collection -> mode, inherited from ancestors; FORMAT_VERSION 13; both overridable). model/variables.ts: resolveVariables, which normalize runs next to
+       resolveStyles (ordinary nodes before syncInstances, instance nodes after it, since an instance can sit in another mode), copies the value for the
+       node's mode onto the bound field, so renderers and exporters are unchanged. A hand edit unbinds; a dangling binding is dropped. Bindable: solid fill/stroke
+       colors, shadow colors, cornerRadius, strokeWeight, fontSize, layout.gap. UI: VariableButton beside those fields, "Variable modes" in the frame section,
+       left panel Variables table (modes as columns, rename by double click). Tests: variables.test.ts.
+       Skipped: STRING/BOOLEAN variables, opacity (unit clash), padding, aliases, gradient stops, bound style values, .fig import, e2e, app not run by hand.
+18. [done] Rulers, draggable guides, pixel grid, layout grids (+ grid styles)
+       Document (FORMAT_VERSION 14): PAGE `guides` [{axis, pos}], FRAME `layoutGrids` [{kind GRID|COLUMNS|ROWS, size, count, gutter, margin, color}] (overridable),
+       `gridStyle` link and a GRID style kind (model/styles.ts LINKS). Editor-only view state in the store: rulers (Shift+R, off), guides (Ctrl+;), pixel grid
+       (Ctrl+', from 800 % zoom), layout grids (Ctrl+Shift+4). canvas/aids.ts draws them from drawOverlay; tools/guides.ts: a drag from a ruler makes a guide, a drag on
+       a guide moves it, dragging it back into the ruler (or off the canvas) deletes it; snap() takes the guides as extra lines for move, resize and draw. Design panel:
+       "Layout grid" section on a single frame (+ grid style button), "Clear guides" with nothing selected. Never exported. Tests: guides.test.ts.
+       Skipped: snapping to layout-grid edges, per-grid align/width, .fig import, typing a guide's position, units other than px, remembering the toggles between
+       sessions, e2e and app not run by hand (the canvas drawing is only smoke-tested with a stub context).
+19. [done] Right-click context menu
+       panels/ContextMenu.tsx: ContextMenuHost (in Editor Layout) + useContextMenu(); items are COMMANDS ids, so labels, shortcuts and enabled states
+       are shared with the main menu. Canvas right-click hit-tests and selects (empty space clears the selection and shows paste / select all only);
+       layer rows open the same menu. Tests: app.test.tsx.
+       Skipped: submenus, keyboard-opened menu (Shift+F10), item icons, e2e and app not run by hand.
+20. [done] Command palette (Ctrl+K) and search in layers/pages
+       panels/Palette.tsx (a Dialog, opened by the `command-palette` command via Actions.openPalette): substring search over COMMANDS (disabled ones
+       shown dimmed, not runnable), pages and every layer of every page; choosing a layer switches page, selects it and zooms to it. Empty query lists
+       commands only. Up/Down/Enter. The Layers panel has a "Filter layers" field (matches keep their ancestors, everything expands). Tests: app.test.tsx.
+       Skipped: fuzzy ranking and recents, searching text content/styles/variables, opening from inside a text field, page-list filter,
+       e2e and app not run by hand.
+21. [done] Section tool; frame size presets
+       A section is a FRAME with `section: true` (format v15; refig.ts reads/validates it, docs/project-format.md). Tool `section` (Shift+X,
+       tools/index.ts SHAPES) is always drawn at page level, no clip, light grey; the Design panel hides clip/auto layout/grids for it. A "Size preset"
+       select (DesignPanel PRESETS) above W/H resizes a selected non-section frame. Tests: app.test.tsx.
+       Skipped: importing .fig SECTION as a section, a section icon in the layers panel, presets while drawing with the Frame tool,
+       a refig round-trip test for `section`, e2e and app not run by hand.
+22. [done] Multi-export per layer (JPG/WebP, 1x/2x), slices, whole-page export
+       Document (FORMAT_VERSION 16): any node `exports` [{suffix, format png|jpg|webp|svg|pdf, scale}] (<= 20), RECTANGLE `slice` (refig.ts validates,
+       docs/project-format.md). ExportControls: quick format/scale row + "Export selection" (or "Export page" with nothing selected), "+" saves the row to the
+       selected layer (or the page), saved rows editable, "Export saved settings" -> one file per setting. API `exportFiles` (folder picker; ipc.ts `encode`
+       validates raster headers, de-duplicates names). export/index.ts: exportSelection / exportSettings / exportPage; renderToCanvas and toSvg take a `region`
+       (a slice exports the page content under it; JPG gets a white background). Slice tool (S): page-level fill-less RECTANGLE, dashed outline in
+       canvas/overlay.ts, no fill/stroke/effects in the Design panel. Tests: app.test.tsx, export.test.ts, formats.test.ts.
+       Skipped: JPG/WebP quality setting, fixed-size export (512w), `/` folders in slice names, .fig import of exports/slices, a slice's own hit-test by
+       edge only (not checked by hand), jsdom has no canvas so raster rendering is untested, e2e and app not run by hand.
+23. [done] Eyedropper; color picker with recent + document colors
+       Every Design-panel colour field (panels/ColorPicks.tsx PickField = ColorField + a popover) lists recent and document colours and, where the
+       platform has window.EyeDropper, a "Pick from screen" button. documentColors/pushColor in model/colors.ts; recent lives in EditorState (session only,
+       no format change). Picks go through the field's own onChange, so undo/autosave are unchanged. Tests: colors.test.ts, app.test.tsx.
+       Skipped: recent colours across sessions, HSV picker, swatches on variable fields, recording hex-typed/native-picker colours as recent, an eyedropper
+       that ignores canvas handles/guides (it samples screen pixels); window.EyeDropper unverified in the packaged Electron build, e2e and app not run by hand.
+24. [done] Copy/paste properties, paste into selection, paste text from other apps
+       clipboard.ts: copyProps/pasteProps (Ctrl+Alt+C, Ctrl+Alt+Shift+V: Ctrl+Alt+V is distribute-v) carry paints, stroke, effects, corners, style links and,
+       for text, the font fields to the selection in one undo step. "Paste into selection" (Ctrl+Shift+V) pastes into the selected container keeping x/y.
+       Ctrl+V of foreign text makes a TEXT layer (placeText); copy() writes the layer names to the system clipboard so its own paste isn't mistaken for
+       foreign text. No format change. Tests: clipboard.test.ts.
+       Skipped: writing PNG/SVG/JSON to the system clipboard, cross-window paste, pasting SVG markup text, "replace selection", runs/variable bindings in
+       paste properties, a paste-properties context-menu entry (not checked), e2e and app not run by hand.
+25. [done] Alt-hover measurement, scale tool (K), bulk rename, find & replace
+       Alt-hover: store `hover`/`altDown` (view state); Canvas tracks them; canvas/measure.ts gives the gaps (or edge offsets when boxes overlap), overlay.ts
+       drawMeasure draws them in pink with pills. Scale tool (K, tools/scale.ts): drag from the selection's top-left; model/scale.ts scaleTree scales
+       x/y/size, strokes, radii, text size/line height/spacing (and runs), effects, layout gap/padding, layout grids, image offsets; one undo step.
+       Rename layers (Ctrl+F2, RenameDialog): pattern {name} {n} {parent}, start number, find/replace. Find and replace (Ctrl+F, FindDialog): text content
+       (runs kept, auto-name follows) or layer names, over the selection or the page. model/rename.ts. No format change. Tests: bulk.test.ts, app.test.tsx.
+       Skipped: a numeric "Scale" field in the Design panel, non-uniform/centre scaling, bound variables/styles re-overwrite scaled values, rotated parents
+       shift scaled children slightly (shortcut: comment), measuring rotated layers (uses their axis-aligned box), regex find, find across all pages,
+       e2e and app not run by hand.
+26. [done] Prototyping: interactions, preview mode
+       Document (FORMAT_VERSION 17): Node.interactions (trigger click/hover/press/key/delay; action navigate/back/overlay/closeOverlay/url; transition
+       instant/dissolve/slide*, duration, easing) and FRAME flowStart. Validated in refig.ts (max 20, http(s) links only). model/prototype.ts is the pure
+       logic (startFrames, presentFrom, interactionAt with bubbling, step over {stack, overlays}, transitionAt). hitTest got `ignoreLocked`. Design panel
+       "Prototype" section (PrototypeSection.tsx); Present button / Ctrl+Alt+Enter (store.preview) opens PreviewOverlay.tsx: fullscreen canvas over
+       the editor drawing frames via renderToCanvas, animated transitions, overlays on a dimmed backdrop, Esc leaves. "Open link" goes through the new
+       api.openExternal (main validates http(s)). Toggle flow starting point command. Tests: prototype.test.ts, formats.test.ts, app.test.tsx.
+       Skipped: connection arrows on the canvas, overlay position/close-on-outside-click, transitions for back/overlays (instant), smart animate, drag
+       triggers, variables/conditionals, interactions per instance (not in OVERRIDABLE), dangling targets are ignored rather than cleaned up, rotated
+       frames in click mapping (shortcut: comment), real-canvas drawing not unit-tested (jsdom), e2e not written, app not run by hand.
+27. [done] Comments
+       Format 18: Document.comments [{id,page,x,y,text,at,resolved?,replies?}] (validated in refig.ts; page must exist; max 1000 / 100 replies / 5000 chars).
+       model/comments.ts (add/reply/setResolved/remove, one undo step each), comment tool (C) drops a draft pin, canvas pins (aids.ts drawComments/pinAt),
+       CommentPopover (thread, reply, resolve, delete), Comments section in the left panel with a Resolved toggle, deleting a page deletes its comments.
+       Tests: comments.test.ts, formats.test.ts, app.test.tsx.
+       Skipped: authors, mentions, notifications, pins following moved nodes (shortcut: comment in document.ts), editing a posted message, e2e, app not run by hand.
+28. [done] Dev mode / inspect, code export
+       Store `dev` (view state, no format change); Shift+D / top-bar "Dev mode" button swaps the Design panel for InspectPanel.tsx (position, size, edges to
+       the parent, solid colours, typography, Code, Assets via ExportControls) and hides the toolbar. model/code.ts: cssOf (size/position, fills incl.
+       gradients, strokes, radii, effects, auto layout, text; bound variables -> var(--collection-name, value)), htmlOf (nested divs + stylesheet). Code
+       tab: CSS, HTML + CSS, SVG (toSvg); Copy uses navigator.clipboard. Tests: code.test.ts, app.test.tsx.
+       Skipped: read-only enforcement (tools/shortcuts still edit), Swift/Kotlin/Tailwind, "ready for dev" status/annotations, text runs in code (first
+       fill/whole-node style only), diamond/image fills and per-side border colours, rotated-parent offsets, e2e and app not run by hand.
+29. [done] Plugins (code + sandboxed UI)
+       A plugin is a folder in userData/plugins (env REFIG_PLUGINS) with manifest.json + main .js (+ ui .html); docs/plugins.md, example in
+       docs/examples/plugin-hello. main/plugins.ts: listPlugins, resolveFile, readCode (shim + main file); api listPlugins/readPluginCode/
+       openPluginsFolder; protocol refig-plugin://<id>/<file> serves the UI with its own CSP (default-src 'none'). The code runs in a BLOB worker
+       (a worker must be same-origin, so refig-plugin:// workers fail; CSP worker-src blob:), the UI in <iframe sandbox="allow-scripts">.
+       editor/plugins/host.ts runPlugin: validated methods only (getSelection/getNode/getChildren/setSelection/createNode/updateNode/removeNodes/
+       notify/showUI/postToUI/closePlugin; whitelisted fields, solid fills only, 1000 creates), one undo step per run, 30 s idle stop.
+       PluginUI.tsx relays UI <-> worker. Palette entries, Main menu > Plugins, "Open plugins folder". No format change.
+       Tests: plugins.test.ts, host.test.ts, app.test.tsx, e2e (network blocked, UI, one undo).
+       Skipped: widgets, figma.* compatibility, plugin storage/permissions, hot reload, image/vector/component creation, plugin-specific selection
+       change events, dev mode (npm run dev) has no CSP so plugins can reach the network there, sandbox is only as strong as Chromium's (no signing).
+       Other e2e tests (auto-layout, constraints, instance, boolean) fail in this run; not checked whether they failed before #29.
 30. [todo] Version history, libraries, cloud sync, multiplayer
 31. [todo] Assets panel
 32. [todo] Outline text; font embedding in SVG/PDF export
 
-Next step: #17 Variables. Plan first.
+Next step: #30 Version history, libraries, cloud sync, multiplayer. Plan first.
 
 Reviewing the feature commits: `/code-review ultra cc7cc81` reviews everything since before #1.
 

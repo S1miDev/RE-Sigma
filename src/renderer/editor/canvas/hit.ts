@@ -21,14 +21,14 @@ function containsPoint(n: Node, q: Pt, tol: number): boolean {
  * Top-most visible, unlocked node under a page point. A group answers for its children unless `deep`;
  * a frame's children are always reachable directly (as in Figma).
  */
-export function hitTest(doc: Document, pageId: string, p: Pt, opts: { deep?: boolean; tolerance?: number } = {}): string | null {
+export function hitTest(doc: Document, pageId: string, p: Pt, opts: { deep?: boolean; tolerance?: number; ignoreLocked?: boolean } = {}): string | null {
   const tol = opts.tolerance ?? 0
   const hit = (parentId: string, at: Pt): string | null => {
     const kids = childrenOf(doc, parentId), masks: Node[] = []
     const clipped = (n: Node) => masks.some((m) => !containsPoint(m, apply(invert(localMatrix(m)), at), 0)) // outside a mask below it
     const order = kids.map((n) => { const out = { n, hidden: clipped(n) }; if (isMask(n) && n.visible) masks.push(n); return out })
     for (const { n, hidden } of order.toReversed()) {
-      if (!n.visible || n.locked || hidden) continue
+      if (!n.visible || (n.locked && !opts.ignoreLocked) || hidden) continue
       const q = apply(invert(localMatrix(n)), at)
       const inside = q.x >= 0 && q.x <= n.width && q.y >= 0 && q.y <= n.height
       if (n.type === 'FRAME') {

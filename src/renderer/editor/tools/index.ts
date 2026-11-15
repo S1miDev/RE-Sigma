@@ -3,6 +3,7 @@
 import { makeNode, solid, type Node, type NodeType } from '../../../shared/document'
 import { frameAt, hitTest, marqueeHits } from '../canvas/hit'
 import { handleAt, handlesOf, type Handle } from '../canvas/overlay'
+import { guideAt, pinAt } from '../canvas/aids'
 import { snap, snapTargets } from '../canvas/snap'
 import { apply, bounds, deg, invert, lineBetween, localMatrix, resizeBox, worldBox, worldMatrix, worldRotation } from '../model/geometry'
 import { insert, layoutSlot, moveTo, nextName, patch, resizeNode, topLevel, translate } from '../model/ops'
@@ -11,7 +12,10 @@ import { finishPen, penGesture, pointAt, pointGesture } from './pen'
 import { arrowGesture } from './arrow'
 import { pencilGesture } from './pencil'
 import { cropGesture } from './crop'
+import { scaleGesture } from './scale'
+import { commentGesture } from './comment'
 import { finishText, textMode, textPointer, textStep } from './textEdit'
+import { guideGesture, rulerGesture, snapLines } from './guides'
 import { DRAG_PX, dist, SNAP_PX, snapAngle, type Gesture, type Pointer } from './pointer'
 
 export type { Gesture, Pointer } from './pointer'
@@ -21,11 +25,15 @@ export { textStep } from './textEdit'
 export function beginGesture(store: EditorStore, p: Pointer, pan = false): Gesture | null {
   const { tool } = store.get()
   if (pan || tool === 'hand') return panGesture(store, p)
+  const ruler = rulerGesture(store, p)
+  if (ruler) return ruler
   if (tool === 'move') return moveToolGesture(store, p)
   if (tool === 'text') return textGesture(store, p)
   if (tool === 'pen') return penGesture(store, p)
   if (tool === 'pencil') return pencilGesture(store, p)
   if (tool === 'arrow') return arrowGesture(store, p)
+  if (tool === 'scale') return scaleGesture(store, p)
+  if (tool === 'comment') return commentGesture(store, p)
   return shapeGesture(store, p, tool)
 }
 
@@ -84,6 +92,10 @@ function moveToolGesture(store: EditorStore, p: Pointer): Gesture | null {
     const h = handleAt(handlesOf(doc, s.selection[0], view), p.screen)
     if (h) return handleGesture(store, p, s.selection[0], h)
   }
+  const pin = pinAt(s, p.screen)
+  if (pin) return void store.set({ openComment: pin.id, draft: null }), null
+  const g = guideAt(s, p.screen)
+  if (g >= 0) return guideGesture(store, p, g, doc.nodes[pageId].guides![g].axis)
   const hit = hitTest(doc, pageId, p.world, { deep: p.ctrl, tolerance: 4 / view.zoom })
   if (!hit) return marqueeGesture(store, p)
   const was = s.selection.includes(hit)
@@ -101,7 +113,7 @@ function dragGesture(store: EditorStore, p: Pointer, selection: string[], hit: s
   const box = worldBox(doc, ids)
   if (!box) return null
   const parentId = doc.nodes[ids[0]].parentId!
-  const targets = snapTargets(doc, parentId, ids)
+  const targets = snapTargets(doc, parentId, ids), lines = snapLines(store)
   // Children of an auto-layout frame reorder live while the pointer stays in it, and float on the page once it leaves.
   const layoutParent = doc.nodes[parentId].layout && ids.every((id) => doc.nodes[id].parentId === parentId) ? parentId : null
   let moved = false
@@ -118,7 +130,7 @@ function dragGesture(store: EditorStore, p: Pointer, selection: string[], hit: s
       const sn = snap(
         q.shift && !dx ? [] : [box.x + dx, box.x + box.w / 2 + dx, box.x + box.w + dx],
         q.shift && !dy ? [] : [box.y + dy, box.y + box.h / 2 + dy, box.y + box.h + dy],
-        layoutParent ? [] : targets, SNAP_PX / view.zoom,
+        layoutParent ? [] : targets, SNAP_PX / view.zoom, lines,
       )
       store.update(() => translate(layoutParent ? moveTo(doc, ids, pageId) : doc, ids, { x: dx + sn.dx, y: dy + sn.dy }), tag)
       store.set({ overlay: { guides: sn.guides } })
@@ -182,10 +194,10 @@ function handleGesture(store: EditorStore, p: Pointer, id: string, h: Handle): G
   }
 
   const upright = worldRotation(doc, id) === 0 // snapping page-aligned edges only makes sense for an unrotated box
-  const targets = upright ? snapTargets(doc, n.parentId!, [id]) : []
+  const targets = upright ? snapTargets(doc, n.parentId!, [id]) : [], lines = upright ? snapLines(store) : []
   return {
     move(q) {
-      const sn = snap(h.hx ? [q.world.x] : [], h.hy ? [q.world.y] : [], targets, SNAP_PX / view.zoom)
+      const sn = snap(h.hx ? [q.world.x] : [], h.hy ? [q.world.y] : [], targets, SNAP_PX / view.zoom, lines)
       const at = apply(toParent, { x: q.world.x + sn.dx, y: q.world.y + sn.dy })
       store.update(() => resizeNode(doc, id, resizeBox(n, h.hx, h.hy, at, q)), tag)
       store.set({ overlay: { guides: sn.guides } })
@@ -194,8 +206,10 @@ function handleGesture(store: EditorStore, p: Pointer, id: string, h: Handle): G
   }
 }
 
-const SHAPES: Record<Exclude<Tool, 'move' | 'hand' | 'text' | 'pen' | 'pencil' | 'arrow'>, { type: NodeType; label: string; props: Partial<Node> }> = {
+const SHAPES: Record<Exclude<Tool, 'move' | 'hand' | 'text' | 'pen' | 'pencil' | 'arrow' | 'scale' | 'comment'>, { type: NodeType; label: string; props: Partial<Node> }> = {
   frame: { type: 'FRAME', label: 'Frame', props: { fills: [solid(1, 1, 1)] } },
+  section: { type: 'FRAME', label: 'Section', props: { section: true, clipsContent: false, fills: [solid(0.96, 0.96, 0.96)] } },
+  slice: { type: 'RECTANGLE', label: 'Slice', props: { slice: true, fills: [], strokes: [] } },
   rectangle: { type: 'RECTANGLE', label: 'Rectangle', props: { fills: [solid(0.85, 0.85, 0.85)] } },
   ellipse: { type: 'ELLIPSE', label: 'Ellipse', props: { fills: [solid(0.85, 0.85, 0.85)] } },
   star: { type: 'STAR', label: 'Star', props: { fills: [solid(0.85, 0.85, 0.85)], points: 5, innerRatio: 0.38 } },
@@ -206,10 +220,10 @@ const SHAPES: Record<Exclude<Tool, 'move' | 'hand' | 'text' | 'pen' | 'pencil' |
 /** Drag to draw; a plain click drops a 100×100 shape. The new node lands in the frame under the pointer. */
 function shapeGesture(store: EditorStore, p: Pointer, tool: keyof typeof SHAPES): Gesture {
   const { doc, pageId, view } = store.get(), tag = gestureStep(), shape = SHAPES[tool]
-  const parentId = frameAt(doc, pageId, p.world), toParent = invert(worldMatrix(doc, parentId))
-  const targets = worldRotation(doc, parentId) === 0 ? snapTargets(doc, parentId, []) : []
+  const parentId = shape.props.section || shape.props.slice ? pageId : frameAt(doc, pageId, p.world), toParent = invert(worldMatrix(doc, parentId)) // sections and slices never nest
+  const targets = worldRotation(doc, parentId) === 0 ? snapTargets(doc, parentId, []) : [], lines = worldRotation(doc, parentId) === 0 ? snapLines(store) : []
   const snapped = (q: Pointer) => {
-    const sn = snap([q.world.x], [q.world.y], targets, SNAP_PX / view.zoom)
+    const sn = snap([q.world.x], [q.world.y], targets, SNAP_PX / view.zoom, lines)
     return { at: apply(toParent, { x: q.world.x + sn.dx, y: q.world.y + sn.dy }), guides: sn.guides }
   }
   const a = snapped(p).at

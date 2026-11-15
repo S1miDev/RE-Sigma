@@ -1,9 +1,11 @@
 // Selection outlines, handles, marquee and snap guides. Drawn in screen pixels on top of the page.
 import type { Document } from '../../../shared/document'
-import { apply, corners, worldMatrix, type Pt } from '../model/geometry'
+import { apply, corners, worldBox, worldMatrix, type Pt } from '../model/geometry'
+import { measure } from './measure'
 import { childrenOf } from '../model/ops'
 import { anchorsOf } from '../model/path'
 import type { EditorState, Mode } from '../store'
+import { drawComments, drawGrids, drawGuides, drawRulers, type AidState } from './aids'
 import { caretPos, selectionRects } from './caret'
 import { imageBox } from './paintPlan'
 import { layoutText } from './text'
@@ -34,16 +36,27 @@ export function cropCorners(doc: Document, mode: Mode, view: View, image: (hash:
 }
 export const handleAt =(handles: Handle[], p: Pt, radius = 7) => handles.find((h) => Math.hypot(h.at.x - p.x, h.at.y - p.y) <= radius)
 
-export function drawOverlay(ctx: CanvasRenderingContext2D, s: Pick<EditorState, 'doc' | 'pageId' | 'selection' | 'view' | 'overlay' | 'tool' | 'mode'>, dpr: number, image: (hash: string) => { width: number; height: number } | undefined = () => undefined) {
+export function drawOverlay(ctx: CanvasRenderingContext2D, s: AidState & Pick<EditorState, 'tool' | 'mode' | 'hover' | 'altDown'>, dpr: number, image: (hash: string) => { width: number; height: number } | undefined = () => undefined) {
   const { doc, view } = s, W = ctx.canvas.width / dpr, H = ctx.canvas.height / dpr
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.lineWidth = 1
+  drawGrids(ctx, s, W, H)
 
   ctx.font = '11px "Inter Variable", sans-serif'
   ctx.textBaseline = 'alphabetic'
   for (const n of childrenOf(doc, s.pageId)) {
-    if (n.type !== 'FRAME' || !n.visible) continue
-    const p = toScreen(view, corners(doc, n.id)[0])
+    if ((n.type !== 'FRAME' && !n.slice) || !n.visible) continue
+    const q = corners(doc, n.id).map((c) => toScreen(view, c)), p = q[0]
+    if (n.slice) { // a slice draws nothing itself: show where it is
+      ctx.save()
+      ctx.setLineDash([4, 3])
+      ctx.strokeStyle = '#8c8c8c'
+      ctx.beginPath()
+      q.forEach((c, i) => (i ? ctx.lineTo(c.x, c.y) : ctx.moveTo(c.x, c.y)))
+      ctx.closePath()
+      ctx.stroke()
+      ctx.restore()
+    }
     ctx.fillStyle = n.component || n.componentSet || n.instanceOf ? COMPONENT : s.selection.includes(n.id) ? ACCENT : '#8c8c8c'
     ctx.fillText(n.name, p.x, p.y - 6)
   }
@@ -126,4 +139,32 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: Pick<EditorState, 
   if (guides?.x !== undefined) { const x = guides.x * view.zoom + view.x; ctx.moveTo(x, 0); ctx.lineTo(x, H) }
   if (guides?.y !== undefined) { const y = guides.y * view.zoom + view.y; ctx.moveTo(0, y); ctx.lineTo(W, y) }
   ctx.stroke()
+  drawGuides(ctx, s, W, H)
+  drawMeasure(ctx, s)
+  drawComments(ctx, s)
+  drawRulers(ctx, s, W, H)
+}
+
+/** Alt held over a layer: outline it and, with a selection, show the distances from the selection to it. */
+function drawMeasure(ctx: CanvasRenderingContext2D, s: AidState & Pick<EditorState, 'hover' | 'altDown'>) {
+  const { doc, view } = s
+  if (!s.altDown || !s.hover || !doc.nodes[s.hover]) return
+  ctx.strokeStyle = '#ff3b6b'
+  ctx.beginPath()
+  corners(doc, s.hover).forEach((c, i) => { const p = toScreen(view, c); i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y) })
+  ctx.closePath()
+  ctx.stroke()
+  const a = worldBox(doc, s.selection), b = worldBox(doc, [s.hover])
+  if (!a || !b || s.selection.includes(s.hover)) return
+  ctx.textAlign = 'center'
+  for (const m of measure(a, b)) {
+    const p = toScreen(view, { x: m.x1, y: m.y1 }), q = toScreen(view, { x: m.x2, y: m.y2 })
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke()
+    const x = (p.x + q.x) / 2, y = (p.y + q.y) / 2, w = ctx.measureText(m.label).width + 8
+    ctx.fillStyle = '#ff3b6b'
+    ctx.fillRect(x - w / 2, y - 8, w, 16)
+    ctx.fillStyle = '#fff'
+    ctx.fillText(m.label, x, y + 4)
+  }
+  ctx.textAlign = 'start'
 }

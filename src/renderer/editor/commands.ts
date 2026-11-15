@@ -1,22 +1,23 @@
 // Every editor command in one table. The main menu, the toolbar and the keyboard handler all read from it,
 // so a menu item can't exist without doing something.
-import { makeNode, type BoolOp, type Document, type Node } from '../../shared/document'
-import { copy, hasClipboard, paste } from './clipboard'
+import { isContainer, makeNode, type BoolOp, type Document, type Node } from '../../shared/document'
+import { copy, copyProps, hasClipboard, hasProps, paste, pasteProps } from './clipboard'
 import { fitView, zoomAt, zoomToFit } from './canvas/viewport'
 import { worldBox } from './model/geometry'
 import { canMask } from './canvas/paintPlan'
 import { addAutoLayout, align, childrenOf, distribute, duplicate, group, orderAbove, pageOf, patch, put, remove, reorder, topLevel, translate, ungroup, type Edit } from './model/ops'
 import { flatten, makeBoolean } from './model/boolean'
+import { presentFrom } from './model/prototype'
 import { addVariant, combineAsVariants, detach, makeComponent, resetOverrides, setOf, variantsOf } from './model/components'
 import type { EditorState, EditorStore, Tool } from './store'
 import { deletePoint, editNode, exitMode, setTool, showPage } from './tools'
 
 /** Things only the Editor component can do. */
-export interface Actions { back(): void; openExport(): void; placeImages(): void }
+export interface Actions { back(): void; openExport(): void; placeImages(): void; openPalette(): void; openRename(): void; openFind(): void }
 export interface Command {
   id: string
   label: string
-  group: 'File' | 'Edit' | 'View' | 'Object' | 'Arrange' | 'Tools'
+  group: 'File' | 'Edit' | 'View' | 'Object' | 'Arrange' | 'Tools' | 'Plugins'
   keys?: string[] // first one is shown in menus
   enabled?(s: EditorState, store: EditorStore): boolean
   run(store: EditorStore, actions: Actions): void
@@ -40,6 +41,7 @@ export const COMMANDS: Command[] = [
   { id: 'back', label: 'Back to projects', group: 'File', run: (_, a) => a.back() },
   { id: 'save', label: 'Save', group: 'File', keys: ['Ctrl+S'], run: (st) => void st.save() },
   { id: 'export', label: 'Export…', group: 'File', keys: ['Ctrl+Shift+E'], enabled: has, run: (_, a) => a.openExport() },
+  { id: 'plugins-folder', label: 'Open plugins folder', group: 'Plugins', run: (st) => void st.api.openPluginsFolder() },
   { id: 'place-image', label: 'Place image…', group: 'File', keys: ['Ctrl+Shift+K'], run: (_, a) => a.placeImages() },
 
   { id: 'undo', label: 'Undo', group: 'Edit', keys: ['Ctrl+Z'], enabled: (_, st) => st.canUndo(), run: (st) => st.undo() },
@@ -48,6 +50,12 @@ export const COMMANDS: Command[] = [
   { id: 'copy', label: 'Copy', group: 'Edit', keys: ['Ctrl+C'], enabled: has, run: copy },
   // Ctrl+V itself arrives as a DOM paste event (so images on the system clipboard can be read); see Editor.
   { id: 'paste', label: 'Paste', group: 'Edit', keys: ['Ctrl+V'], enabled: hasClipboard, run: (st) => void paste(st) },
+  { id: 'paste-into', label: 'Paste into selection', group: 'Edit', keys: ['Ctrl+Shift+V'], enabled: (s) => hasClipboard() && !!lone(s) && isContainer(lone(s)!), run: (st) => void paste(st, st.get().selection[0]) },
+  { id: 'copy-properties', label: 'Copy properties', group: 'Edit', keys: ['Ctrl+Alt+C'], enabled: (s) => s.selection.length === 1, run: copyProps },
+  // Figma's Ctrl+Alt+V is distribute-v here, hence the extra Shift
+  { id: 'paste-properties', label: 'Paste properties', group: 'Edit', keys: ['Ctrl+Alt+Shift+V'], enabled: (s) => hasProps() && has(s), run: pasteProps },
+  { id: 'rename-layers', label: 'Rename layers…', group: 'Edit', keys: ['Ctrl+F2'], enabled: has, run: (_, a) => a.openRename() },
+  { id: 'find-replace', label: 'Find and replace…', group: 'Edit', keys: ['Ctrl+F'], run: (_, a) => a.openFind() },
   { id: 'duplicate', label: 'Duplicate', group: 'Edit', keys: ['Ctrl+D'], enabled: has, run: (st) => st.update((d) => duplicate(d, st.get().selection)) },
   // while editing points, Delete removes the selected point rather than the layer
   { id: 'delete', label: 'Delete', group: 'Edit', keys: ['Delete', 'Backspace'], enabled: (s) => (s.mode.kind === 'points' ? !!s.mode.sel : has(s)), run: (st) => (st.get().mode.kind === 'points' ? deletePoint(st) : st.update((d) => remove(d, st.get().selection))) },
@@ -58,8 +66,21 @@ export const COMMANDS: Command[] = [
   { id: 'zoom-100', label: 'Zoom to 100%', group: 'View', keys: ['Ctrl+0'], run: (st) => { const s = st.get(); st.set({ view: zoomAt(s.view, centre(s), 1) }) } },
   { id: 'zoom-fit', label: 'Zoom to fit', group: 'View', keys: ['Shift+1'], run: (st) => zoomToFit(st) },
   { id: 'zoom-selection', label: 'Zoom to selection', group: 'View', keys: ['Shift+2'], enabled: has, run: (st) => { const s = st.get(); st.set({ view: fitView(worldBox(s.doc, s.selection), s.size) }) } },
+  { id: 'command-palette', label: 'Command palette…', group: 'View', keys: ['Ctrl+K'], run: (_, a) => a.openPalette() },
   { id: 'toggle-ui', label: 'Show/Hide UI', group: 'View', keys: ['Ctrl+\\'], run: (st) => st.set({ uiHidden: !st.get().uiHidden }) },
+  { id: 'present', label: 'Present prototype', group: 'View', keys: ['Ctrl+Alt+Enter'], enabled: (s) => !!presentFrom(s.doc, s.pageId, s.selection), run: (st) => st.set({ preview: presentFrom(st.get().doc, st.get().pageId, st.get().selection) }) },
+  { id: 'toggle-resolved-comments', label: 'Show resolved comments', group: 'View', run: (st) => st.set({ showResolved: !st.get().showResolved }) },
+  { id: 'toggle-rulers', label: 'Rulers', group: 'View', keys: ['Shift+R'], run: (st) => st.set({ rulers: !st.get().rulers }) },
+  { id: 'dev-mode', label: 'Dev mode', group: 'View', keys: ['Shift+D'], run: (st) => st.set({ dev: !st.get().dev }) },
+  { id: 'toggle-guides', label: 'Guides', group: 'View', keys: ['Ctrl+;'], run: (st) => st.set({ guidesVisible: !st.get().guidesVisible }) },
+  { id: 'toggle-pixel-grid', label: 'Pixel grid', group: 'View', keys: ["Ctrl+'"], run: (st) => st.set({ pixelGrid: !st.get().pixelGrid }) },
+  { id: 'toggle-layout-grids', label: 'Layout grids', group: 'View', keys: ['Ctrl+Shift+4'], run: (st) => st.set({ layoutGridsVisible: !st.get().layoutGridsVisible }) },
 
+  {
+    id: 'toggle-flow-start', label: 'Toggle flow starting point', group: 'Object',
+    enabled: (s) => s.selection.length > 0 && s.selection.every((id) => s.doc.nodes[id]?.type === 'FRAME' && s.doc.nodes[id].parentId === s.pageId),
+    run: (st) => st.update((d) => patch(d, st.get().selection, (n) => ({ flowStart: n.flowStart ? undefined : true }))),
+  },
   { id: 'group', label: 'Group selection', group: 'Object', keys: ['Ctrl+G'], enabled: has, run: (st) => st.update((d) => group(d, st.get().selection, 'GROUP')) },
   { id: 'ungroup', label: 'Ungroup', group: 'Object', keys: ['Ctrl+Shift+G'], enabled: (s) => s.selection.some((id) => ['GROUP', 'FRAME', 'BOOLEAN'].includes(s.doc.nodes[id]?.type)), run: (st) => st.update((d) => ungroup(d, st.get().selection)) },
   { id: 'frame-selection', label: 'Frame selection', group: 'Object', keys: ['Ctrl+Alt+G'], enabled: has, run: (st) => st.update((d) => group(d, st.get().selection, 'FRAME')) },
@@ -94,10 +115,10 @@ export const COMMANDS: Command[] = [
   { id: 'distribute-h', label: 'Distribute horizontal spacing', group: 'Arrange', keys: ['Ctrl+Alt+H'], enabled: (s) => topLevel(s.doc, s.selection).length > 2, run: (st) => st.update((d) => distribute(d, st.get().selection, 'x')) },
   { id: 'distribute-v', label: 'Distribute vertical spacing', group: 'Arrange', keys: ['Ctrl+Alt+V'], enabled: (s) => topLevel(s.doc, s.selection).length > 2, run: (st) => st.update((d) => distribute(d, st.get().selection, 'y')) },
 
-  tool('move', 'Move', 'V'), tool('hand', 'Hand', 'H'), tool('frame', 'Frame', 'F'), tool('rectangle', 'Rectangle', 'R'),
-  tool('ellipse', 'Ellipse', 'O'), tool('line', 'Line', 'L'), tool('arrow', 'Arrow', 'Shift+L'), tool('star', 'Star', 'Shift+S'), tool('polygon', 'Polygon', 'Shift+G'), tool('pen', 'Pen', 'P'), tool('pencil', 'Pencil', 'Shift+P'),tool('text', 'Text', 'T'),
+  tool('move', 'Move', 'V'), tool('hand', 'Hand', 'H'), tool('frame', 'Frame', 'F'), tool('section', 'Section', 'Shift+X'), tool('slice', 'Slice', 'S'),tool('rectangle', 'Rectangle', 'R'),
+  tool('ellipse', 'Ellipse', 'O'), tool('line', 'Line', 'L'), tool('arrow', 'Arrow', 'Shift+L'), tool('star', 'Star', 'Shift+S'), tool('polygon', 'Polygon', 'Shift+G'), tool('pen', 'Pen', 'P'), tool('pencil', 'Pencil', 'Shift+P'),tool('text', 'Text', 'T'), tool('scale', 'Scale', 'K'), tool('comment', 'Comment', 'C'),
   // Escape steps out one level: leaves a mode (finishing a pen path), then deselects
-  { id: 'escape', label: 'Deselect', group: 'Tools', keys: ['Escape'], run: (st) => (inMode(st.get()) ? exitMode(st) : st.set({ selection: [], tool: 'move' })) },
+  { id: 'escape', label: 'Deselect', group: 'Tools', keys: ['Escape'], run: (st) => (inMode(st.get()) ? exitMode(st) : st.set({ selection: [], tool: 'move', draft: null, openComment: null })) },
   // Enter edits a text's characters or a vector's points, or leaves the mode
   { id: 'edit', label: 'Edit text or points', group: 'Tools', keys: ['Enter'], enabled: (s) => inMode(s) || (s.selection.length === 1 && ['TEXT', 'VECTOR'].includes(s.doc.nodes[s.selection[0]]?.type)),
     run: (st) => (inMode(st.get()) ? exitMode(st) : editNode(st, st.get().selection[0])) },
@@ -139,9 +160,9 @@ function goToMain(st: EditorStore) {
 
 export const isEnabled = (c: Command, store: EditorStore) => !c.enabled || c.enabled(store.get(), store)
 /** Runs a command from a panel button. Commands that need the Editor's own actions (back, export) do nothing here. */
-export const runCommand = (store: EditorStore, id: string) => COMMANDS.find((c) => c.id === id)!.run(store, { back() {}, openExport() {}, placeImages() {} })
+export const runCommand = (store: EditorStore, id: string) => COMMANDS.find((c) => c.id === id)!.run(store, { back() {}, openExport() {}, placeImages() {}, openPalette() {}, openRename() {}, openFind() {} })
 
-const CODES: Record<string, string> = { BracketLeft: '[', BracketRight: ']', Backslash: '\\', Equal: '=', Minus: '-', NumpadAdd: '=', NumpadSubtract: '-' }
+const CODES: Record<string, string> = { BracketLeft: '[', BracketRight: ']', Backslash: '\\', Semicolon: ';', Quote: "'", Equal: '=', Minus: '-', NumpadAdd: '=', NumpadSubtract: '-' }
 /** "Ctrl+Shift+G" for a key event. Digits and punctuation go by physical key so they work on any layout; letters by what they type. */
 export function keyOf(e: Pick<KeyboardEvent, 'key' | 'code' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'>): string {
   // With Alt held, letters go by physical key too: on Windows Ctrl+Alt is AltGr, which types another character

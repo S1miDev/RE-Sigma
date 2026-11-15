@@ -10,7 +10,7 @@ let workspace: string, profile: string, app: ElectronApplication | null = null
 async function launch(): Promise<Page> {
   // An IDE terminal can set ELECTRON_RUN_AS_NODE, which would start the app as plain Node.
   const { ELECTRON_RUN_AS_NODE: _, ...rest } = process.env
-  const env = { ...rest, REFIG_WORKSPACE: workspace } as Record<string, string>
+  const env = { ...rest, REFIG_WORKSPACE: workspace, REFIG_PLUGINS: path.join(profile, 'plugins') } as Record<string, string>
   // Own profile dir: the single-instance lock then can't collide with a Refig the developer has open.
   app = await electron.launch({ executablePath: exe, args: [`--user-data-dir=${profile}`], env })
   return app.firstWindow()
@@ -61,6 +61,40 @@ test('a drawn rectangle survives quitting and relaunching', async () => {
   await expect(page.getByLabel('Width')).toHaveCount(0) // nothing selected after reopening
   await page.getByRole('treeitem', { name: 'Rectangle 1' }).click()
   await expect(page.getByLabel('Width')).toHaveValue('220')
+})
+
+test('a plugin runs in its sandbox: UI, edits as one undo step, no network', async () => {
+  const dir = path.join(profile, 'plugins')
+  fs.cpSync(path.resolve('docs/examples/plugin-hello'), path.join(dir, 'hello'), { recursive: true })
+  fs.mkdirSync(path.join(dir, 'probe'))
+  fs.writeFileSync(path.join(dir, 'probe', 'manifest.json'), JSON.stringify({ name: 'Probe', main: 'code.js' }))
+  fs.writeFileSync(path.join(dir, 'probe', 'code.js'), `importScripts('refig.js')
+refig.onRun(async () => {
+  let name = 'leaked'
+  try { await fetch('https://example.com'); } catch { name = 'blocked' }
+  await refig.createNode('RECTANGLE', { name, width: 10, height: 10 })
+  await refig.closePlugin()
+})`)
+  const page = await launch()
+  await page.getByRole('button', { name: 'New project' }).first().click()
+  await expect(page.getByRole('toolbar', { name: 'Tools' })).toBeVisible()
+
+  await page.keyboard.press('Control+k')
+  await page.getByRole('combobox', { name: /Search commands/ }).fill('probe')
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('treeitem', { name: 'blocked' })).toBeVisible()
+  await page.keyboard.press('Control+z')
+  await expect(page.getByRole('treeitem', { name: 'blocked' })).toHaveCount(0)
+
+  await page.keyboard.press('Control+k')
+  await page.getByRole('combobox', { name: /Search commands/ }).fill('hello')
+  await page.keyboard.press('Enter')
+  const ui = page.frameLocator('iframe[title="Hello shapes"]')
+  await ui.getByRole('button', { name: 'Create' }).click()
+  await expect(page.getByRole('treeitem', { name: 'Hello' })).toHaveCount(3)
+  await expect(page.getByRole('dialog', { name: 'Hello shapes' })).toHaveCount(0) // closePlugin
+  await page.keyboard.press('Control+z')
+  await expect(page.getByRole('treeitem', { name: 'Hello' })).toHaveCount(0)
 })
 
 test('closing the window right after an edit still saves it', async () => {
@@ -413,7 +447,7 @@ test('the page has no Node access and only the contract API', async () => {
   expect(seen).toEqual({ require: 'undefined', process: 'undefined', keys: [...API_KEYS].sort(), types: ['function'], inlineScriptRan: false })
   // bad arguments are rejected in main, before any file access
   await expect(page.evaluate(() => window.refig.openProject('../../secrets'))).rejects.toThrow(/Invalid argument: id/)
-  await expect(page.evaluate(() => window.refig.saveProject('00000000-0000-0000-0000-000000000000', { formatVersion: 12, pages: [], nodes: {}, styles: [] }))).rejects.toThrow(/not found|Invalid/)
+  await expect(page.evaluate(() => window.refig.saveProject('00000000-0000-0000-0000-000000000000', { formatVersion: 18, pages: [], nodes: {}, styles: [], collections: [], comments: [] }))).rejects.toThrow(/not found|Invalid/)
 })
 
 test('text: typing and a bold selection export as styled spans', async () => {

@@ -1,7 +1,7 @@
 // Editor state for one open project: document, selection, view, undo history, images and autosave.
 import { createContext, useContext, useSyncExternalStore } from 'react'
-import type { OpenedProject, RefigApi } from '../../shared/api'
-import type { Document, RunStyle } from '../../shared/document'
+import type { OpenedProject, PluginInfo, RefigApi } from '../../shared/api'
+import type { Color, Document, Guide, RunStyle } from '../../shared/document'
 import { errorText } from '../util'
 import { thumbnail } from './canvas/render'
 import type { Guides } from './canvas/snap'
@@ -11,7 +11,7 @@ import type { Edit } from './model/ops'
 import { normalize } from './normalize'
 import type { Anchor } from './model/path'
 
-export type Tool = 'move' | 'hand' | 'frame' | 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'star' | 'polygon' | 'pen' | 'pencil' | 'text'
+export type Tool = 'move' | 'hand' | 'frame' | 'section' | 'slice' | 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'star' | 'polygon' | 'pen' | 'pencil' | 'text' | 'scale' | 'comment'
 /**
  * What a node is being edited as, if anything: its characters (text), a path being drawn (pen; its points live here,
  * in parent coordinates, because path data can't hold the last point's outgoing handle until the next segment
@@ -33,11 +33,26 @@ export interface EditorState {
   view: View
   size: { w: number; h: number } // canvas viewport in CSS px
   mode: Mode
-  overlay: { marquee?: Box; guides?: Guides }
+  overlay: { marquee?: Box; guides?: Guides; guide?: Guide } // guide: the user guide being dragged
   save: 'saved' | 'dirty' | 'saving' | 'error'
   saveError?: string
   uiHidden: boolean
+  rulers: boolean // view aids, not part of the document
+  preview: string | null // the frame a running prototype preview started from; view state only
+  dev: boolean // Dev mode: the right panel inspects instead of edits; view state only
+  pixelGrid: boolean
+  guidesVisible: boolean
+  layoutGridsVisible: boolean
   tick: number // bumped when an image finishes decoding
+  recent: Color[] // colours picked lately, newest first; session-only
+  hover: string | null // the layer under the pointer while no gesture runs; view state only
+  draft: { page: string; x: number; y: number } | null // a comment pin being placed; view state only
+  openComment: string | null // the thread shown beside its pin
+  showResolved: boolean
+  altDown: boolean // Alt is held: measure from the selection to the hovered layer
+  plugins: PluginInfo[] // installed plugins (a scan of the plugins folder); view state only
+  plugin: { id: string; name: string; ui: { src: string; w: number; h: number } | null } | null // the running plugin
+  toast: string | null // a message for the editor's toast (plugins use it)
 }
 type Snapshot = Pick<EditorState, 'doc' | 'pageId' | 'selection'>
 /**
@@ -57,7 +72,7 @@ export function createEditorStore(opened: OpenedProject, api: RefigApi) {
   const id = opened.summary.id
   let state: EditorState = {
     name: opened.summary.name, doc: opened.document, pageId: opened.document.pages[0], selection: [], tool: 'move',
-    view: { x: 0, y: 0, zoom: 1 }, size: { w: 0, h: 0 }, mode: NO_MODE, overlay: {}, save: 'saved', uiHidden: false, tick: 0,
+    view: { x: 0, y: 0, zoom: 1 }, size: { w: 0, h: 0 }, mode: NO_MODE, overlay: {}, save: 'saved', uiHidden: false, rulers: false, preview: null, dev: false, pixelGrid: true, guidesVisible: true, layoutGridsVisible: true, tick: 0, recent: [], draft: null, openComment: null, showResolved: false, hover: null, altDown: false, plugins: [], plugin: null, toast: null,
   }
   const listeners = new Set<() => void>()
   const past: Snapshot[] = [], future: Snapshot[] = []

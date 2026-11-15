@@ -7,6 +7,7 @@ import { syncInstances } from './model/components'
 import { autoLayout, fitGroups, put } from './model/ops'
 import { syncShapes } from './model/shapes'
 import { resolveStyles } from './model/styles'
+import { resolveVariables } from './model/variables'
 
 /** Re-measures text nodes changed since `prev`. */
 function fitTexts(prev: Document, next: Document): Document {
@@ -19,8 +20,9 @@ export function normalize(prev: Document, next: Document, base: Document): Docum
   if (next === prev) return prev
   // instances sync first, while `next` still holds exactly what the user changed (their overrides)
   // styles first on ordinary nodes, so a style change reaches the mains; instance nodes take only the links they override, after the sync
-  next = resolveStyles(prev, next, false)
-  next = resolveStyles(next, syncInstances(prev, next, base), true)
+  // variables right after, so mains carry their values to instances; instance nodes resolve again after the sync because their own ancestors may pick another mode
+  next = resolveVariables(prev, resolveStyles(prev, next, false), false)
+  next = resolveVariables(next, resolveStyles(next, syncInstances(prev, next, base), true), true)
   // auto layout can change a text box's width (fill), so text is measured again and laid out once more
   // star outlines follow their parameters, then a boolean's result is computed once the boxes have settled (fitGroups), before auto layout moves anything
   return autoLayout(fitTexts(prev, autoLayout(syncBooleans(prev, syncShapes(prev, fitGroups(fitTexts(prev, next)))))))

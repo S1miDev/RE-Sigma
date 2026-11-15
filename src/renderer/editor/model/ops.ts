@@ -305,7 +305,7 @@ export function addPage(doc: Document): Document {
 export function removePage(doc: Document, id: string): Document {
   if (doc.pages.length < 2 || !doc.pages.includes(id)) return doc
   const gone = new Set([id, ...descendants(doc, id).map((n) => n.id)])
-  return { ...doc, pages: doc.pages.filter((p) => p !== id), nodes: Object.fromEntries(Object.entries(doc.nodes).filter(([k]) => !gone.has(k))) }
+  return { ...doc, pages: doc.pages.filter((p) => p !== id), comments: doc.comments.filter((c) => c.page !== id), nodes: Object.fromEntries(Object.entries(doc.nodes).filter(([k]) => !gone.has(k))) }
 }
 export function movePage(doc: Document, id: string, toIndex: number): Document {
   const pages = doc.pages.filter((p) => p !== id)

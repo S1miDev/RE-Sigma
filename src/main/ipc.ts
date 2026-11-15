@@ -1,10 +1,12 @@
 // One ipcMain.handle per RefigApi method. Every argument is validated before use; the renderer is not trusted.
-import { dialog, ipcMain, type BrowserWindow } from 'electron'
+import { dialog, ipcMain, shell, type BrowserWindow } from 'electron'
 import fs from 'node:fs'
-import { API_KEYS, type RefigApi } from '../shared/api'
+import path from 'node:path'
+import { API_KEYS, type ExportKind, type RefigApi } from '../shared/api'
 import { imageType } from '../shared/image'
 import { svgToPdf } from './export'
 import { UUID } from './format/refig'
+import { listPlugins, readCode } from './plugins'
 import { sanitizeName, type ProjectStore } from './projects'
 
 const MB = 1024 ** 2
@@ -15,10 +17,26 @@ const id = (v: unknown) => (typeof v === 'string' && UUID.test(v) ? v : bad('id'
 const text = (v: unknown, max: number, what: string) => (typeof v === 'string' && v.length <= max ? v : bad(what))
 const bytes = (v: unknown, max: number, what: string) => (v instanceof Uint8Array && v.byteLength <= max ? v : bad(what))
 const isPng = (b: Uint8Array) => imageType(b) === 'image/png'
+const KINDS = ['png', 'jpg', 'webp', 'svg', 'pdf'] as const
+const MIME = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp' } as const
+const kindOf = (k: unknown) => (KINDS as readonly unknown[]).includes(k) ? (k as ExportKind) : bad('kind')
+/** Validated file contents for `kind`: raster bytes must have the right header, a PDF is printed from the SVG. */
+async function encode(kind: ExportKind, b: unknown): Promise<Uint8Array> {
+  const data = bytes(b, 256 * MB, 'bytes')
+  if (kind !== 'svg' && kind !== 'pdf' && imageType(data) !== MIME[kind]) bad('bytes')
+  return kind === 'pdf' ? await svgToPdf(Buffer.from(data).toString('utf8')) : data
+}
+const safeName = (v: unknown) => {
+  try {
+    return sanitizeName(text(v, 200, 'name'))
+  } catch {
+    return 'export'
+  }
+}
 
 type Handlers = { [K in keyof RefigApi]: (...args: unknown[]) => ReturnType<RefigApi[K]> | Awaited<ReturnType<RefigApi[K]>> }
 
-export function registerIpc(store: ProjectStore, getWindow: () => BrowserWindow | null) {
+export function registerIpc(store: ProjectStore, getWindow: () => BrowserWindow | null, pluginsDir: string) {
   const win = () => getWindow() ?? bad('window')
   const handlers: Handlers = {
     listProjects: () => store.list(),
@@ -55,23 +73,40 @@ export function registerIpc(store: ProjectStore, getWindow: () => BrowserWindow 
       return { path: r.filePath }
     },
     async exportImage(b, name, k) {
-      const kind = k === 'png' || k === 'svg' || k === 'pdf' ? k : bad('kind')
-      const data = bytes(b, 256 * MB, 'bytes')
-      if (kind === 'png' && !isPng(data)) bad('bytes')
-      let base = 'export'
-      try {
-        base = sanitizeName(text(name, 200, 'name'))
-      } catch {
-        // keep the fallback name
-      }
+      const kind = kindOf(k), data = await encode(kind, b)
       const r = await dialog.showSaveDialog(win(), {
         title: 'Export',
-        defaultPath: `${base}.${kind}`,
+        defaultPath: `${safeName(name)}.${kind}`,
         filters: [{ name: kind.toUpperCase(), extensions: [kind] }],
       })
       if (r.canceled || !r.filePath) return null
-      fs.writeFileSync(r.filePath, kind === 'pdf' ? await svgToPdf(Buffer.from(data).toString('utf8')) : data)
+      fs.writeFileSync(r.filePath, data)
       return { path: r.filePath }
+    },
+    async exportFiles(files) {
+      if (!Array.isArray(files) || !files.length || files.length > 200) bad('files')
+      const list = await Promise.all((files as { name: unknown; kind: unknown; bytes: unknown }[]).map(async (f) => {
+        const kind = kindOf(f?.kind)
+        return { base: safeName(f.name), kind, data: await encode(kind, f.bytes) }
+      }))
+      const r = await dialog.showOpenDialog(win(), { title: 'Export to folder', properties: ['openDirectory', 'createDirectory'] })
+      if (r.canceled || !r.filePaths[0]) return null
+      const taken = new Set<string>()
+      return list.map(({ base, kind, data }) => {
+        let name = `${base}.${kind}`
+        for (let i = 2; taken.has(name.toLowerCase()); i++) name = `${base} (${i}).${kind}`
+        taken.add(name.toLowerCase())
+        const file = path.join(r.filePaths[0], name)
+        fs.writeFileSync(file, data)
+        return file
+      })
+    },
+    openExternal: (url) => shell.openExternal(/^https?:\/\//.test(text(url, 2048, 'url')) ? (url as string) : bad('url')),
+    listPlugins: () => listPlugins(pluginsDir),
+    readPluginCode: (i) => readCode(pluginsDir, text(i, 64, 'id')),
+    async openPluginsFolder() {
+      fs.mkdirSync(pluginsDir, { recursive: true })
+      await shell.openPath(pluginsDir) // fixed path, nothing from the renderer
     },
   }
 

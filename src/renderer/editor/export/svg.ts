@@ -4,7 +4,7 @@ import { rgb } from '../canvas/color'
 import { gradientImage } from '../canvas/gradient'
 import { endMarks, grownBox, imageBox, hasPath, isMask, outlinedStroke, paintsOf, sidesPath, strokeGrow, strokeStyle, type Drawable } from '../canvas/paintPlan'
 import { fontOf, layoutText } from '../canvas/text'
-import { fmt as f, localMatrix, worldBox, worldMatrix } from '../model/geometry'
+import { fmt as f, localMatrix, worldBox, worldMatrix, type Box } from '../model/geometry'
 import { childrenOf } from '../model/ops'
 import { vectorScale } from '../model/path'
 import { arcPath, cornerPath } from '../model/shapes'
@@ -12,8 +12,8 @@ import { arcPath, cornerPath } from '../model/shapes'
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
 
 /** `imageUrl` maps an image hash to a data URL. The result's size is the nodes' bounding box on the page. */
-export function toSvg(doc: Document, ids: string[], imageUrl: (hash: string) => string | undefined, imageSize: (hash: string) => { w: number; h: number } | undefined = () => undefined): string {
-  const box = worldBox(doc, ids) ?? { x: 0, y: 0, w: 1, h: 1 }
+export function toSvg(doc: Document, ids: string[], imageUrl: (hash: string) => string | undefined, imageSize: (hash: string) => { w: number; h: number } | undefined = () => undefined, region?: Box): string {
+  const box = region ?? worldBox(doc, ids) ?? { x: 0, y: 0, w: 1, h: 1 }
   let defs = '', uid = 0
 
   /** A VECTOR's fill or outlined-stroke paths, scaled to the node's size; strokes keep their width under the scale. */

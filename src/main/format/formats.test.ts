@@ -81,6 +81,20 @@ test('refig keeps star, arc and corner fields and rejects bad ones', () => {
   expect(bad(arc.id, { arc: { start: 0, sweep: 90, inner: 5 } })).toThrow(/inner/)
 })
 
+test('refig keeps export settings and slices and rejects bad ones', () => {
+  const { doc, frame, text } = sampleDoc()
+  const r = makeNode('RECTANGLE', { parentId: frame.id, slice: true, width: 10, height: 10, exports: [{ suffix: '@2x', format: 'webp', scale: 2 }] })
+  doc.nodes[r.id] = r
+  const back = readRefig(writeRefig({ meta, document: doc, thumbnail: undefined, images: {} })).document
+  expect(back.nodes[r.id].slice).toBe(true)
+  expect(back.nodes[r.id].exports).toEqual([{ suffix: '@2x', format: 'webp', scale: 2 }])
+  const withExports = (exports: unknown) => () => validateDocument({ ...doc, nodes: { ...doc.nodes, [r.id]: { ...r, exports } as never } })
+  expect(withExports([{ suffix: '', format: 'gif', scale: 1 }])).toThrow(/format/)
+  expect(withExports([{ suffix: '', format: 'png', scale: 0 }])).toThrow(/scale/)
+  expect(withExports(Array(21).fill({ suffix: '', format: 'png', scale: 1 }))).toThrow(/exports/)
+  expect(validateDocument({ ...doc, nodes: { ...doc.nodes, [text.id]: { ...text, slice: true } } }).nodes[text.id].slice).toBeUndefined()
+})
+
 test('validateDocument rejects bad shapes, dangling parents and cycles', () => {
   const { doc, frame, text } = sampleDoc()
   expect(validateDocument(doc)).toEqual(doc)
@@ -222,3 +236,34 @@ test('figGradient keeps the width handle, and skips gradients it cannot represen
   expect(figGradient({ type: 'GRADIENT_LINEAR', stops, transform: { m00: 1e-7, m01: 0, m02: 0, m10: 0, m11: 1e-7, m12: 0 } })).toBeNull()
 })
 
+
+test('refig keeps prototype interactions and flow starts and rejects bad ones', () => {
+  const { doc, frame, text } = sampleDoc()
+  const it = { trigger: 'key', key: 'Enter', action: 'url', url: 'https://example.com', transition: 'slideLeft', duration: 200, easing: 'easeOut' } as const
+  doc.nodes[text.id] = { ...text, interactions: [it, { trigger: 'click', action: 'navigate', target: frame.id, transition: 'instant', duration: 0, easing: 'linear' }] }
+  doc.nodes[frame.id] = { ...frame, flowStart: true }
+  const back = readRefig(writeRefig({ meta, document: doc, thumbnail: undefined, images: {} })).document
+  expect(back.nodes[text.id].interactions).toEqual(doc.nodes[text.id].interactions)
+  expect(back.nodes[frame.id].flowStart).toBe(true)
+  const withIt = (i: unknown) => () => validateDocument({ ...doc, nodes: { ...doc.nodes, [text.id]: { ...text, interactions: [{ ...it, ...(i as object) }] } as never } })
+  expect(withIt({ trigger: 'drag' })).toThrow(/trigger/)
+  expect(withIt({ url: 'javascript:alert(1)' })).toThrow(/url/)
+  expect(withIt({ duration: -1 })).toThrow(/duration/)
+  expect(() => validateDocument({ ...doc, nodes: { ...doc.nodes, [text.id]: { ...text, interactions: Array(21).fill(it) } as never } })).toThrow(/interactions/)
+  expect(validateDocument({ ...doc, nodes: { ...doc.nodes, [text.id]: { ...text, flowStart: true } } }).nodes[text.id].flowStart).toBeUndefined()
+})
+
+test('refig keeps comments, reads files without them as empty, and rejects bad ones', () => {
+  const { doc } = sampleDoc(), page = doc.pages[0]
+  const c = { id: 'c1', page, x: 10, y: 20, text: 'hi', at: '2026-01-01T00:00:00.000Z', resolved: true, replies: [{ id: 'r1', text: 'yo', at: '2026-01-02T00:00:00.000Z' }] }
+  const back = readRefig(writeRefig({ meta, document: { ...doc, comments: [c] }, thumbnail: undefined, images: {} })).document
+  expect(back.comments).toEqual([c])
+  const { comments: _, ...old } = doc
+  expect(validateDocument(old).comments).toEqual([])
+  const bad = (x: object) => () => validateDocument({ ...doc, comments: [{ ...c, ...x }] })
+  expect(bad({ page: 'nope' })).toThrow(/comments.0.page/)
+  expect(bad({ x: Infinity })).toThrow(/comments.0.x/)
+  expect(bad({ text: 'a'.repeat(5001) })).toThrow(/text/)
+  expect(bad({ replies: [{ id: 'c1', text: 'dup', at: 'now' }] })).toThrow(/replies/)
+  expect(() => validateDocument({ ...doc, comments: Array(1001).fill(c) })).toThrow(/comments/)
+})

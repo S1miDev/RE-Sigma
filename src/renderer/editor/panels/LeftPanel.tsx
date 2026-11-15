@@ -1,12 +1,14 @@
 import { useState, type DragEvent } from 'react'
-import { isContainer, type Node } from '../../../shared/document'
-import { Icon, IconButton, type IconName } from '../../ui'
+import { isContainer, type Document, type Node } from '../../../shared/document'
+import { ColorField, Icon, IconButton, Input, NumberField, type IconName } from '../../ui'
 import { isMask } from '../canvas/paintPlan'
 import { zoomToFit } from '../canvas/viewport'
 import { addPage, childrenOf, moveTo, movePage, patch, removePage } from '../model/ops'
 import { deleteStyle, LINKS, renameStyle, updateStyleFrom, type Link } from '../model/styles'
+import { addMode, createCollection, createVariable, deleteCollection, deleteMode, deleteVariable, renameCollection, renameMode, renameVariable, setVariableValue } from '../model/variables'
 import { useEditor, useStore } from '../store'
 import { showPage } from '../tools'
+import { useContextMenu } from './ContextMenu'
 
 const TYPE_ICON: Record<Node['type'], IconName> = { PAGE: 'page', FRAME: 'frame', GROUP: 'group', RECTANGLE: 'rectangle', ELLIPSE: 'ellipse', LINE: 'line', TEXT: 'text', VECTOR: 'vector', BOOLEAN: 'boolean', STAR: 'star', POLYGON: 'polygon' }
 
@@ -36,6 +38,8 @@ export function LeftPanel() {
     <>
       <Pages />
       <Styles />
+      <Variables />
+      <Comments />
       <Layers />
     </>
   )
@@ -115,7 +119,83 @@ function Styles() {
   )
 }
 
+/** Collections of variables: modes as columns, one row per variable. Double click a name to rename it. */
+function Variables() {
+  const store = useStore(), collections = useEditor((s) => s.doc.collections)
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const name = (key: string, label: string, value: string, rename: (name: string) => (d: Document) => Document, className = '') =>
+    renaming === key ? (
+      <RenameInput label={label} value={value} onDone={(n) => { setRenaming(null); if (n) store.update(rename(n)) }} />
+    ) : (
+      <button type="button" className={`min-w-0 flex-1 truncate text-left ${className}`} title={label} onDoubleClick={() => setRenaming(key)}>{value}</button>
+    )
+  return (
+    <section aria-label="Variables" className="shrink-0 border-b border-line py-2">
+      <div className="flex h-6 items-center justify-between px-3">
+        <h3 className="text-[11px] font-semibold">Variables</h3>
+        <IconButton label="Add collection" icon="plus" onClick={() => store.update((d) => createCollection(d, `Collection ${d.collections.length + 1}`))} />
+      </div>
+      <div className="max-h-64 overflow-auto">
+        {collections.map((c) => (
+          <div key={c.id} role="group" aria-label={c.name} className="mt-1 border-t border-line/50 pt-1">
+            <div className="group flex h-7 items-center gap-1 px-3 font-semibold">
+              {name(`c:${c.id}`, 'Collection name', c.name, (n) => (d) => renameCollection(d, c.id, n))}
+              <IconButton label={`Add mode to ${c.name}`} icon="plus" onClick={() => store.update((d) => addMode(d, c.id, `Mode ${c.modes.length + 1}`))} />
+              <IconButton label={`Add color variable to ${c.name}`} icon="variable" onClick={() => store.update((d) => createVariable(d, c.id, 'COLOR', `Color ${c.variables.length + 1}`))} />
+              <IconButton label={`Add number variable to ${c.name}`} icon="style" onClick={() => store.update((d) => createVariable(d, c.id, 'NUMBER', `Number ${c.variables.length + 1}`))} />
+              <IconButton label={`Delete ${c.name}`} icon="x" onClick={() => store.update((d) => deleteCollection(d, c.id))} />
+            </div>
+            <div className="flex items-center gap-1 px-3 text-dim">
+              <span className="min-w-0 flex-1" />
+              {c.modes.map((m) => (
+                <span key={m.id} className="flex w-24 items-center gap-0.5">
+                  {name(`m:${m.id}`, 'Mode name', m.name, (n) => (d) => renameMode(d, c.id, m.id, n))}
+                  {c.modes.length > 1 && <IconButton label={`Delete mode ${m.name}`} icon="x" onClick={() => store.update((d) => deleteMode(d, c.id, m.id))} />}
+                </span>
+              ))}
+            </div>
+            {c.variables.map((v) => (
+              <div key={v.id} className="flex items-center gap-1 px-3 py-0.5">
+                {name(`v:${v.id}`, 'Variable name', v.name, (n) => (d) => renameVariable(d, v.id, n))}
+                {c.modes.map((m) => (
+                  <span key={m.id} className="flex w-24 items-center">
+                    {v.type === 'COLOR'
+                      ? <ColorField label={`${v.name} in ${m.name}`} color={v.values[m.id]} onChange={(color) => store.update((d) => setVariableValue(d, v.id, m.id, color), { key: `variable:${v.id}:${m.id}` })} />
+                      : <NumberField label={`${v.name} in ${m.name}`} className="w-full" value={v.values[m.id]} onChange={(n) => store.update((d) => setVariableValue(d, v.id, m.id, n), { key: `variable:${v.id}:${m.id}` })} />}
+                  </span>
+                ))}
+                <IconButton label={`Delete ${v.name}`} icon="x" onClick={() => store.update((d) => deleteVariable(d, v.id))} />
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 type Drop = { id: string; zone: 'above' | 'inside' | 'below' }
+
+/** The page's comment threads; click one to open its pin. */
+function Comments() {
+  const store = useStore(), all = useEditor((s) => s.doc.comments), pageId = useEditor((s) => s.pageId), showResolved = useEditor((s) => s.showResolved), open = useEditor((s) => s.openComment)
+  const list = all.filter((c) => c.page === pageId && (showResolved || !c.resolved))
+  return (
+    <section aria-label="Comments" className="shrink-0 border-b border-line py-2">
+      <div className="flex h-6 items-center justify-between px-3">
+        <h3 className="text-[11px] font-semibold">Comments</h3>
+        <label className="flex items-center gap-1 text-dim"><input type="checkbox" checked={showResolved} onChange={() => store.set({ showResolved: !showResolved })} /> Resolved</label>
+      </div>
+      <ul className="max-h-40 overflow-auto">
+        {list.map((c) => (
+          <li key={c.id}>
+            <button type="button" aria-pressed={open === c.id} onClick={() => store.set({ openComment: c.id, draft: null })} className={`block w-full truncate px-3 py-1 text-left hover:bg-hover ${c.resolved ? 'text-dim line-through' : ''}`}>{c.text}</button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
 
 function Layers() {
   const store = useStore()
@@ -123,6 +203,11 @@ function Layers() {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const [renaming, setRenaming] = useState<string | null>(null)
   const [drop, setDrop] = useState<Drop | null>(null)
+  const [filter, setFilter] = useState('')
+  const openMenu = useContextMenu()
+  const q = filter.trim().toLowerCase()
+  // While filtering, a row stays if it or anything under it matches, and everything is expanded so matches show.
+  const keeps = (n: Node): boolean => n.name.toLowerCase().includes(q) || childrenOf(doc, n.id).some(keeps)
 
   const zoneOf = (e: DragEvent, n: Node): Drop['zone'] => {
     const r = e.currentTarget.getBoundingClientRect(), f = r.height ? (e.clientY - r.top) / r.height : 0.5
@@ -138,8 +223,8 @@ function Layers() {
   }
 
   const rows = (parentId: string, depth: number): React.ReactNode =>
-    childrenOf(doc, parentId).toReversed().map((n) => {
-      const selected = selection.includes(n.id), kids = childrenOf(doc, n.id).length > 0, open = !collapsed.has(n.id)
+    childrenOf(doc, parentId).toReversed().filter((n) => !q || keeps(n)).map((n) => {
+      const selected = selection.includes(n.id), kids = childrenOf(doc, n.id).length > 0, open = q ? true : !collapsed.has(n.id)
       const mark = drop?.id === n.id ? (drop.zone === 'inside' ? 'outline outline-1 -outline-offset-1 outline-accent' : drop.zone === 'above' ? 'shadow-[inset_0_2px_0_var(--color-accent)]' : 'shadow-[inset_0_-2px_0_var(--color-accent)]') : ''
       return (
         <li key={n.id} role="treeitem" aria-selected={selected} aria-expanded={kids ? open : undefined} aria-label={n.name}>
@@ -151,6 +236,12 @@ function Layers() {
             onDrop={(e) => onDrop(e, n)}
             onClick={(e) => store.set({ selection: e.shiftKey || e.ctrlKey || e.metaKey ? (selected ? selection.filter((i) => i !== n.id) : [...selection, n.id]) : [n.id] })}
             onDoubleClick={() => setRenaming(n.id)}
+            onContextMenu={(e) => {
+              if (renaming === n.id) return // keep the text field's own menu
+              e.preventDefault()
+              if (!selected) store.set({ selection: [n.id] })
+              openMenu({ x: e.clientX, y: e.clientY })
+            }}
             style={{ paddingLeft: 8 + depth * 14 }}
             className={`group flex h-7 items-center gap-1 pr-2 ${selected ? 'bg-accent/30' : 'hover:bg-raised/60'} ${n.visible ? '' : 'text-dim'} ${mark}`}
           >
@@ -179,11 +270,15 @@ function Layers() {
     })
 
   const empty = childrenOf(doc, pageId).length === 0
+  const none = !empty && q !== '' && !childrenOf(doc, pageId).some(keeps)
   return (
     <section aria-label="Layers" className="flex min-h-0 flex-1 flex-col py-2">
       <h3 className="flex h-6 items-center px-3 text-[11px] font-semibold">Layers</h3>
+      {!empty && <div className="px-3 pt-1"><Input aria-label="Filter layers" className="w-full" placeholder="Filter layers" value={filter} onChange={(e) => setFilter(e.target.value)} /></div>}
       {empty ? (
         <p className="px-3 py-2 text-dim">This page is empty. Pick a tool below and draw on the canvas.</p>
+      ) : none ? (
+        <p className="px-3 py-2 text-dim">No layers match.</p>
       ) : (
         <ul role="tree" aria-label="Layers" className="mt-1 min-h-0 flex-1 overflow-auto">{rows(pageId, 0)}</ul>
       )}
