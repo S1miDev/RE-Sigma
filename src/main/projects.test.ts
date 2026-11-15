@@ -2,8 +2,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import { makeNode, solid } from '../shared/document'
+import { makeNode, solid, type Paint } from '../shared/document'
 import { createProjectStore, sanitizeName, type ProjectStore } from './projects'
+import { readRefig } from './format/refig'
 
 let dir: string, outside: string, store: ProjectStore
 const trashed: string[] = []
@@ -119,17 +120,21 @@ test('a hand-copied file with a duplicate id gets a fresh id on open', () => {
   const b = list.find((s) => s.name === 'B')!
   expect(b.id).not.toBe(a.id)
   expect(store.list().find((s) => s.name === 'B')!.id).toBe(b.id) // stable within the session
-  store.open(b.id)
+  expect(newStore().list().find((s) => s.name === 'B')!.id).toBe(b.id) // and across restarts, even before it is opened
+  expect(() => store.open(b.id) && store.readLibrary(b.id)).toThrow(/own library/)
   expect(newStore().list().map((s) => s.id).sort()).toEqual([a.id, b.id].sort())
 })
 
-test('export copies the file; importing it back conflicts; replace / keep both / cancel', async () => {
+test('export writes the project without its versions; importing it back conflicts; replace / keep both / cancel', async () => {
   const a = store.create('A')
   const { document } = withRect(a.id)
   store.save(a.id, document)
+  store.saveVersion(a.id, 'Private', document)
   const exported = path.join(outside, 'A.refig')
   store.exportTo(a.id, exported)
-  expect(fs.readFileSync(exported).equals(fs.readFileSync(path.join(dir, 'A.refig')))).toBe(true)
+  const out = readRefig(fs.readFileSync(exported))
+  expect(out.document).toEqual(store.open(a.id).document)
+  expect(out.history ?? []).toEqual([])
 
   const conflict = () => {
     const r = store.importFile(exported)
@@ -172,4 +177,104 @@ test('imports a Figma file and reports omitted layers', () => {
   expect(r.omitted?.['INSTANCE override']).toBeGreaterThan(0)
   expect(store.open(r.summary.id).document.pages).toHaveLength(4)
   expect(store.importFile(fixture).status).toBe('conflict') // same name
+})
+
+// --- version history ---
+const MIN = 60_000
+function clocked() {
+  let t = Date.UTC(2026, 10, 15)
+  const st = createProjectStore(dir, { appVersion: 'test', trash: async (f) => fs.rmSync(f), now: () => t })
+  return { st, tick: (ms: number) => void (t += ms) }
+}
+const edit = (st: ProjectStore, id: string, w: number) => {
+  const { document } = st.open(id)
+  const r = Object.values(document.nodes).find((n) => n.type === 'RECTANGLE') ?? makeNode('RECTANGLE', { parentId: document.pages[0] })
+  document.nodes[r.id] = { ...r, width: w }
+  return document
+}
+
+test('autosaves add a version at most every 10 minutes, only when the document changed, and survive a restart', () => {
+  const { st, tick } = clocked(), p = st.create('H')
+  st.save(p.id, edit(st, p.id, 1))
+  expect(st.listVersions(p.id)).toHaveLength(0) // not right after opening: the first one comes 10 minutes in
+  tick(10 * MIN)
+  st.save(p.id, edit(st, p.id, 2))
+  expect(st.listVersions(p.id)).toHaveLength(1)
+  tick(MIN)
+  st.save(p.id, edit(st, p.id, 3))
+  expect(st.listVersions(p.id)).toHaveLength(1)
+  tick(10 * MIN)
+  st.save(p.id, edit(st, p.id, 3))
+  expect(st.listVersions(p.id)).toHaveLength(2)
+  tick(11 * MIN)
+  st.save(p.id, edit(st, p.id, 3)) // same as the newest version: nothing new
+  expect(st.listVersions(p.id)).toHaveLength(2)
+  const again = createProjectStore(dir, { appVersion: 'test', trash: async () => undefined })
+  again.list()
+  expect(again.listVersions(p.id).map((v) => v.auto)).toEqual([true, true])
+})
+
+test('automatic versions are capped at 20, named ones are kept', () => {
+  const { st, tick } = clocked(), p = st.create('Cap')
+  const named = st.saveVersion(p.id, '  Milestone ', edit(st, p.id, 5))
+  expect(named[0]).toMatchObject({ name: 'Milestone', auto: false })
+  for (let i = 0; i < 25; i++) {
+    tick(11 * MIN)
+    st.save(p.id, edit(st, p.id, 10 + i))
+  }
+  const v = st.listVersions(p.id)
+  expect(v.filter((x) => x.auto)).toHaveLength(20)
+  expect(v.filter((x) => !x.auto)).toHaveLength(1)
+})
+
+test('an auto safety copy works at the named cap, rotates like an autosave and is skipped when unchanged', () => {
+  const { st } = clocked(), p = st.create('Full')
+  for (let i = 0; i < 50; i++) st.saveVersion(p.id, `v${i}`, edit(st, p.id, i + 1))
+  expect(() => st.saveVersion(p.id, 'one more', edit(st, p.id, 99))).toThrow(/at most 50/)
+  const v = st.saveVersion(p.id, 'Before restore', edit(st, p.id, 99), true)
+  expect(v.filter((x) => x.auto)).toMatchObject([{ name: 'Before restore' }])
+  expect(st.saveVersion(p.id, 'Before restore', edit(st, p.id, 99), true)).toHaveLength(51) // same document: no second copy
+})
+
+test('saveVersion validates the name, getVersion and deleteVersion work, unknown ids are rejected', () => {
+  const { st } = clocked(), p = st.create('V')
+  expect(() => st.saveVersion(p.id, '   ', edit(st, p.id, 1))).toThrow(/1–100/)
+  const [v] = st.saveVersion(p.id, 'One', edit(st, p.id, 7))
+  expect(Object.values(st.getVersion(p.id, v.id).document.nodes).find((n) => n.type === 'RECTANGLE')).toMatchObject({ width: 7 })
+  expect(() => st.getVersion(p.id, '00000000-0000-0000-0000-000000000000')).toThrow(/not found/)
+  expect(st.deleteVersion(p.id, v.id)).toEqual([])
+  expect(() => st.deleteVersion(p.id, v.id)).toThrow(/not found/)
+})
+
+test('a version keeps its images after the current document stops using them; deleting the version frees them', () => {
+  const { st } = clocked(), p = st.create('Img')
+  const doc = edit(st, p.id, 1) // opens the project; addImage must come after
+  const hash = st.addImage(p.id, PNG)
+  const rect = Object.values(doc.nodes).find((n) => n.type === 'RECTANGLE')!
+  doc.nodes[rect.id] = { ...rect, fills: [{ type: 'IMAGE', visible: true, hash } as Paint] }
+  const [v] = st.saveVersion(p.id, 'With image', doc)
+  const bare = st.open(p.id).document
+  bare.nodes[rect.id] = { ...bare.nodes[rect.id], fills: [] }
+  st.save(p.id, bare)
+  const fresh = createProjectStore(dir, { appVersion: 'test', trash: async () => undefined })
+  fresh.list()
+  expect(Object.keys(fresh.getVersion(p.id, v.id).images)).toEqual([hash])
+  fresh.deleteVersion(p.id, v.id)
+  expect(Object.keys(fresh.open(p.id).images)).toEqual([])
+})
+
+test('duplicate keeps the versions; the project list never loads them', () => {
+  const { st } = clocked(), p = st.create('Dup')
+  st.saveVersion(p.id, 'Keep', edit(st, p.id, 3))
+  const copy = st.duplicate(p.id)
+  expect(st.listVersions(copy.id).map((v) => v.name)).toEqual(['Keep'])
+})
+
+test('readLibrary returns another project without changing the open one', () => {
+  const { st } = clocked(), a = st.create('A'), b = st.create('B')
+  st.save(a.id, edit(st, a.id, 4))
+  st.open(b.id)
+  const lib = st.readLibrary(a.id)
+  expect(Object.values(lib.document.nodes).some((n) => n.type === 'RECTANGLE')).toBe(true)
+  expect(st.listVersions(b.id)).toEqual([])
 })

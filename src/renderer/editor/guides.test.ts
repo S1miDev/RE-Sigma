@@ -5,7 +5,7 @@ import { FORMAT_VERSION, makeNode, type LayoutGrid } from '../../shared/document
 import { guideAt, RULER, tickStep } from './canvas/aids'
 import { drawOverlay } from './canvas/overlay'
 import { runCommand } from './commands'
-import { insert, patch } from './model/ops'
+import { childrenOf, insert, patch } from './model/ops'
 import { applyStyle, createStyle, updateStyleFrom } from './model/styles'
 import { at, drag, open } from './testkit'
 
@@ -109,4 +109,14 @@ test('the overlay draws rulers, guides, pixel grid and layout grids without erro
     drawOverlay(ctx, store.get(), 1)
     expect(calls.filter((c) => c.startsWith('fillText')).length).toBeGreaterThan(0) // ruler labels
   }
+})
+
+test('drawing the overlay leaves the page children intact (it once emptied the cached list, blanking the canvas)', () => {
+  const { store, page } = open()
+  const before = childrenOf(store.get().doc, page).length
+  expect(before).toBeGreaterThan(0)
+  const ctx = new Proxy({ canvas: { width: 800, height: 600 } }, { get: (t, k) => (k in t ? (t as never)[k] : () => {}), set: () => true }) as unknown as CanvasRenderingContext2D
+  drawOverlay(ctx, store.get(), 1)
+  drawOverlay(ctx, store.get(), 1)
+  expect(childrenOf(store.get().doc, page).length).toBe(before)
 })

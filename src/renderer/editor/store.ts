@@ -6,6 +6,8 @@ import { errorText } from '../util'
 import { thumbnail } from './canvas/render'
 import type { Guides } from './canvas/snap'
 import type { View } from './canvas/viewport'
+import { preloadFonts } from './fontFile'
+import { pendingText, resyncBooleans } from './model/boolean'
 import type { Box } from './model/geometry'
 import type { Edit } from './model/ops'
 import { normalize } from './normalize'
@@ -121,6 +123,13 @@ export function createEditorStore(opened: OpenedProject, api: RefigApi) {
     lastStep = step
     lastAt = now
     commit(doc, select ? { selection: select } : {})
+    // booleans skip text whose fonts aren't loaded; once they are, bring those booleans up to date (no undo step)
+    const pending = Object.values(doc.nodes).filter((n) => n.type === 'BOOLEAN').flatMap((b) => pendingText(doc, b.id))
+    if (pending.length) void preloadFonts(pending).then((warning) => {
+      const d = resyncBooleans(state.doc)
+      if (d !== state.doc) commit(d)
+      if (warning) set({ toast: warning })
+    }, () => undefined) // nothing loaded: the booleans keep leaving the text out, and the next edit tries again
   }
   function travel(from: Snapshot[], to: Snapshot[]) {
     const s = from.pop()

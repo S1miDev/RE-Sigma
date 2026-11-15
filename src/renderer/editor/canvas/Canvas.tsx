@@ -33,13 +33,24 @@ export function Canvas() {
   useEffect(() => {
     const canvas = ref.current!, ctx = canvas.getContext('2d'), box = canvas.parentElement!
     let frame = 0
+    // The page is rendered into `scene` only when what it shows changed; overlay-only updates (marquee, hover, selection) just copy it.
+    const scene = document.createElement('canvas'), sctx = scene.getContext('2d')
+    let drawn: unknown[] = []
     const draw = () => {
       frame = 0
-      if (!ctx) return
+      if (!ctx || !sctx) return
       const s = store.get(), dpr = window.devicePixelRatio || 1
-      renderPage(ctx, s.doc, s.pageId, s.view, dpr, store.image)
+      const key = [s.doc, s.pageId, s.view, s.tick, dpr, canvas.width, canvas.height]
+      if (key.some((k, i) => k !== drawn[i])) {
+        if (scene.width !== canvas.width || scene.height !== canvas.height) [scene.width, scene.height] = [canvas.width, canvas.height]
+        renderPage(sctx, s.doc, s.pageId, s.view, dpr, store.image)
+        drawn = key
+      }
+      ctx.setTransform(1, 0, 0, 1, 0, 0)
+      ctx.drawImage(scene, 0, 0)
       drawOverlay(ctx, s, dpr, store.image)
     }
+    const fontsLoaded = () => { drawn = []; schedule() }
     const schedule = () => (frame ||= requestAnimationFrame(draw))
     const resize = () => {
       const r = box.getBoundingClientRect(), dpr = window.devicePixelRatio || 1, first = !store.get().size.w
@@ -81,7 +92,7 @@ export function Canvas() {
     window.addEventListener('keydown', alt)
     window.addEventListener('keyup', alt)
     window.addEventListener('blur', release)
-    document.fonts?.addEventListener?.('loadingdone', schedule) // redraw once the bundled font is ready
+    document.fonts?.addEventListener?.('loadingdone', fontsLoaded) // redraw once the bundled font is ready
     const unsubscribe = store.subscribe(schedule)
     schedule()
     return () => {
@@ -94,7 +105,7 @@ export function Canvas() {
       window.removeEventListener('keydown', alt)
       window.removeEventListener('keyup', alt)
       window.removeEventListener('blur', release)
-      document.fonts?.removeEventListener?.('loadingdone', schedule)
+      document.fonts?.removeEventListener?.('loadingdone', fontsLoaded)
     }
   }, [store])
 

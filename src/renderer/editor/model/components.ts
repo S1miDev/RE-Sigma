@@ -1,6 +1,7 @@
 // Components: an instance's subtree mirrors its main component's, except for the fields each instance node overrides.
-import { OVERRIDABLE, type Document, type Node } from '../../../shared/document'
-import { addAutoLayout, childrenOf, depth, duplicate, follow, group, lineage, nextName, put, remove, topLevel, type Edit } from './ops'
+import { makeNode, OVERRIDABLE, type Document, type Node } from '../../../shared/document'
+import { apply, invert, worldMatrix } from './geometry'
+import { addAutoLayout, childrenOf, depth, duplicate, follow, group, insert, lineage, nextName, put, remove, topLevel, type Edit } from './ops'
 
 type Key = (typeof OVERRIDABLE)[number]
 /** An instance root's own place in the document; never taken from the main. */
@@ -156,6 +157,36 @@ export const variantsOf = (doc: Document, setId: string) => childrenOf(doc, setI
 export const setOf = (doc: Document, mainId: string): Node | undefined => {
   const p = doc.nodes[doc.nodes[mainId]?.parentId ?? '']
   return p?.componentSet ? p : undefined
+}
+
+/** A new instance of a main component (a set's first variant for a set), unplaced: x/y 0, no parent. `at` is the node it is placed beside. */
+export function newInstance(doc: Document, pickedId: string): { node: Node; at: Node } {
+  const picked = doc.nodes[pickedId], main = picked.componentSet ? variantsOf(doc, picked.id)[0] : picked, at = setOf(doc, main.id) ?? main
+  return { at, node: makeNode('FRAME', { name: at.name, instanceOf: main.id, width: main.width, height: main.height, rotation: at.rotation }) }
+}
+
+/** Where a dropped instance of `pickedId` goes: the nearest frame at or above the hit node that isn't part of an instance or of the picked component itself; else the page. */
+export function dropParent(doc: Document, pageId: string, hitId: string | null, pickedId: string): string {
+  let best: string | null = null
+  for (let n = hitId ? doc.nodes[hitId] : undefined; n && n.type !== 'PAGE'; n = n.parentId ? doc.nodes[n.parentId] : undefined) {
+    if (n.instanceOf || n.ref || n.id === pickedId) best = null // inside an instance, or would contain itself
+    else if (!best && n.type === 'FRAME') best = n.id
+  }
+  return best ?? pageId
+}
+
+/** Puts an instance of a component or set into `parentId` (a page or a frame), centred on the page point `c`. */
+export function instantiate(doc: Document, pickedId: string, parentId: string, c: { x: number; y: number }): Edit {
+  const picked = doc.nodes[pickedId]
+  if (!picked || !(picked.component || (picked.componentSet && variantsOf(doc, pickedId).length)) || !doc.nodes[parentId]) return { doc, ids: [] }
+  const { node } = newInstance(doc, pickedId), at = apply(invert(worldMatrix(doc, parentId)), c)
+  return { doc: insert(doc, { ...node, x: at.x - node.width / 2, y: at.y - node.height / 2 }, parentId), ids: [node.id] }
+}
+
+/** Top-level components and sets per page (not variants, not components nested in components), for the Assets panel. */
+export function assetsOf(doc: Document): { page: Node; items: Node[] }[] {
+  const walk = (id: string, out: Node[]) => { for (const n of childrenOf(doc, id)) { if (n.component || n.componentSet) out.push(n); else walk(n.id, out) } }
+  return doc.pages.map((id) => { const items: Node[] = []; walk(id, items); return { page: doc.nodes[id], items } }).filter((g) => g.items.length)
 }
 
 /** Wraps main components that share a parent in a component set laid out in a row. Returns the set's id. */

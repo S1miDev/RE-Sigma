@@ -267,3 +267,36 @@ test('refig keeps comments, reads files without them as empty, and rejects bad o
   expect(bad({ replies: [{ id: 'c1', text: 'dup', at: 'now' }] })).toThrow(/replies/)
   expect(() => validateDocument({ ...doc, comments: Array(1001).fill(c) })).toThrow(/comments/)
 })
+
+const VID = '22222222-2222-2222-2222-222222222222'
+test('history entries round-trip, load oldest first, and strangers in history/ are still rejected', () => {
+  const doc = emptyDocument()
+  const history = [
+    { id: VID, at: '2026-01-03T00:00:00.000Z', auto: true, document: doc },
+    { id: '33333333-3333-3333-3333-333333333333', name: 'Milestone', at: '2026-01-02T00:00:00.000Z', auto: false, document: doc },
+  ]
+  const back = readRefig(writeRefig({ meta, document: doc, images: {}, history }))
+  expect(back.history?.map((h) => h.name ?? 'auto')).toEqual(['Milestone', 'auto'])
+  expect(readRefig(writeRefig({ meta, document: doc, images: {} })).history).toEqual([])
+  const ok = { 'meta.json': strToU8(JSON.stringify(meta)), 'document.json': strToU8(JSON.stringify(doc)) }
+  expect(() => readRefig(zipSync({ ...ok, 'history/evil.json': strToU8('{}') }))).toThrow(/Unexpected entry/)
+  // a damaged version is skipped; the project still opens
+  const wrongId = strToU8(JSON.stringify({ id: 'other', at: history[0].at, auto: true, document: doc }))
+  const badDoc = strToU8(JSON.stringify({ ...history[0], document: { ...doc, pages: [] } }))
+  expect(readRefig(zipSync({ ...ok, [`history/${VID}.json`]: wrongId })).history).toEqual([])
+  expect(readRefig(zipSync({ ...ok, [`history/${VID}.json`]: badDoc })).history).toEqual([])
+  expect(readRefig(zipSync({ ...ok, 'history/': new Uint8Array() })).history).toEqual([])
+  const mixed = readRefig(zipSync({ ...ok, [`history/${VID}.json`]: badDoc, [`history/${history[1].id}.json`]: strToU8(JSON.stringify(history[1])) }))
+  expect(mixed.history?.map((h) => h.name)).toEqual(['Milestone'])
+})
+
+test('libraries are validated and kept; files from before version 19 read with none', () => {
+  const doc = emptyDocument(), lib = { projectId: VID, name: 'Kit', links: { a1: 'b1', page: 'p-1' } }
+  expect(validateDocument({ ...doc, libraries: [lib] }).libraries).toEqual([lib])
+  const { libraries: _, ...old } = doc
+  expect(validateDocument({ ...old, formatVersion: 18 }).libraries).toEqual([])
+  expect(() => validateDocument({ ...doc, libraries: [{ ...lib, projectId: 'nope' }] })).toThrow(/projectId/)
+  expect(() => validateDocument({ ...doc, libraries: [{ ...lib, links: { __proto__x: 'a' } }] })).toThrow(/links/)
+  expect(() => validateDocument({ ...doc, libraries: [{ ...lib, links: { a: 7 } }] })).toThrow(/links/)
+  expect(() => validateDocument({ ...doc, libraries: 'x' })).toThrow(/libraries/)
+})

@@ -447,7 +447,7 @@ test('the page has no Node access and only the contract API', async () => {
   expect(seen).toEqual({ require: 'undefined', process: 'undefined', keys: [...API_KEYS].sort(), types: ['function'], inlineScriptRan: false })
   // bad arguments are rejected in main, before any file access
   await expect(page.evaluate(() => window.refig.openProject('../../secrets'))).rejects.toThrow(/Invalid argument: id/)
-  await expect(page.evaluate(() => window.refig.saveProject('00000000-0000-0000-0000-000000000000', { formatVersion: 18, pages: [], nodes: {}, styles: [], collections: [], comments: [] }))).rejects.toThrow(/not found|Invalid/)
+  await expect(page.evaluate(() => window.refig.saveProject('00000000-0000-0000-0000-000000000000', { formatVersion: 19, pages: [], nodes: {}, styles: [], collections: [], comments: [], libraries: [] }))).rejects.toThrow(/not found|Invalid/)
 })
 
 test('text: typing and a bold selection export as styled spans', async () => {

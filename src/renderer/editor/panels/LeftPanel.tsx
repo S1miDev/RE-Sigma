@@ -1,8 +1,9 @@
-import { useState, type DragEvent } from 'react'
+import { createContext, memo, useContext, useMemo, useState, type DragEvent } from 'react'
 import { isContainer, type Document, type Node } from '../../../shared/document'
 import { ColorField, Icon, IconButton, Input, NumberField, type IconName } from '../../ui'
 import { isMask } from '../canvas/paintPlan'
-import { zoomToFit } from '../canvas/viewport'
+import { toWorld, zoomToFit } from '../canvas/viewport'
+import { assetsOf, instantiate } from '../model/components'
 import { addPage, childrenOf, moveTo, movePage, patch, removePage } from '../model/ops'
 import { deleteStyle, LINKS, renameStyle, updateStyleFrom, type Link } from '../model/styles'
 import { addMode, createCollection, createVariable, deleteCollection, deleteMode, deleteVariable, renameCollection, renameMode, renameVariable, setVariableValue } from '../model/variables'
@@ -10,6 +11,7 @@ import { useEditor, useStore } from '../store'
 import { showPage } from '../tools'
 import { useContextMenu } from './ContextMenu'
 
+export const ASSET_TYPE = 'application/x-refig-asset'
 const TYPE_ICON: Record<Node['type'], IconName> = { PAGE: 'page', FRAME: 'frame', GROUP: 'group', RECTANGLE: 'rectangle', ELLIPSE: 'ellipse', LINE: 'line', TEXT: 'text', VECTOR: 'vector', BOOLEAN: 'boolean', STAR: 'star', POLYGON: 'polygon' }
 
 /** Inline rename field: Enter or blur commits a non-empty name, Escape cancels. */
@@ -39,6 +41,7 @@ export function LeftPanel() {
       <Pages />
       <Styles />
       <Variables />
+      <Assets />
       <Comments />
       <Layers />
     </>
@@ -174,6 +177,46 @@ function Variables() {
   )
 }
 
+/** Every component in the document (library copies included), grouped by page. Click puts an instance at the viewport centre; drag drops one on the canvas. */
+function Assets() {
+  const store = useStore(), doc = useEditor((s) => s.doc)
+  const [filter, setFilter] = useState('')
+  const groups = useMemo(() => assetsOf(doc), [doc.nodes, doc.pages]) // eslint-disable-line react-hooks/exhaustive-deps -- assets depend only on these
+  if (!groups.length) return null
+  const q = filter.trim().toLowerCase()
+  const place = (id: string) => {
+    const { view, size, pageId } = store.get(), c = toWorld(view, { x: size.w / 2, y: size.h / 2 })
+    store.update((d) => instantiate(d, id, pageId, c))
+  }
+  return (
+    <section aria-label="Assets" className="shrink-0 border-b border-line py-2">
+      <div className="flex h-6 items-center px-3"><h3 className="text-[11px] font-semibold">Assets</h3></div>
+      <div className="px-3 pt-1"><Input aria-label="Filter assets" className="w-full" placeholder="Filter assets" value={filter} onChange={(e) => setFilter(e.target.value)} /></div>
+      <div className="mt-1 max-h-48 overflow-auto">
+        {groups.map(({ page, items }) => {
+          const shown = items.filter((n) => n.name.toLowerCase().includes(q))
+          return shown.length > 0 && (
+            <div key={page.id} role="group" aria-label={page.name}>
+              <div className="px-3 pt-1 text-dim">{page.name}</div>
+              <ul>
+                {shown.map((n) => (
+                  <li key={n.id}>
+                    <button type="button" draggable className="flex h-7 w-full items-center gap-1 px-3 text-left hover:bg-raised/60" title="Click to insert, or drag onto the canvas"
+                      onClick={() => place(n.id)}
+                      onDragStart={(e) => { e.dataTransfer.effectAllowed = 'copy'; e.dataTransfer.setData(ASSET_TYPE, n.id) }}>
+                      <Icon name="component" className="text-[#9747ff]" /><span className="min-w-0 flex-1 truncate">{n.name}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
 type Drop = { id: string; zone: 'above' | 'inside' | 'below' }
 
 /** The page's comment threads; click one to open its pin. */
@@ -197,44 +240,80 @@ function Comments() {
   )
 }
 
+/** What every layer row needs from the tree. Changes only on edits and tree interactions, not on selection changes. */
+interface Tree {
+  doc: Document; q: string; collapsed: ReadonlySet<string>; renaming: string | null; drop: Drop | null
+  keeps(n: Node): boolean; zoneOf(e: DragEvent, n: Node): Drop['zone']; onDrop(e: DragEvent, n: Node): void
+  setCollapsed(c: ReadonlySet<string>): void; setRenaming(id: string | null): void; setDrop(d: Drop | null): void
+}
+const TreeContext = createContext<Tree | null>(null)
+
 function Layers() {
   const store = useStore()
-  const doc = useEditor((s) => s.doc), pageId = useEditor((s) => s.pageId), selection = useEditor((s) => s.selection)
+  const doc = useEditor((s) => s.doc), pageId = useEditor((s) => s.pageId)
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const [renaming, setRenaming] = useState<string | null>(null)
   const [drop, setDrop] = useState<Drop | null>(null)
   const [filter, setFilter] = useState('')
-  const openMenu = useContextMenu()
   const q = filter.trim().toLowerCase()
-  // While filtering, a row stays if it or anything under it matches, and everything is expanded so matches show.
-  const keeps = (n: Node): boolean => n.name.toLowerCase().includes(q) || childrenOf(doc, n.id).some(keeps)
+  const tree = useMemo<Tree>(() => {
+    // While filtering, a row stays if it or anything under it matches, and everything is expanded so matches show.
+    const keeps = (n: Node): boolean => n.name.toLowerCase().includes(q) || childrenOf(doc, n.id).some(keeps)
+    const zoneOf = (e: DragEvent, n: Node): Drop['zone'] => {
+      const r = e.currentTarget.getBoundingClientRect(), f = r.height ? (e.clientY - r.top) / r.height : 0.5
+      if (isContainer(n)) return f < 0.25 ? 'above' : f > 0.75 ? 'below' : 'inside'
+      return f < 0.5 ? 'above' : 'below'
+    }
+    // The list shows the top-most layer first, so "above" a row means higher in z-order.
+    const onDrop = (e: DragEvent, n: Node) => {
+      e.preventDefault()
+      const zone = zoneOf(e, n), ids = store.get().selection
+      setDrop(null)
+      store.update((d) => (zone === 'inside' ? moveTo(d, ids, n.id) : moveTo(d, ids, n.parentId!, zone === 'above' ? { after: n.id } : { before: n.id })))
+    }
+    return { doc, q, collapsed, renaming, drop, keeps, zoneOf, onDrop, setCollapsed, setRenaming, setDrop }
+  }, [doc, q, collapsed, renaming, drop, store])
 
-  const zoneOf = (e: DragEvent, n: Node): Drop['zone'] => {
-    const r = e.currentTarget.getBoundingClientRect(), f = r.height ? (e.clientY - r.top) / r.height : 0.5
-    if (isContainer(n)) return f < 0.25 ? 'above' : f > 0.75 ? 'below' : 'inside'
-    return f < 0.5 ? 'above' : 'below'
-  }
-  // The list shows the top-most layer first, so "above" a row means higher in z-order.
-  const onDrop = (e: DragEvent, n: Node) => {
-    e.preventDefault()
-    const zone = zoneOf(e, n), ids = store.get().selection
-    setDrop(null)
-    store.update((d) => (zone === 'inside' ? moveTo(d, ids, n.id) : moveTo(d, ids, n.parentId!, zone === 'above' ? { after: n.id } : { before: n.id })))
-  }
+  const empty = childrenOf(doc, pageId).length === 0
+  const none = !empty && q !== '' && !childrenOf(doc, pageId).some(tree.keeps)
+  return (
+    <section aria-label="Layers" className="flex min-h-0 flex-1 flex-col py-2">
+      <h3 className="flex h-6 items-center px-3 text-[11px] font-semibold">Layers</h3>
+      {!empty && <div className="px-3 pt-1"><Input aria-label="Filter layers" className="w-full" placeholder="Filter layers" value={filter} onChange={(e) => setFilter(e.target.value)} /></div>}
+      {empty ? (
+        <p className="px-3 py-2 text-dim">This page is empty. Pick a tool below and draw on the canvas.</p>
+      ) : none ? (
+        <p className="px-3 py-2 text-dim">No layers match.</p>
+      ) : (
+        <TreeContext.Provider value={tree}>
+          <ul role="tree" aria-label="Layers" className="mt-1 min-h-0 flex-1 overflow-auto"><LayerRows parentId={pageId} depth={0} /></ul>
+        </TreeContext.Provider>
+      )}
+    </section>
+  )
+}
 
-  const rows = (parentId: string, depth: number): React.ReactNode =>
-    childrenOf(doc, parentId).toReversed().filter((n) => !q || keeps(n)).map((n) => {
-      const selected = selection.includes(n.id), kids = childrenOf(doc, n.id).length > 0, open = q ? true : !collapsed.has(n.id)
+function LayerRows({ parentId, depth }: { parentId: string; depth: number }) {
+  const { doc, q, keeps } = useContext(TreeContext)!
+  return childrenOf(doc, parentId).toReversed().filter((n) => !q || keeps(n)).map((n) => <LayerRow key={n.id} n={n} depth={depth} />)
+}
+
+/** One layer and its children. Watches only its own selected state, so a selection change re-renders just the rows that flip. */
+const LayerRow = memo(function LayerRow({ n, depth }: { n: Node; depth: number }) {
+  const store = useStore(), openMenu = useContextMenu()
+  const { doc, q, collapsed, renaming, drop, zoneOf, onDrop, setCollapsed, setRenaming, setDrop } = useContext(TreeContext)!
+  const selected = useEditor((s) => s.selection.includes(n.id))
+      const kids = childrenOf(doc, n.id).length > 0, open = q ? true : !collapsed.has(n.id)
       const mark = drop?.id === n.id ? (drop.zone === 'inside' ? 'outline outline-1 -outline-offset-1 outline-accent' : drop.zone === 'above' ? 'shadow-[inset_0_2px_0_var(--color-accent)]' : 'shadow-[inset_0_-2px_0_var(--color-accent)]') : ''
       return (
-        <li key={n.id} role="treeitem" aria-selected={selected} aria-expanded={kids ? open : undefined} aria-label={n.name}>
+        <li role="treeitem" aria-selected={selected} aria-expanded={kids ? open : undefined} aria-label={n.name}>
           <div
             draggable={renaming !== n.id}
             onDragStart={(e) => { if (!selected) store.set({ selection: [n.id] }); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', n.name) }}
             onDragOver={(e) => { e.preventDefault(); const zone = zoneOf(e, n); if (drop?.id !== n.id || drop.zone !== zone) setDrop({ id: n.id, zone }) }}
             onDragLeave={() => setDrop(null)}
             onDrop={(e) => onDrop(e, n)}
-            onClick={(e) => store.set({ selection: e.shiftKey || e.ctrlKey || e.metaKey ? (selected ? selection.filter((i) => i !== n.id) : [...selection, n.id]) : [n.id] })}
+            onClick={(e) => { const selection = store.get().selection; store.set({ selection: e.shiftKey || e.ctrlKey || e.metaKey ? (selected ? selection.filter((i) => i !== n.id) : [...selection, n.id]) : [n.id] }) }}
             onDoubleClick={() => setRenaming(n.id)}
             onContextMenu={(e) => {
               if (renaming === n.id) return // keep the text field's own menu
@@ -264,24 +343,7 @@ function Layers() {
               <IconButton label={n.visible ? `Hide ${n.name}` : `Show ${n.name}`} icon={n.visible ? 'eye' : 'eyeOff'} aria-pressed={!n.visible} onClick={() => store.update((d) => patch(d, [n.id], { visible: !n.visible }))} />
             </span>
           </div>
-          {kids && open && <ul role="group">{rows(n.id, depth + 1)}</ul>}
+          {kids && open && <ul role="group"><LayerRows parentId={n.id} depth={depth + 1} /></ul>}
         </li>
       )
-    })
-
-  const empty = childrenOf(doc, pageId).length === 0
-  const none = !empty && q !== '' && !childrenOf(doc, pageId).some(keeps)
-  return (
-    <section aria-label="Layers" className="flex min-h-0 flex-1 flex-col py-2">
-      <h3 className="flex h-6 items-center px-3 text-[11px] font-semibold">Layers</h3>
-      {!empty && <div className="px-3 pt-1"><Input aria-label="Filter layers" className="w-full" placeholder="Filter layers" value={filter} onChange={(e) => setFilter(e.target.value)} /></div>}
-      {empty ? (
-        <p className="px-3 py-2 text-dim">This page is empty. Pick a tool below and draw on the canvas.</p>
-      ) : none ? (
-        <p className="px-3 py-2 text-dim">No layers match.</p>
-      ) : (
-        <ul role="tree" aria-label="Layers" className="mt-1 min-h-0 flex-1 overflow-auto">{rows(pageId, 0)}</ul>
-      )}
-    </section>
-  )
-}
+})

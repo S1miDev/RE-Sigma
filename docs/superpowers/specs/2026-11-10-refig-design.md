@@ -150,7 +150,7 @@ exportImage(bytes, suggestedName, kind): { path } | null
 `.fig` mapping (v1): CANVAS→PAGE; FRAME→FRAME, or GROUP when flagged as a group; ROUNDED_RECTANGLE/RECTANGLE→RECTANGLE; ELLIPSE; LINE; TEXT (characters, font, size); fills (SOLID; IMAGE when the blob exists in `images/`); strokes; opacity; transform → x, y, rotation. The hidden "Internal Only Canvas" is skipped. Everything else is omitted and reported.
 
 **Export:**
-- Project: `exportProject(id)` opens a save dialog (default `<name>.refig`) and copies the file byte for byte.
+- Project: `exportProject(id)` opens a save dialog (default `<name>.refig`) and writes the last saved project without its version history.
 - Design export (editor, File → Export…, and the Export section of the Design panel): the selected node is exported as PNG (1×/2×/3×, rendered by our canvas renderer offscreen), SVG (our serializer) or PDF (an SVG page printed via `webContents.printToPDF` in a hidden window). This matches Figma's formats (research §7). JPG is cut from v1.
 
 ## 7. UI (v1 scope — our call; the user may move items in or out)

@@ -290,11 +290,38 @@ Status legend: [done] [in progress] [todo]
        Skipped: widgets, figma.* compatibility, plugin storage/permissions, hot reload, image/vector/component creation, plugin-specific selection
        change events, dev mode (npm run dev) has no CSP so plugins can reach the network there, sandbox is only as strong as Chromium's (no signing).
        Other e2e tests (auto-layout, constraints, instance, boolean) fail in this run; not checked whether they failed before #29.
-30. [todo] Version history, libraries, cloud sync, multiplayer
-31. [todo] Assets panel
-32. [todo] Outline text; font embedding in SVG/PDF export
+30. [done] Version history, libraries (local only)
+       History: .refig entries history/<uuid>.json {id,name?,at,auto,document} (refig.ts HistoryEntry; whitelist widened; images used only by a version are
+       kept). projects.ts keeps the versions in the open-project session, so autosave doesn't re-read the file: save() adds an automatic one at most every
+       10 min and only when the document changed (20 kept), saveVersion adds a named one (50 kept) and also saves the document; getVersion, deleteVersion,
+       listVersions. api: listVersions/saveVersion/getVersion/deleteVersion/readLibrary. File > Version history (VersionsDialog.tsx): save with a name,
+       Restore (saves "Before restore" first, then one undo step via store.update), Delete.
+       Libraries: format 19, Document.libraries [{projectId,name,links}] (links: the library's ids -> the copies' ids). model/library.ts importFromLibrary
+       copies the library's components (and the components they instantiate) onto a page "Library: <name>", with the styles and variable collections they use,
+       remapping instanceOf/ref/style links/bindings/modes; the same call is the update (linked items get the library content again, new ones are added, copies
+       of dropped ones are deleted, a moved copy keeps its place); removeLibrary unlinks. File > Libraries (LibrariesDialog.tsx). A library is whatever is saved on
+       disk for that project, there is no publish step. Tests: projects.test.ts, formats.test.ts, model/library.test.ts, app.test.tsx.
+       Skipped: comparing or previewing a version, naming/restoring part of a document, publish/permissions, team libraries, prototype links in copied
+       components (dropped), pulling in a single component, detecting that a library changed, e2e, app not run by hand.
+       Cloud sync and multiplayer moved to #33 (they need a backend).
+31. [done] Assets panel
+       model/components.ts assetsOf (top-level components/sets per page, library copies included), newInstance (shared with Create instance), instantiate
+       (centred on a point). LeftPanel Assets section (hidden without components): filter, grouped by page, click = instance at the viewport centre,
+       drag onto the canvas (Editor.tsx drop, type application/x-refig-asset). Tests: components.test.ts, app.test.tsx.
+       Skipped: previews/thumbnails, grid view, descriptions, swap from assets, "library changed" badges, e2e, app not run by hand.
+32. [done] Outline text; font embedding in SVG/PDF export
+       fontkit (types: src/renderer/fontkit.d.ts). editor/fontFile.ts: loadFont (installed font via queryLocalFonts, else the bundled Inter woff2), preloadFonts,
+       fontFaces (base64 @font-face). model/textPath.ts textToPath: glyph outlines placed from layoutText (kerning/letterSpacing, underline/strike as bars).
+       boolean.ts shapeOf takes TEXT, so Flatten and Union/Subtract/... outline text; commands.ts withFonts loads the fonts first (async only when the
+       selection has text). toSvg(…, fontFaces) puts <style>@font-face</style> in defs; export/index.ts passes it; the PDF print page CSP allows font-src data:.
+       Tests: textPath.test.ts, export.test.ts. No format change.
+       Skipped: subsetting (whole font file embedded per weight/style), emoji/colour fonts, font-feature settings, the font's own underline metrics, outlined
+       text in live booleans re-computing when fonts change, e2e, app not run by hand (PDF embedding relies on Chromium's printToPDF).
+33. [todo] Backend: accounts, cloud sync, realtime multiplayer (cursors, presence), shared team libraries
+       Needs a server that doesn't exist yet: accounts, a sync API for .refig projects (conflict handling on id + modifiedAt), a realtime channel with
+       CRDT/OT edits on Document, and comment authors (document.ts Comment says so). Version history (#30) and libraries (#30) are the local parts it builds on.
 
-Next step: #30 Version history, libraries, cloud sync, multiplayer. Plan first.
+Next step: #33 (needs a backend). Plan first.
 
 Reviewing the feature commits: `/code-review ultra cc7cc81` reviews everything since before #1.
 

@@ -1,6 +1,7 @@
 import type { ExportKind } from '../../../shared/api'
 import type { ExportSetting, Node } from '../../../shared/document'
 import { dataUrl } from '../../util'
+import { fontFaces, preloadFonts } from '../fontFile'
 import { renderToCanvas } from '../canvas/render'
 import { worldBox, type Box } from '../model/geometry'
 import { childrenOf, topLevel } from '../model/ops'
@@ -22,8 +23,12 @@ async function render(store: EditorStore, ids: string[], kind: ExportKind, scale
     if (!blob || blob.type !== MIME[kind]) throw new Error("Couldn't render the image")
     return new Uint8Array(await blob.arrayBuffer())
   }
-  // shortcut: text keeps its font by name; a PDF/SVG opened where the font is missing falls back to sans-serif. Embed the font if that matters.
-  return new TextEncoder().encode(toSvg(doc, ids, (hash) => (store.imageBytes(hash) ? dataUrl(store.imageBytes(hash)!) : undefined), (hash) => { const b = store.image(hash); return b ? { w: b.width, h: b.height } : undefined }, region))
+  // shortcut: each used weight embeds the whole font file (no subsetting), so an SVG with text can be large.
+  const texts: Node[] = [], walk = (n: Node) => { if (!n.visible) return; if (n.type === 'TEXT') texts.push(n); else childrenOf(doc, n.id).forEach(walk) }
+  ids.forEach((id) => walk(doc.nodes[id]))
+  const warning = await preloadFonts(texts)
+  if (warning) store.set({ toast: warning })
+  return new TextEncoder().encode(toSvg(doc, ids, (hash) => (store.imageBytes(hash) ? dataUrl(store.imageBytes(hash)!) : undefined), (hash) => { const b = store.image(hash); return b ? { w: b.width, h: b.height } : undefined }, region, fontFaces(texts)))
 }
 
 /** What a node exports: itself; a page, its layers; a slice, the page content under it. Null when there is nothing to draw. */

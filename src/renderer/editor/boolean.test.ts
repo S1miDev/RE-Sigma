@@ -51,12 +51,11 @@ test('boolean: the result follows its operands and the operation, and one undo r
   expect(store.get().doc.nodes[id].boolOp).toBe('SUBTRACT')
 })
 
-test('boolean: curves stay curves, hidden operands and text are ignored', () => {
+test('boolean: curves stay curves, hidden operands are ignored', () => {
   const { store, page, p, boolean } = squares()
   const e = makeNode('ELLIPSE', { x: 20, y: 20, width: 60, height: 60 })
-  const t = makeNode('TEXT', { x: 10, y: 10, characters: 'Hi', width: 20, height: 19 })
-  store.update((d) => insert(insert(d, e, page), t, page))
-  store.set({ selection: [p.id, e.id, t.id] })
+  store.update((d) => insert(d, e, page))
+  store.set({ selection: [p.id, e.id] })
   run(store, 'subtract')
   expect(boolean().vector!.fill[0].d).toContain('C') // the ellipse's curves
   expect(anchorsOf(boolean())).toHaveLength(2) // the square and the hole the ellipse cut in it

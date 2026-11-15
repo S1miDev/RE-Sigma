@@ -6,14 +6,16 @@ import { fitView, zoomAt, zoomToFit } from './canvas/viewport'
 import { worldBox } from './model/geometry'
 import { canMask } from './canvas/paintPlan'
 import { addAutoLayout, align, childrenOf, distribute, duplicate, group, orderAbove, pageOf, patch, put, remove, reorder, topLevel, translate, ungroup, type Edit } from './model/ops'
+import { preloadFonts } from './fontFile'
+import { errorText } from '../util'
 import { flatten, makeBoolean } from './model/boolean'
 import { presentFrom } from './model/prototype'
-import { addVariant, combineAsVariants, detach, makeComponent, resetOverrides, setOf, variantsOf } from './model/components'
+import { addVariant, combineAsVariants, detach, makeComponent, newInstance, resetOverrides, setOf, variantsOf } from './model/components'
 import type { EditorState, EditorStore, Tool } from './store'
 import { deletePoint, editNode, exitMode, setTool, showPage } from './tools'
 
 /** Things only the Editor component can do. */
-export interface Actions { back(): void; openExport(): void; placeImages(): void; openPalette(): void; openRename(): void; openFind(): void }
+export interface Actions { back(): void; openExport(): void; placeImages(): void; openPalette(): void; openRename(): void; openFind(): void; openVersions(): void; openLibraries(): void }
 export interface Command {
   id: string
   label: string
@@ -23,13 +25,28 @@ export interface Command {
   run(store: EditorStore, actions: Actions): void
 }
 
+/**
+ * Runs a boolean/flatten edit on the selection as it is now; if it contains text, its fonts are loaded first (outlining needs them),
+ * otherwise it runs at once. Missing fonts and failures are shown as a toast.
+ */
+function withFonts(st: EditorStore, edit: (d: Document, selection: string[]) => Document | Edit) {
+  const { doc, selection } = st.get(), texts: Node[] = []
+  const walk = (id: string) => { const n = doc.nodes[id]; if (n?.type === 'TEXT') texts.push(n); else if (n) childrenOf(doc, id).forEach((c) => walk(c.id)) }
+  selection.forEach(walk)
+  if (!texts.length) return st.update((d) => edit(d, selection))
+  preloadFonts(texts).then((warning) => {
+    st.update((d) => edit(d, selection.filter((id) => d.nodes[id]))) // the selection may have changed (or nodes gone) while fonts loaded
+    if (warning) st.set({ toast: warning })
+  }).catch((e) => st.set({ toast: errorText(e) }))
+}
+
 const has = (s: EditorState) => s.selection.length > 0
 const inMode = (s: EditorState) => s.mode.kind !== 'none'
 const centre = (s: EditorState) => ({ x: s.size.w / 2, y: s.size.h / 2 })
 const tool = (id: Tool, label: string, key: string): Command => ({ id: `tool-${id}`, label, group: 'Tools', keys: [key], run: (st) => setTool(st, id) })
 /** Combines the selected shapes (two or more) into a live boolean node. */
 const boolean = (id: string, label: string, key: string, op: BoolOp): Command =>
-  ({ id, label, group: 'Object', keys: [key], enabled: (s) => topLevel(s.doc, s.selection).length > 1, run: (st) => st.update((d) => makeBoolean(d, st.get().selection, op)) })
+  ({ id, label, group: 'Object', keys: [key], enabled: (s) => topLevel(s.doc, s.selection).length > 1, run: (st) => withFonts(st, (d, sel) => makeBoolean(d, sel, op)) })
 const toggle = (field: 'visible' | 'locked') => (st: EditorStore) => {
   const { doc, selection } = st.get(), all = selection.every((id) => doc.nodes[id]?.[field])
   st.update((d) => patch(d, selection, { [field]: !all }))
@@ -40,6 +57,8 @@ const alignment = (id: string, label: string, key: string, axis: 'x' | 'y', to: 
 export const COMMANDS: Command[] = [
   { id: 'back', label: 'Back to projects', group: 'File', run: (_, a) => a.back() },
   { id: 'save', label: 'Save', group: 'File', keys: ['Ctrl+S'], run: (st) => void st.save() },
+  { id: 'versions', label: 'Version history…', group: 'File', run: (_, a) => a.openVersions() },
+  { id: 'libraries', label: 'Libraries…', group: 'File', run: (_, a) => a.openLibraries() },
   { id: 'export', label: 'Export…', group: 'File', keys: ['Ctrl+Shift+E'], enabled: has, run: (_, a) => a.openExport() },
   { id: 'plugins-folder', label: 'Open plugins folder', group: 'Plugins', run: (st) => void st.api.openPluginsFolder() },
   { id: 'place-image', label: 'Place image…', group: 'File', keys: ['Ctrl+Shift+K'], run: (_, a) => a.placeImages() },
@@ -89,8 +108,8 @@ export const COMMANDS: Command[] = [
   { id: 'use-as-mask', label: 'Use as mask', group: 'Object', keys: ['Ctrl+Alt+M'], enabled: (s) => has(s) && (s.selection.length > 1 || (!!lone(s) && canMask(lone(s)!))),
     run: (st) => st.update((d) => useAsMask(d, st.get().selection)) },
   { id: 'flatten', label: 'Flatten', group: 'Object', keys: ['Ctrl+E'], enabled: has,
-    run: (st) => st.update((d) => {
-      const ids = topLevel(d, st.get().selection) // several nodes flatten as their union
+    run: (st) => withFonts(st, (d, sel) => {
+      const ids = topLevel(d, sel) // several nodes flatten as their union
       const made = ids.length > 1 ? makeBoolean(d, ids, 'UNION') : { doc: d, ids }
       return flatten(made.doc, made.ids)
     }) },
@@ -145,10 +164,8 @@ function onFrame(st: EditorStore, takes: (frame: Node) => boolean, change: (doc:
 }
 /** Places an instance of the selected main component (a set's first variant for a set) just right of it, or of its set. */
 function createInstance(st: EditorStore) {
-  const { doc } = st.get(), picked = lone(st.get())!
-  const main = picked.componentSet ? variantsOf(doc, picked.id)[0] : picked, at = setOf(doc, main.id) ?? main
-  const node = makeNode('FRAME', { name: at.name, instanceOf: main.id, x: at.x + at.width + 40, y: at.y, width: main.width, height: main.height, rotation: at.rotation })
-  st.update((d) => ({ doc: put(d, [{ ...node, parentId: at.parentId, order: orderAbove(d, at) }]), ids: [node.id] }))
+  const { node, at } = newInstance(st.get().doc, lone(st.get())!.id)
+  st.update((d) => ({ doc: put(d, [{ ...node, x: at.x + at.width + 40, y: at.y, parentId: at.parentId, order: orderAbove(d, at) }]), ids: [node.id] }))
 }
 const setSelected = (s: EditorState) => { const n = lone(s); return n?.componentSet ? n : n && setOf(s.doc, n.id) }
 function goToMain(st: EditorStore) {
@@ -160,7 +177,7 @@ function goToMain(st: EditorStore) {
 
 export const isEnabled = (c: Command, store: EditorStore) => !c.enabled || c.enabled(store.get(), store)
 /** Runs a command from a panel button. Commands that need the Editor's own actions (back, export) do nothing here. */
-export const runCommand = (store: EditorStore, id: string) => COMMANDS.find((c) => c.id === id)!.run(store, { back() {}, openExport() {}, placeImages() {}, openPalette() {}, openRename() {}, openFind() {} })
+export const runCommand = (store: EditorStore, id: string) => COMMANDS.find((c) => c.id === id)!.run(store, { back() {}, openExport() {}, placeImages() {}, openPalette() {}, openRename() {}, openFind() {}, openVersions() {}, openLibraries() {} })
 
 const CODES: Record<string, string> = { BracketLeft: '[', BracketRight: ']', Backslash: '\\', Semicolon: ';', Quote: "'", Equal: '=', Minus: '-', NumpadAdd: '=', NumpadSubtract: '-' }
 /** "Ctrl+Shift+G" for a key event. Digits and punctuation go by physical key so they work on any layout; letters by what they type. */

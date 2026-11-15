@@ -214,8 +214,11 @@ export type Mode = { id: string; name: string }
 export type Collection = { id: string; name: string; modes: Mode[]; variables: Variable[] }
 
 export type Reply = { id: string; text: string; at: string }
-/** A pinned comment thread at page coordinates. shortcut: no author (single local user) and the pin doesn't follow moved nodes, upgrade with accounts/sync (#30). */
+/** A pinned comment thread at page coordinates. shortcut: no author (single local user) and the pin doesn't follow moved nodes, upgrade with accounts/sync (#33). */
 export type Comment = { id: string; page: string; x: number; y: number; text: string; at: string; resolved?: boolean; replies?: Reply[] }
+
+/** A project whose components, styles and variables were copied into this one. `links` maps the source's ids to the local copies' ids, so an update finds them again. */
+export type Library = { projectId: string; name: string; links: Record<string, string> }
 
 export interface Document {
   formatVersion: typeof FORMAT_VERSION
@@ -224,6 +227,7 @@ export interface Document {
   styles: Style[]
   collections: Collection[]
   comments: Comment[]
+  libraries: Library[]
 }
 
 /** Fields an instance node can override; everything else (ids, tree position, component links) is never copied from the main. */
@@ -235,8 +239,8 @@ export const OVERRIDABLE = [
   'fillStyle', 'strokeStyle', 'effectStyle', 'textStyle', 'bindings', 'modes', 'layoutGrids', 'gridStyle',
 ] as const satisfies readonly (keyof Node)[]
 
-// 2: gradient paints. 3: boolean nodes. 4: masks. 5: star, polygon, arcs, corner radii and smoothing. 6: blend modes and paint opacity. 7: inner shadow, layer blur, background blur effects. 8: stroke dashes, caps, joins, end markers, per-side weights. 9: image scale modes. 10: text italic, decoration, case, vertical align, truncation, lists. 11: text style runs. 12: styles (Document.styles, Node.fillStyle/strokeStyle/effectStyle/textStyle). 13: variables (Document.collections, Node.bindings, Node.modes). 14: guides (PAGE Node.guides), layout grids (FRAME Node.layoutGrids), GRID styles (Node.gridStyle). 15: sections (FRAME Node.section). 16: export settings (Node.exports), slices (RECTANGLE Node.slice). 17: prototype interactions (Node.interactions) and flow starts (FRAME Node.flowStart). 18: comments (Document.comments). Older files read unchanged; older apps refuse newer ones as "made by a newer version".
-export const FORMAT_VERSION = 18
+// 2: gradient paints. 3: boolean nodes. 4: masks. 5: star, polygon, arcs, corner radii and smoothing. 6: blend modes and paint opacity. 7: inner shadow, layer blur, background blur effects. 8: stroke dashes, caps, joins, end markers, per-side weights. 9: image scale modes. 10: text italic, decoration, case, vertical align, truncation, lists. 11: text style runs. 12: styles (Document.styles, Node.fillStyle/strokeStyle/effectStyle/textStyle). 13: variables (Document.collections, Node.bindings, Node.modes). 14: guides (PAGE Node.guides), layout grids (FRAME Node.layoutGrids), GRID styles (Node.gridStyle). 15: sections (FRAME Node.section). 16: export settings (Node.exports), slices (RECTANGLE Node.slice). 17: prototype interactions (Node.interactions) and flow starts (FRAME Node.flowStart). 18: comments (Document.comments). 19: libraries (Document.libraries). Older files read unchanged; older apps refuse newer ones as "made by a newer version".
+export const FORMAT_VERSION = 19
 export const isContainer = (n: Node) => n.type === 'PAGE' || n.type === 'FRAME' || n.type === 'GROUP' || n.type === 'BOOLEAN'
 export const solid = (r: number, g: number, b: number, a = 1): Paint => ({ type: 'SOLID', visible: true, color: { r, g, b, a } })
 /** A new gradient fading `color` out: linear top → bottom, the others from the centre to the right edge. */
@@ -332,5 +336,5 @@ export function makeNode(type: NodeType, props: Partial<Node> = {}): Node {
 
 export function emptyDocument(): Document {
   const page = makeNode('PAGE', { name: 'Page 1', fills: [solid(0.96, 0.96, 0.96)] })
-  return { formatVersion: FORMAT_VERSION, pages: [page.id], nodes: { [page.id]: page }, styles: [], collections: [], comments: [] }
+  return { formatVersion: FORMAT_VERSION, pages: [page.id], nodes: { [page.id]: page }, styles: [], collections: [], comments: [], libraries: [] }
 }

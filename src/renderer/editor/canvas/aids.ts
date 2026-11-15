@@ -47,7 +47,7 @@ export function drawComments(ctx: CanvasRenderingContext2D, s: Pick<EditorState,
 }
 
 function framesOf(doc: Document, pageId: string): Node[] {
-  const out: Node[] = [], stack = childrenOf(doc, pageId)
+  const out: Node[] = [], stack = [...childrenOf(doc, pageId)] // a copy: childrenOf's array is cached, popping it would empty the page
   for (let n = stack.pop(); n; n = stack.pop()) {
     if (!n.visible) continue
     if (n.type === 'FRAME' && n.layoutGrids?.length) out.push(n)

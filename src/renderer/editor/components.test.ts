@@ -5,7 +5,7 @@ import { frameAt } from './canvas/hit'
 import { keyOf } from './commands'
 import { worldBox } from './model/geometry'
 import { childrenOf, insert, moveTo, patch, put, remove, resizeNode } from './model/ops'
-import { setVariant, syncInstances, variantProps, variantsOf } from './model/components'
+import { assetsOf, dropParent, instantiate, setVariant, syncInstances, variantProps, variantsOf } from './model/components'
 import { beginGesture } from './tools'
 import { open, at, red, run, components, black, green, blue } from './testkit'
 
@@ -254,4 +254,31 @@ test('variants: matching ignores the order properties are listed in', () => {
   const target = add('Tone=Light, Size=L') // the exact match, listed the other way round
   store.update((d) => setVariant(d, i, 'Size', 'L'))
   expect(store.get().doc.nodes[i].instanceOf).toBe(target)
+})
+
+test('assets: lists top-level components and sets per page; instantiate centres an instance on a page', () => {
+  const { store, page, m, i } = components()
+  const doc = store.get().doc
+  const groups = assetsOf(doc)
+  expect(groups.map((g) => g.page.id)).toEqual([page])
+  expect(groups[0].items.map((n) => n.id)).toEqual([m]) // the instance isn't an asset
+  const r = instantiate(doc, m, page, { x: 500, y: 300 })
+  expect(r.ids).toHaveLength(1)
+  expect(r.doc.nodes[r.ids[0]]).toMatchObject({ instanceOf: m, parentId: page, x: 450, y: 275, width: 100, height: 50 })
+  expect(instantiate(doc, i, page, { x: 0, y: 0 }).doc).toBe(doc) // only main components
+  const empty = makeNode('FRAME', { id: 'set', componentSet: true })
+  const withSet = insert(doc, empty, page)
+  expect(instantiate(withSet, 'set', page, { x: 0, y: 0 }).doc).toBe(withSet) // a set without variants: nothing, no crash
+})
+
+test('assets: a drop goes into the frame under the cursor, in its coordinates; never into an instance or the component itself', () => {
+  const { store, page, m, r, i } = components()
+  const f = makeNode('FRAME', { id: 'f', x: 1000, y: 1000, width: 400, height: 400 })
+  const doc = insert(store.get().doc, f, page)
+  expect(dropParent(doc, page, 'f', m)).toBe('f')
+  const res = instantiate(doc, m, 'f', { x: 1200, y: 1100 })
+  expect(res.doc.nodes[res.ids[0]]).toMatchObject({ parentId: 'f', x: 150, y: 75 })
+  expect(dropParent(doc, page, childrenOf(doc, i)[0].id, m)).toBe(page) // inside an instance
+  expect(dropParent(doc, page, r, m)).toBe(page) // inside the main being dropped
+  expect(dropParent(doc, page, null, m)).toBe(page)
 })

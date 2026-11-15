@@ -7,7 +7,7 @@ import { arcPath, cornerPath } from '../model/shapes'
 import { css } from './color'
 import { fillGradient, paintGradient } from './gradient'
 import { endMarks, grownBox, imageBox, hasPath, isMask, outlinedStroke, paintsOf, sidesPath, strokeGrow, strokeStyle } from './paintPlan'
-import { fontOf, layoutText } from './text'
+import { decorationBar, fontOf, layoutText } from './text'
 import { fitView, type View } from './viewport'
 
 export type Images = (hash: string) => ImageBitmap | undefined
@@ -57,9 +57,9 @@ function drawText(ctx: CanvasRenderingContext2D, n: Node, mode: 'fill' | 'stroke
         if (runFill && s.fill) ctx.fillStyle = css(s.fill)
         ctx.fillText(s.text, s.x, l.y)
       } else ctx.strokeText(s.text, s.x, l.y)
-      const size = s.style.fontSize ?? 16, thick = Math.max(1, size / 14), deco = s.style.textDecoration
       // canvas has no text-decoration: draw it as a bar around the baseline
-      if (mode === 'fill' && deco && deco !== 'NONE' && !s.mark) ctx.fillRect(s.x, l.y + (deco === 'UNDERLINE' ? size * 0.12 : -size * 0.3) - thick / 2, s.width, thick)
+      const bar = mode === 'fill' && !s.mark && decorationBar(s.style, l.y)
+      if (bar) ctx.fillRect(s.x, bar.y, s.width, bar.h)
       ctx.fillStyle = keep
     }
 }

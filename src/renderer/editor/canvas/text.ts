@@ -3,7 +3,13 @@ import { runsOf, styleOf } from '../model/richText'
 
 /** CSS font shorthand. The bundled "Inter Variable" backs up a missing family. */
 export const fontOf = (n: Node, scale = 1) => `${n.fontItalic ? 'italic ' : ''}${n.fontWeight ?? 400} ${(n.fontSize ?? 16) * scale}px "${(n.fontFamily ?? 'Inter').replace(/["\\]/g, '')}", "Inter Variable", sans-serif`
-export const lineHeightOf = (n: Node) => n.lineHeight || Math.round((n.fontSize ?? 16) * 1.2)
+/** The underline/strikethrough bar for a run (top `y`, height `h`), drawn the same on canvas and in outlines; null for none. */
+export function decorationBar(style: Node, baseline: number): { y: number; h: number } | null {
+  const deco = style.textDecoration, size = style.fontSize ?? 16, h = Math.max(1, size / 14)
+  if (!deco || deco === 'NONE') return null
+  return { y: baseline + (deco === 'UNDERLINE' ? size * 0.12 : -size * 0.3) - h / 2, h }
+}
+export const lineHeightOf =(n: Node) => n.lineHeight || Math.round((n.fontSize ?? 16) * 1.2)
 
 let ctx: CanvasRenderingContext2D | null | undefined
 const getCtx = () => (ctx === undefined ? (ctx = typeof document === 'undefined' ? null : document.createElement('canvas').getContext('2d')) : ctx)

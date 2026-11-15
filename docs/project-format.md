@@ -9,7 +9,8 @@ The file is a ZIP archive with these entries and nothing else:
 | `meta.json` | yes | Project identity and timestamps |
 | `document.json` | yes | The design document |
 | `thumbnail.png` | no | Preview shown in the project list, at most 400×300 |
-| `images/<sha256>` | no | Raw bytes of each image used by an image fill; the entry name is the lowercase hex SHA-256 of the bytes |
+| `images/<sha256>` | no | Raw bytes of each image used by an image fill; the entry name is the lowercase hex SHA-256 of the bytes. Images used only by a saved version are kept too |
+| `history/<uuid>.json` | no | One saved version: `{ id, name?, at, auto, document }`. `id` equals the entry name, `at` is an ISO timestamp, `document` is a full document. Named versions (at most 50) have `name` (1–100 characters); automatic ones (`auto: true`, at most 20, added at most every 10 minutes when the document changed) have none |
 
 A reader rejects an archive that contains any other entry, more than 10 000 entries, or more than 1 GB of unpacked data.
 
@@ -135,3 +136,4 @@ The app writes `<name>.refig.tmp`, flushes it to disk, then renames it over `<na
 - **16:** adds export settings and slices. Any node may have `exports: [{ suffix, format: png | jpg | webp | svg | pdf, scale }]` (at most 20; `scale` 0.01–16, used by raster formats only). A `RECTANGLE` node may have `slice: true`: an export region that is never drawn and exports the page content under it.
 - **17:** adds prototype interactions. Any non-page node may have `interactions: [{ trigger: click | hover | press | key | delay, key?, delay?, action: navigate | back | overlay | closeOverlay | url, target?, url?, transition: instant | dissolve | slideLeft | slideRight | slideUp | slideDown, duration, easing: linear | easeIn | easeOut | easeInOut }]` (at most 20; `target` is a frame id, `url` must start with http:// or https://, `duration` and `delay` are milliseconds). A top-level `FRAME` may have `flowStart: true`: a prototype starting point. A `target` that no longer exists is ignored when previewing. Interactions are editor-only and never exported.
 - **18:** adds comments. `document.json` has `comments: [{ id, page, x, y, text, at, resolved?, replies?: [{ id, text, at }] }]` (at most 1000, each with at most 100 replies, text up to 5000 characters). `page` must be a page in `pages`; `x`/`y` are page coordinates; `at` is an ISO timestamp. Files without `comments` read as empty.
+- **19:** adds libraries. `document.json` has `libraries: [{ projectId, name, links }]` (at most 50): the other projects whose components, styles and variable collections were copied into this one. `projectId` is that project's `meta.json` id; `links` maps ids in the library to the ids of the copies here (at most 20 000 entries; the key `page` is the library's page). An update finds the copies through `links`. Files without `libraries` read as empty.

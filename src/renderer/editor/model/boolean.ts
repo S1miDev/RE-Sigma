@@ -6,6 +6,8 @@ import { localMatrix } from './geometry'
 import { childrenOf, depth, group, nextName, put, remove } from './ops'
 import { hasPath } from '../canvas/paintPlan'
 import { arcPath, cornerPath, isPlainBox, radiiOf } from './shapes'
+import { fontsReady, loadedFontFor } from '../fontFile'
+import { textToPath } from './textPath'
 import { anchorsOf, parsePath, pathData, withAnchors, type Anchor, type Sub } from './path'
 
 const METHOD = { UNION: 'unite', SUBTRACT: 'subtract', INTERSECT: 'intersect', EXCLUDE: 'exclude' } as const
@@ -23,7 +25,7 @@ const fromSubs = (subs: Sub[], rule: 'nonzero' | 'evenodd'): paper.PathItem => {
   return new paper.CompoundPath({ ...NEW, children: paths, fillRule: rule })
 }
 
-/** The node's filled shape in its own coordinates, or null if it has none (text and lines are not supported yet). */
+/** The node's filled shape in its own coordinates, or null if it has none (lines are not supported yet; text needs its fonts loaded with preloadFonts). */
 function shapeOf(doc: Document, n: Node): paper.PathItem | null {
   if (!n.visible) return null
   ensure()
@@ -39,6 +41,7 @@ function shapeOf(doc: Document, n: Node): paper.PathItem | null {
     return subs.length ? fromSubs(subs, n.vector!.fill[0]?.rule ?? 'nonzero') : null
   }
   if (n.type === 'GROUP') return combine(childrenOf(doc, n.id).map((k) => inParent(doc, k)), 'UNION')
+  if (n.type === 'TEXT') { const d = textToPath(n, loadedFontFor); return d ? fromSubs(parsePath(d), 'nonzero') : null } // needs preloadFonts first
   return null
 }
 /** The node's shape in its parent's coordinates. */
@@ -74,13 +77,25 @@ const withVector = (doc: Document, b: Node): Document => {
   return vector.fill[0]?.d === b.vector?.fill[0]?.d && vector.w === b.vector?.w && vector.h === b.vector?.h ? doc : put(doc, [{ ...b, vector }])
 }
 
-/** Recomputes the result of every boolean node whose operands (or itself) changed from `prev` to `next`. Innermost first. */
+/** The text nodes under `id` whose fonts aren't loaded yet. */
+export function pendingText(doc: Document, id: string): Node[] {
+  const n = doc.nodes[id]
+  return n?.type === 'TEXT' ? (fontsReady(n) ? [] : [n]) : childrenOf(doc, id).flatMap((k) => pendingText(doc, k.id))
+}
+
+/**
+ * Recomputes the result of every boolean node whose operands (or itself) changed from `prev` to `next`. Innermost first.
+ * A boolean with text whose fonts aren't loaded keeps its result: computing it now would silently drop the text (see resyncBooleans).
+ */
 export function syncBooleans(prev: Document, next: Document): Document {
   const booleans = Object.values(next.nodes).filter((n) => n.type === 'BOOLEAN').sort((a, b) => depth(next, b.id) - depth(next, a.id))
   const changed = (n: Node): boolean => prev.nodes[n.id] !== n || childrenOf(next, n.id).some(changed)
-  for (const b of booleans) if (changed(next.nodes[b.id])) next = withVector(next, next.nodes[b.id])
+  for (const b of booleans) if (changed(next.nodes[b.id]) && !pendingText(next, b.id).length) next = withVector(next, next.nodes[b.id])
   return next
 }
+
+/** Recomputes every boolean from scratch, for when fonts have loaded since their last sync. */
+export const resyncBooleans = (doc: Document): Document => syncBooleans({ ...doc, nodes: {} }, doc)
 
 /** Wraps the nodes in a new BOOLEAN node (named after the operation) that takes the bottom operand's paints. */
 export function makeBoolean(doc: Document, ids: string[], op: Op): { doc: Document; ids: string[] } {

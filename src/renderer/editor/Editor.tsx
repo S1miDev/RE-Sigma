@@ -12,13 +12,17 @@ import { ContextMenuHost } from './panels/ContextMenu'
 import { DesignPanel } from './panels/DesignPanel'
 import { InspectPanel } from './panels/InspectPanel'
 import { ExportControls } from './panels/ExportControls'
-import { LeftPanel } from './panels/LeftPanel'
+import { ASSET_TYPE, LeftPanel } from './panels/LeftPanel'
+import { dropParent, instantiate } from './model/components'
+import { hitTest } from './canvas/hit'
 import { MainMenu } from './panels/MainMenu'
 import { FindDialog } from './panels/FindDialog'
 import { CommentPopover } from './panels/CommentPopover'
 import { Palette } from './panels/Palette'
 import { PreviewOverlay } from './panels/PreviewOverlay'
 import { RenameDialog } from './panels/RenameDialog'
+import { LibrariesDialog } from './panels/LibrariesDialog'
+import { VersionsDialog } from './panels/VersionsDialog'
 import { Toolbar } from './panels/Toolbar'
 import { createEditorStore, EditorContext, useEditor, useStore } from './store'
 
@@ -30,6 +34,8 @@ export function Editor({ opened, api, onExit }: { opened: OpenedProject; api: Re
   const [palette, setPalette] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [finding, setFinding] = useState(false)
+  const [versions, setVersions] = useState(false)
+  const [libraries, setLibraries] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const [unsaved, setUnsaved] = useState<'exit' | 'close' | null>(null) // a save failed while leaving
   const force = useRef(false)
@@ -49,7 +55,7 @@ export function Editor({ opened, api, onExit }: { opened: OpenedProject; api: Re
     else setUnsaved('exit')
   }, [store, onExit])
   const picker = useRef<HTMLInputElement>(null)
-  const actions = useMemo<Actions>(() => ({ back: () => void back(), openExport: () => setExporting(true), placeImages: () => picker.current?.click(), openPalette: () => setPalette(true), openRename: () => setRenaming(true), openFind: () => setFinding(true) }), [back])
+  const actions = useMemo<Actions>(() => ({ back: () => void back(), openExport: () => setExporting(true), placeImages: () => picker.current?.click(), openPalette: () => setPalette(true), openRename: () => setRenaming(true), openFind: () => setFinding(true), openVersions: () => setVersions(true), openLibraries: () => setLibraries(true) }), [back])
   const report = useCallback((e: unknown) => setToast(errorText(e)), [])
   /** Places each file in turn; an SVG's unsupported features are named in one toast. */
   const place = useCallback(async (files: File[], at?: { x: number; y: number }) => {
@@ -72,8 +78,14 @@ export function Editor({ opened, api, onExit }: { opened: OpenedProject; api: Re
       void (image ? place([image]) : paste(store)).catch(report)
     }
     const isImage = (f: File) => f.type.startsWith('image/') || /\.svg$/i.test(f.name)
-    const onDragOver = (e: DragEvent) => { if ([...(e.dataTransfer?.items ?? [])].some((i) => i.kind === 'file')) e.preventDefault() }
+    const onDragOver = (e: DragEvent) => { if ([...(e.dataTransfer?.items ?? [])].some((i) => i.kind === 'file' || i.type === ASSET_TYPE)) e.preventDefault() }
     const onDrop = (e: DragEvent) => {
+      const asset = e.dataTransfer?.getData(ASSET_TYPE), main = (e.target as Element).closest('main')
+      if (asset && main) {
+        e.preventDefault()
+        const { view, pageId } = store.get(), box = main.getBoundingClientRect(), at = toWorld(view, { x: e.clientX - box.left, y: e.clientY - box.top })
+        return store.update((d) => instantiate(d, asset, dropParent(d, pageId, hitTest(d, pageId, at, { deep: true }), asset), at))
+      }
       const files = [...(e.dataTransfer?.files ?? [])].filter(isImage)
       if (!files.length) return
       e.preventDefault()
@@ -115,6 +127,8 @@ export function Editor({ opened, api, onExit }: { opened: OpenedProject; api: Re
       {palette && <Palette actions={actions} onClose={() => setPalette(false)} />}
       {renaming && <RenameDialog onClose={() => setRenaming(false)} />}
       {finding && <FindDialog onClose={() => setFinding(false)} />}
+      {versions && <VersionsDialog onClose={() => setVersions(false)} />}
+      {libraries && <LibrariesDialog onClose={() => setLibraries(false)} />}
       {unsaved && (
         <Dialog title="Your changes couldn't be saved" onClose={() => setUnsaved(null)}>
           <p className="text-dim">{store.get().saveError ?? 'The project file could not be written.'} If you leave now, the changes since the last save are lost.</p>

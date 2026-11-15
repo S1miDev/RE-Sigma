@@ -2,8 +2,8 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, test, vi } from 'vitest'
-import type { ExportFile, ImportResult, ProjectSummary, RefigApi } from '../shared/api'
-import { emptyDocument, type Document } from '../shared/document'
+import type { ExportFile, ImportResult, ProjectSummary, RefigApi, VersionInfo } from '../shared/api'
+import { emptyDocument, makeNode, type Document } from '../shared/document'
 import { App } from './App'
 
 /** A typed in-memory stand-in for window.refig. */
@@ -18,6 +18,9 @@ function fakeApi(names: string[] = []) {
     return s
   }
   const find = (id: string) => list.find((p) => p.id === id) ?? (() => { throw new Error('Project not found') })()
+  const versions = new Map<string, { info: VersionInfo; document: Document }[]>()
+  let vn = 0
+  const versionsOf = (id: string) => versions.get(id) ?? []
   const state = { imports: [] as ImportResult[], saveError: null as string | null }
   const api: RefigApi = {
     listProjects: vi.fn(async () => [...list]),
@@ -29,6 +32,17 @@ function fakeApi(names: string[] = []) {
       return find(id)
     }),
     addImage: vi.fn(async () => 'a'.repeat(64)),
+    listVersions: vi.fn(async (id) => versionsOf(id).map(({ info }) => info).reverse()),
+    saveVersion: vi.fn(async (id, name, document) => {
+      versions.set(id, [...versionsOf(id), { info: { id: `10000000-0000-0000-0000-${String(++vn).padStart(12, '0')}`, name, at: new Date().toISOString(), auto: false }, document }])
+      return versionsOf(id).map(({ info }) => info).reverse()
+    }),
+    getVersion: vi.fn(async (id, vid) => ({ document: versionsOf(id).find((v) => v.info.id === vid)!.document, images: {} })),
+    deleteVersion: vi.fn(async (id, vid) => {
+      versions.set(id, versionsOf(id).filter((v) => v.info.id !== vid))
+      return versionsOf(id).map(({ info }) => info).reverse()
+    }),
+    readLibrary: vi.fn(async (id) => ({ document: docs.get(id)!, images: {} })),
     renameProject: vi.fn(async (id, name) => {
       if (list.some((p) => p.name === name && p.id !== id)) throw new Error("Error invoking remote method 'refig:renameProject': Error: A project with this name already exists")
       return Object.assign(find(id), { name })
@@ -453,4 +467,61 @@ test('Editor: Dev mode inspects the selection and shows its CSS', async () => {
   expect(screen.getByLabelText('Generated code')).toHaveTextContent('<svg')
   await user.click(screen.getByRole('button', { name: 'Dev mode' }))
   expect(screen.getByLabelText('Width')).toBeInTheDocument()
+})
+
+const fileMenu = async (user: ReturnType<typeof userEvent.setup>, item: string) => {
+  await user.click(screen.getByRole('button', { name: 'Main menu' }))
+  await user.click(screen.getByRole('menuitem', { name: 'File' }))
+  await user.click(screen.getByRole('menuitem', { name: item }))
+}
+
+test('Editor: Version history saves a named version and restores it as one undo step', async () => {
+  const { user, draw, api, id } = await openEditor()
+  await fileMenu(user, 'Version history…')
+  await user.type(screen.getByLabelText('Version name'), 'Empty page')
+  await user.click(screen.getByRole('button', { name: 'Save version' }))
+  expect(await screen.findByText('Empty page')).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Close' }))
+
+  await user.keyboard('r')
+  draw(10, 10, 60, 60)
+  expect(screen.queryByText(/This page is empty/)).toBeNull()
+  await fileMenu(user, 'Version history…')
+  await user.click(await screen.findByRole('button', { name: 'Restore Empty page' }))
+  expect(await screen.findByText(/This page is empty/)).toBeInTheDocument()
+  expect(api.saveVersion).toHaveBeenCalledWith(id, 'Before restore', expect.anything(), true)
+  await user.keyboard('{Control>}z{/Control}')
+  expect(screen.queryByText(/This page is empty/)).toBeNull()
+})
+
+test('Editor: Libraries adds another project, explains one without components, and removes the link', async () => {
+  const { user, docs, list } = await openEditor(['Alpha', 'Kit', 'Plain'])
+  const kit = docs.get(list[1].id)!
+  const button = makeNode('FRAME', { name: 'Button', parentId: kit.pages[0], width: 100, height: 40, component: true })
+  kit.nodes[button.id] = button
+
+  await fileMenu(user, 'Libraries…')
+  await user.click(await screen.findByRole('button', { name: 'Add Plain' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('no components')
+  await user.click(screen.getByRole('button', { name: 'Add Kit' }))
+  expect(await screen.findByRole('button', { name: 'Update Kit' })).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Remove Kit' }))
+  expect(screen.getByRole('button', { name: 'Add Kit' })).toBeInTheDocument()
+})
+
+test('Editor: the Assets panel lists components and puts an instance on the current page', async () => {
+  const { user, draw } = await openEditor()
+  await user.keyboard('r')
+  draw(10, 10, 60, 60)
+  await user.keyboard('{Control>}k{/Control}')
+  await user.type(screen.getByRole('combobox', { name: /Search commands/ }), 'create component{Enter}')
+  const assets = screen.getByRole('region', { name: 'Assets' })
+  expect(within(assets).getByRole('button', { name: /Component/ })).toBeInTheDocument()
+
+  await user.click(within(screen.getByRole('region', { name: 'Pages' })).getByRole('button', { name: 'Add page' })) // Page 2 is empty
+  await user.type(within(assets).getByLabelText('Filter assets'), 'zzz')
+  expect(within(assets).queryByRole('button', { name: /Component/ })).toBeNull()
+  await user.clear(within(assets).getByLabelText('Filter assets'))
+  await user.click(within(assets).getByRole('button', { name: /Component/ }))
+  expect(screen.getByRole('treeitem', { name: /Component/ })).toHaveAttribute('aria-selected', 'true')
 })

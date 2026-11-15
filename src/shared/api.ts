@@ -13,6 +13,17 @@ export interface OpenedProject {
   document: Document
   images: Record<string, Uint8Array>
 }
+/** A document with the image bytes it uses: a saved version, or another project read as a library. */
+export interface ProjectContent {
+  document: Document
+  images: Record<string, Uint8Array>
+}
+export interface VersionInfo {
+  id: string
+  name?: string // absent for automatic versions
+  at: string // ISO
+  auto: boolean
+}
 export type Omitted = Record<string, number>
 export type ImportResult =
   | { file: string; status: 'imported'; summary: ProjectSummary; omitted?: Omitted }
@@ -37,6 +48,17 @@ export interface RefigApi {
   openProject(id: string): Promise<OpenedProject>
   saveProject(id: string, document: Document, thumbnailPng?: Uint8Array): Promise<ProjectSummary>
   addImage(id: string, bytes: Uint8Array): Promise<string>
+  /** Saved versions, newest first. Automatic ones are added by saveProject at most every 10 minutes. */
+  listVersions(id: string): Promise<VersionInfo[]>
+  /**
+   * Saves `document` as the project and keeps a named copy of it. Resolves to the updated list. An `auto` copy is not counted against
+   * the named-version cap (it rotates out like autosaves) and is skipped when the newest version already holds the same document.
+   */
+  saveVersion(id: string, name: string, document: Document, auto?: boolean): Promise<VersionInfo[]>
+  getVersion(id: string, versionId: string): Promise<ProjectContent>
+  deleteVersion(id: string, versionId: string): Promise<VersionInfo[]>
+  /** Another project's saved document, read-only (libraries). */
+  readLibrary(id: string): Promise<ProjectContent>
   renameProject(id: string, newName: string): Promise<ProjectSummary>
   deleteProject(id: string): Promise<void>
   duplicateProject(id: string): Promise<ProjectSummary>
@@ -61,6 +83,11 @@ export const API_KEYS = [
   'openProject',
   'saveProject',
   'addImage',
+  'listVersions',
+  'saveVersion',
+  'getVersion',
+  'deleteVersion',
+  'readLibrary',
   'renameProject',
   'deleteProject',
   'duplicateProject',

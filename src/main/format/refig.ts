@@ -2,7 +2,7 @@
 import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from 'fflate'
 import {
   ACTIONS, EASINGS, TRANSITIONS, TRIGGERS, type Interaction, BLEND_MODES, BOOL_OPS, EXPORT_FORMATS, CONSTRAINTS, FILL_RULES, FORMAT_VERSION, GRADIENT_KINDS, GRID_KINDS, IMAGE_MODES, isContainer, LAYOUT_ALIGNS, LAYOUT_MODES, NODE_TYPES, OVERRIDABLE, STROKE_ALIGNS, STROKE_CAPS, STROKE_ENDS, STROKE_JOINS, STYLE_KINDS, TEXT_ALIGNS, TEXT_CASES, TEXT_DECORATIONS, TEXT_LISTS, TEXT_VALIGNS, VARIABLE_TYPES, isBindable,
-  type AutoLayout, type Collection, type Comment, type Variable, type Color, type Document, type Effect, type LayoutGrid, type Node, type Paint, type RunStyle, type Style, type TextStyleValue, type VectorPath,
+  type AutoLayout, type Collection, type Comment, type Library, type Variable, type Color, type Document, type Effect, type LayoutGrid, type Node, type Paint, type RunStyle, type Style, type TextStyleValue, type VectorPath,
 } from '../../shared/document'
 
 export interface Meta {
@@ -14,11 +14,20 @@ export interface Meta {
   modifiedAt: string
   appVersion: string
 }
+/** A saved copy of the document: a named version, or an automatic one (`auto`). */
+export interface HistoryEntry {
+  id: string
+  name?: string
+  at: string
+  auto: boolean
+  document: Document
+}
 export interface RefigFile {
   meta: Meta
   document: Document
   thumbnail?: Uint8Array
   images: Record<string, Uint8Array>
+  history?: HistoryEntry[] // absent in files without versions
 }
 
 /** A problem with a file's content; the message is shown to the user. */
@@ -27,7 +36,7 @@ export class FormatError extends Error {}
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const NODE_ID = /^[A-Za-z0-9:-]{1,64}$/ // no '_' so '__proto__' can never be a key
 const HASH = /^[0-9a-f]{64}$/
-const REFIG_ENTRIES = /^(meta\.json|document\.json|thumbnail\.png|images\/([0-9a-f]{64})?)$/
+const REFIG_ENTRIES = /^(meta\.json|document\.json|thumbnail\.png|images\/([0-9a-f]{64})?|history\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json)?)$/
 const MAX_UNZIPPED = 1024 ** 3
 const MAX_ENTRIES = 10_000
 
@@ -362,6 +371,24 @@ function validateComments(x: unknown, pages: string[]): Comment[] {
   })
 }
 
+function validateLibraries(x: unknown): Library[] {
+  if (x === undefined) return [] // files before version 19
+  if (!Array.isArray(x) || x.length > 50 || !x.every(isObj)) return fail('libraries')
+  return x.map((l, i): Library => {
+    const at = `libraries.${i}`, projectId = str(l, 'projectId', at, 36)
+    if (!UUID.test(projectId)) fail(`${at}.projectId`)
+    if (!isObj(l.links)) return fail(`${at}.links`)
+    const entries = Object.entries(l.links)
+    if (entries.length > 20_000) fail(`${at}.links`)
+    const links: Record<string, string> = {}
+    for (const [from, to] of entries) {
+      if (!NODE_ID.test(from) || typeof to !== 'string' || !NODE_ID.test(to)) fail(`${at}.links`)
+      links[from] = to as string
+    }
+    return { projectId, name: str(l, 'name', at, 200), links }
+  })
+}
+
 /** Checks shape, references, parents and cycles. Returns a clean copy with unknown fields dropped. */
 export function validateDocument(x: unknown): Document {
   if (!isObj(x)) return fail('not an object')
@@ -406,7 +433,8 @@ export function validateDocument(x: unknown): Document {
       if (!collections.find((c) => c.id === cid)?.modes.some((m) => m.id === mid)) fail(`nodes.${n.id}.modes.${cid} (no such mode)`)
   }
   const comments = validateComments(x.comments, pages as string[])
-  return { formatVersion: FORMAT_VERSION, pages: pages as string[], nodes, styles, collections, comments } // older versions read as the current one
+  const libraries = validateLibraries(x.libraries)
+  return { formatVersion: FORMAT_VERSION, pages: pages as string[], nodes, styles, collections, comments, libraries } // older versions read as the current one
 }
 
 export function validateMeta(x: unknown): Meta {
@@ -447,13 +475,29 @@ export function readRefigMeta(bytes: Uint8Array): { meta: Meta; thumbnail?: Uint
 export function readRefig(bytes: Uint8Array): RefigFile {
   const files = safeUnzip(bytes, REFIG_ENTRIES)
   const images: Record<string, Uint8Array> = {}
-  for (const [name, data] of Object.entries(files)) if (name.startsWith('images/')) images[name.slice(7)] = data
+  const history: HistoryEntry[] = []
+  for (const [name, data] of Object.entries(files)) {
+    if (name.startsWith('images/')) images[name.slice(7)] = data
+    else if (name.startsWith('history/')) {
+      // a damaged version is dropped, not fatal: versions are optional data
+      try { history.push(validateHistoryEntry(name.slice(8, -5), json(files, name))) } catch (e) { if (!(e instanceof FormatError)) throw e }
+    }
+  }
+  history.sort((a, b) => a.at.localeCompare(b.at))
   return {
     meta: validateMeta(json(files, 'meta.json')),
     document: validateDocument(json(files, 'document.json')),
     thumbnail: files['thumbnail.png'],
     images,
+    history,
   }
+}
+
+function validateHistoryEntry(id: string, x: unknown): HistoryEntry {
+  const bad = () => new FormatError(`Invalid project file: history/${id}.json`)
+  if (!isObj(x) || x.id !== id || typeof x.at !== 'string' || Number.isNaN(Date.parse(x.at)) || typeof x.auto !== 'boolean') throw bad()
+  if (x.name !== undefined && (typeof x.name !== 'string' || x.name.length > 100)) throw bad()
+  return { id, at: x.at, auto: x.auto, ...(x.name !== undefined && { name: x.name }), document: validateDocument(x.document) }
 }
 
 export function writeRefig(f: RefigFile): Uint8Array {
@@ -463,5 +507,14 @@ export function writeRefig(f: RefigFile): Uint8Array {
   }
   if (f.thumbnail) zip['thumbnail.png'] = [f.thumbnail, { level: 0 }]
   for (const [hash, data] of Object.entries(f.images)) zip[`images/${hash}`] = [data, { level: 0 }] // already compressed
+  // entries never change once made, so each is stringified once; fast compression because every save rewrites them all
+  // shortcut: still recompressed on every save; upgrade to an append-only store if version history makes saving slow
+  for (const h of f.history ?? []) zip[`history/${h.id}.json`] = [historyJson(h), { level: 1 }]
   return zipSync(zip)
+}
+const historyBytes = new WeakMap<HistoryEntry, Uint8Array>()
+function historyJson(h: HistoryEntry) {
+  let b = historyBytes.get(h)
+  if (!b) historyBytes.set(h, (b = strToU8(JSON.stringify(h))))
+  return b
 }

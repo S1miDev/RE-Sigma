@@ -11,8 +11,8 @@ import { arcPath, cornerPath } from '../model/shapes'
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
 
-/** `imageUrl` maps an image hash to a data URL. The result's size is the nodes' bounding box on the page. */
-export function toSvg(doc: Document, ids: string[], imageUrl: (hash: string) => string | undefined, imageSize: (hash: string) => { w: number; h: number } | undefined = () => undefined, region?: Box): string {
+/** `imageUrl` maps an image hash to a data URL; `fontFaces` is @font-face CSS for the fonts the text uses (see fontFile.fontFaces). The result's size is the nodes' bounding box on the page. */
+export function toSvg(doc: Document, ids: string[], imageUrl: (hash: string) => string | undefined, imageSize: (hash: string) => { w: number; h: number } | undefined = () => undefined, region?: Box, fontFaces = ''): string {
   const box = region ?? worldBox(doc, ids) ?? { x: 0, y: 0, w: 1, h: 1 }
   let defs = '', uid = 0
 
@@ -158,5 +158,5 @@ export function toSvg(doc: Document, ids: string[], imageUrl: (hash: string) => 
 
   const body = ids.map((id) => `<g transform="matrix(${worldMatrix(doc, doc.nodes[id].parentId).map(f).join(' ')})">${node(doc.nodes[id])}</g>`).join('')
   const w = f(Math.max(1, box.w)), h = f(Math.max(1, box.h))
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="${f(box.x)} ${f(box.y)} ${w} ${h}">${defs ? `<defs>${defs}</defs>` : ''}${body}</svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="${f(box.x)} ${f(box.y)} ${w} ${h}">${defs || fontFaces ? `<defs>${fontFaces ? `<style>${fontFaces}</style>` : ''}${defs}</defs>` : ''}${body}</svg>`
 }

@@ -154,8 +154,10 @@ function marqueeGesture(store: EditorStore, p: Pointer): Gesture {
     move(q) {
       if (!moved && dist(q.screen, p.screen) < DRAG_PX) return
       moved = true
-      const marquee = bounds([p.world, q.world])!
-      store.set({ overlay: { marquee }, selection: [...new Set([...base, ...marqueeHits(doc, pageId, marquee)])] })
+      const marquee = bounds([p.world, q.world])!, now = store.get().selection
+      const selection = [...new Set([...base, ...marqueeHits(doc, pageId, marquee)])]
+      const same = selection.length === now.length && selection.every((id, i) => id === now[i]) // keeps the panels from re-rendering on every move
+      store.set(same ? { overlay: { marquee } } : { overlay: { marquee }, selection })
     },
     up() {
       store.set(moved || p.shift ? { overlay: {} } : { overlay: {}, selection: [] })

@@ -19,3 +19,8 @@ test('raster files above 1x get an @Nx name; vector files and 1x do not', () => 
   expect(defaultSetting('jpg', 3)).toEqual({ suffix: '@3x', format: 'jpg', scale: 3 })
   expect(defaultSetting('pdf', 3).suffix).toBe('')
 })
+
+test('toSvg puts the given @font-face rules in defs', () => {
+  const doc = emptyDocument(), svg = toSvg(doc, [], () => undefined, () => undefined, undefined, '@font-face{font-family:"X"}')
+  expect(svg).toContain('<defs><style>@font-face{font-family:"X"}</style></defs>')
+})

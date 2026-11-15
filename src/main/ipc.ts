@@ -48,6 +48,11 @@ export function registerIpc(store: ProjectStore, getWindow: () => BrowserWindow 
       return store.save(id(i), doc, png) // store.save validates the document shape
     },
     addImage: (i, b) => store.addImage(id(i), bytes(b, 50 * MB, 'image')),
+    listVersions: (i) => store.listVersions(id(i)),
+    saveVersion: (i, name, doc, auto) => store.saveVersion(id(i), text(name, 100, 'name'), doc, auto === true),
+    getVersion: (i, v) => store.getVersion(id(i), id(v)),
+    deleteVersion: (i, v) => store.deleteVersion(id(i), id(v)),
+    readLibrary: (i) => store.readLibrary(id(i)),
     renameProject: (i, name) => store.rename(id(i), text(name, 200, 'name')),
     deleteProject: (i) => store.remove(id(i)),
     duplicateProject: (i) => store.duplicate(id(i)),
