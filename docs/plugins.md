@@ -39,3 +39,22 @@ Send with `parent.postMessage(msg, '*')`; receive with `window.addEventListener(
 Plugin files are served from `refig-plugin://<id>/` with their own CSP (`default-src 'none'`): no network, no `eval`, no access to the editor, the document or `window.refig`. The iframe has `sandbox="allow-scripts"` (opaque origin). All document changes go through the validated methods above.
 
 This is isolation from the app, not a trust system: plugins are plain local folders you install yourself, and there is no signing or marketplace. A plugin can still create junk or delete layers (undoable) and burn CPU until it is stopped.
+
+## Proposal: scripting for bulk edits and agents (not built)
+
+**How it works today.** The main process scans the plugins folder when an editor opens (`src/main/plugins.ts` `listPlugins`, which validates `manifest.json`). It serves each plugin's files from `refig-plugin://<id>/`. Main menu → Plugins and the command palette list one entry per plugin command. Running one starts `code.js` in a Worker (`src/renderer/editor/plugins/host.ts`). Every call goes through `dispatch`, which checks its arguments and changes the document only with `store.update`, as one undo step per run. The table above already covers reading nodes, creating frames and text, and setting fills, strokes and characters. What is missing is a place to start from, a way to search, and a way to run without a person clicking.
+
+**Proposed additions, smallest first:**
+
+| Method | Does | Why |
+|---|---|---|
+| `getPages()`, `getCurrentPage()` | `[{ id, name }]` / the page shown now | Today the only entry point is the selection, so a script cannot walk a page that has nothing selected. |
+| `findAll(rootId, { type?, name? })` | Ids of nodes under `rootId` whose type matches and whose name contains `name` (case-insensitive). Capped at 10 000. | One call instead of a recursive `getChildren` walk with one message per node. |
+| `replaceColor(rootIds, fromHex, { r, g, b })` | Recolours every solid paint and text run fill of that colour under the roots. This is `model/colors.ts` `replaceColor`, the same code as the Selection colors panel. | A full recolour becomes one call and one undo step. |
+| `group(ids, 'GROUP' \| 'FRAME')`, `moveTo(ids, parentId)` | Wrap `model/ops.ts` `group` / `moveTo` | Lets a script restructure the tree, not only create and edit nodes. |
+
+Each method is an entry in `methods` in `host.ts`, with argument checks as strict as `FIELDS`. Gradient paints stay out until someone needs them.
+
+**Running without a click (for agents).** Add a `--run-plugin <id>[:<command>]` command-line switch. Refig already holds a single-instance lock (`src/main/index.ts`), so a second launch with the switch is forwarded to the open window through `second-instance`. The editor then runs that plugin on the open project as if it had been chosen from the menu. A plugin can log what it did with `notify` (shown as a toast), and optionally to stdout through a new `log(text)`. This keeps all the existing checks: nothing reaches the document except through `dispatch`.
+
+**Alternative with no app changes.** An agent can edit a closed project file directly, following `docs/project-format.md`. That suits large batch jobs, but it has no undo, no live view, and no checks.

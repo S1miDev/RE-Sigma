@@ -15,7 +15,7 @@ const SELECTED = [
   'group', 'ungroup', 'frame-selection', 'add-auto-layout', 'remove-auto-layout', null,
   'use-as-mask', 'union', 'subtract', 'intersect', 'exclude', 'flatten', null,
   'create-component', 'create-instance', 'go-to-main', 'reset-instance', 'detach-instance', null,
-  'toggle-visible', 'toggle-lock', null,
+  'select-parent', 'toggle-visible', 'toggle-lock', null,
   'export',
 ]
 const NOTHING = ['paste', 'select-all']

@@ -12,7 +12,7 @@ export function childrenOf(doc: Document, parentId: string): Node[] {
   if (!index) {
     index = new Map()
     for (const n of Object.values(doc.nodes)) if (n.parentId) index.set(n.parentId, [...(index.get(n.parentId) ?? []), n])
-    for (const list of index.values()) list.sort(byOrder)
+    for (const list of index.values()) Object.freeze(list.sort(byOrder)) // shared by every caller: mutating one (pop, sort…) once emptied pages on screen, so it throws instead
     indexes.set(doc, index)
   }
   return index.get(parentId) ?? []

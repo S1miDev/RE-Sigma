@@ -75,10 +75,13 @@ export const COMMANDS: Command[] = [
   { id: 'paste-properties', label: 'Paste properties', group: 'Edit', keys: ['Ctrl+Alt+Shift+V'], enabled: (s) => hasProps() && has(s), run: pasteProps },
   { id: 'rename-layers', label: 'Rename layers…', group: 'Edit', keys: ['Ctrl+F2'], enabled: has, run: (_, a) => a.openRename() },
   { id: 'find-replace', label: 'Find and replace…', group: 'Edit', keys: ['Ctrl+F'], run: (_, a) => a.openFind() },
-  { id: 'duplicate', label: 'Duplicate', group: 'Edit', keys: ['Ctrl+D'], enabled: has, run: (st) => st.update((d) => duplicate(d, st.get().selection)) },
+  { id: 'duplicate', label: 'Duplicate', group: 'Edit', keys: ['Ctrl+D'], enabled: has, run: (st) => st.update((d) => duplicateBeside(d, st.get().selection)) },
   // while editing points, Delete removes the selected point rather than the layer
   { id: 'delete', label: 'Delete', group: 'Edit', keys: ['Delete', 'Backspace'], enabled: (s) => (s.mode.kind === 'points' ? !!s.mode.sel : has(s)), run: (st) => (st.get().mode.kind === 'points' ? deletePoint(st) : st.update((d) => remove(d, st.get().selection))) },
-  { id: 'select-all', label: 'Select all', group: 'Edit', keys: ['Ctrl+A'], run: (st) => { const s = st.get(); st.set({ selection: childrenOf(s.doc, s.pageId).filter((n) => n.visible && !n.locked).map((n) => n.id) }) } },
+  // With a nested layer selected, Select all stays inside its parent; otherwise it takes the page's top-level layers.
+  { id: 'select-all', label: 'Select all', group: 'Edit', keys: ['Ctrl+A'], run: (st) => { const s = st.get(), parent = s.doc.nodes[s.selection[0]]?.parentId ?? s.pageId; st.set({ selection: childrenOf(s.doc, parent).filter((n) => n.visible && !n.locked).map((n) => n.id) }) } },
+  { id: 'select-parent', label: 'Select parent', group: 'Edit', keys: ['Shift+Enter'], enabled: (s) => s.selection.some((id) => !isTopLevel(s, id)),
+    run: (st) => { const s = st.get(); st.set({ selection: [...new Set(s.selection.map((id) => (isTopLevel(s, id) ? id : s.doc.nodes[id].parentId!)))] }) } },
 
   { id: 'zoom-in', label: 'Zoom in', group: 'View', keys: ['Ctrl+='], run: (st) => { const s = st.get(); st.set({ view: zoomAt(s.view, centre(s), s.view.zoom * 2) }) } },
   { id: 'zoom-out', label: 'Zoom out', group: 'View', keys: ['Ctrl+-'], run: (st) => { const s = st.get(); st.set({ view: zoomAt(s.view, centre(s), s.view.zoom / 2) }) } },
@@ -138,12 +141,25 @@ export const COMMANDS: Command[] = [
   tool('ellipse', 'Ellipse', 'O'), tool('line', 'Line', 'L'), tool('arrow', 'Arrow', 'Shift+L'), tool('star', 'Star', 'Shift+S'), tool('polygon', 'Polygon', 'Shift+G'), tool('pen', 'Pen', 'P'), tool('pencil', 'Pencil', 'Shift+P'),tool('text', 'Text', 'T'), tool('scale', 'Scale', 'K'), tool('comment', 'Comment', 'C'),
   // Escape steps out one level: leaves a mode (finishing a pen path), then deselects
   { id: 'escape', label: 'Deselect', group: 'Tools', keys: ['Escape'], run: (st) => (inMode(st.get()) ? exitMode(st) : st.set({ selection: [], tool: 'move', draft: null, openComment: null })) },
-  // Enter edits a text's characters or a vector's points, or leaves the mode
-  { id: 'edit', label: 'Edit text or points', group: 'Tools', keys: ['Enter'], enabled: (s) => inMode(s) || (s.selection.length === 1 && ['TEXT', 'VECTOR'].includes(s.doc.nodes[s.selection[0]]?.type)),
-    run: (st) => (inMode(st.get()) ? exitMode(st) : editNode(st, st.get().selection[0])) },
+  // Enter edits a text's characters or a vector's points, or leaves the mode; on other layers it selects their children
+  { id: 'edit', label: 'Edit text or points', group: 'Tools', keys: ['Enter'], enabled: (s) => inMode(s) || editable(s) || s.selection.some((id) => childrenOf(s.doc, id).length > 0),
+    run: (st) => { const s = st.get(); if (inMode(s)) exitMode(st); else if (editable(s)) editNode(st, s.selection[0]); else st.set({ selection: s.selection.flatMap((id) => childrenOf(s.doc, id).map((n) => n.id)) }) } },
 ]
 
+const editable = (s: EditorState) => s.selection.length === 1 && ['TEXT', 'VECTOR'].includes(s.doc.nodes[s.selection[0]]?.type)
+/** True when the node sits directly on a page (or is gone): it has no parent layer to select. */
+const isTopLevel = (s: EditorState, id: string) => (s.doc.nodes[s.doc.nodes[id]?.parentId ?? '']?.type ?? 'PAGE') === 'PAGE'
 const lone = (s: EditorState) => (s.selection.length === 1 ? s.doc.nodes[s.selection[0]] : undefined)
+
+/**
+ * Duplicates the selection. Copies of top-level frames go to the right of the originals so they don't hide them;
+ * copies inside a frame stay in place. shortcut: the copies can still land on other frames there; find free space if that bites.
+ */
+function duplicateBeside(d: Document, selection: string[]): Edit {
+  const made = duplicate(d, selection), frames = made.ids.filter((id) => made.doc.nodes[id].type === 'FRAME' && made.doc.nodes[made.doc.nodes[id].parentId!]?.type === 'PAGE')
+  const box = worldBox(made.doc, frames)
+  return box ? { doc: translate(made.doc, frames, { x: box.w + 40, y: 0 }), ids: made.ids } : made
+}
 
 /** One shape toggles its mask flag; several are grouped first and the bottom-most becomes the mask over the rest. Shapes that can't mask are left alone. */
 function useAsMask(d: Document, selection: string[]): Document | Edit {

@@ -1,6 +1,6 @@
 {
   "name": "refig",
-  "version": "0.1.32",
+  "version": "0.1.33",
   "description": "Local Figma-style design editor",
   "author": "Refig",
   "private": true,

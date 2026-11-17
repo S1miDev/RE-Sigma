@@ -6,7 +6,7 @@ import { useEditor, useStore, type EditorStore } from '../store'
 import { beginGesture, editNode, type Gesture, type Pointer } from '../tools'
 import { finishText, insertText, onEditedText, selectedText, textKey } from '../tools/textEdit'
 import { useContextMenu } from '../panels/ContextMenu'
-import { hitTest } from './hit'
+import { dive, hitTest } from './hit'
 import { drawOverlay } from './overlay'
 import { renderPage } from './render'
 import { caretPos } from './caret'
@@ -70,7 +70,8 @@ export function Canvas() {
       if (e.ctrlKey || e.metaKey) {
         const k = Math.abs(e.deltaY) < 50 ? 0.01 : 0.0025 // pinch sends small deltas, a mouse wheel large ones
         store.set({ view: zoomAt(view, { x: e.clientX - r.left, y: e.clientY - r.top }, view.zoom * Math.exp(-e.deltaY * k)) })
-      } else store.set({ view: { ...view, x: view.x - e.deltaX, y: view.y - e.deltaY } })
+      } else if (e.shiftKey && !e.deltaX) store.set({ view: { ...view, x: view.x - e.deltaY } }) // Shift+wheel pans sideways where the platform doesn't swap the axes
+      else store.set({ view: { ...view, x: view.x - e.deltaX, y: view.y - e.deltaY } })
     }
     canvas.addEventListener('wheel', wheel, { passive: false })
 
@@ -154,8 +155,11 @@ export function Canvas() {
           openMenu({ x: e.clientX, y: e.clientY })
         }}
         onDoubleClick={(e) => {
-          const s = store.get(), hit = s.tool === 'move' && s.mode.kind !== 'text' && hitTest(s.doc, s.pageId, pointer(e).world, { deep: true, tolerance: 4 / s.view.zoom })
-          if (hit) editNode(store, hit)
+          const s = store.get()
+          if (s.tool !== 'move' || s.mode.kind === 'text') return
+          const r = dive(s.doc, s.pageId, pointer(e).world, s.selection, 4 / s.view.zoom) // one level deeper per double-click
+          if (r && 'edit' in r) editNode(store, r.edit)
+          else if (r) store.set({ selection: [r.select] })
         }}
       />
       {editingText && <TextEditor key={editingText} id={editingText} />}

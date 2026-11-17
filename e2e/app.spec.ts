@@ -3,6 +3,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { API_KEYS } from '../src/shared/api'
+import { emptyDocument, FORMAT_VERSION, makeNode } from '../src/shared/document'
+import { writeRefig } from '../src/main/format/refig'
+import { insert } from '../src/renderer/editor/model/ops'
 
 const exe = path.resolve('dist', `${process.platform === 'win32' ? 'win' : process.platform === 'darwin' ? 'mac' : 'linux'}-unpacked`, process.platform === 'win32' ? 'Refig.exe' : 'refig')
 let workspace: string, profile: string, app: ElectronApplication | null = null
@@ -171,8 +174,8 @@ test('Shift+A puts two rectangles in an auto-layout frame whose gap is editable'
   await page.keyboard.press('Shift+A')
   await expect(page.getByRole('region', { name: 'Auto layout' })).toBeVisible()
   await expect(page.getByLabel('Width', { exact: true })).toHaveValue('400') // 220 + 80 gap + 100
-  await page.getByLabel('Gap').fill('24')
-  await page.getByLabel('Gap').press('Enter')
+  await page.getByLabel('Gap', { exact: true }).fill('24')
+  await page.getByLabel('Gap', { exact: true }).press('Enter')
   await expect(page.getByLabel('Width', { exact: true })).toHaveValue('344')
   await page.screenshot({ path: 'test-results/auto-layout.png' })
 })
@@ -468,4 +471,48 @@ test('text: typing and a bold selection export as styled spans', async () => {
   await page.getByLabel('Export format').selectOption('svg')
   await page.getByRole('button', { name: 'Export selection' }).click()
   await expect.poll(() => fs.existsSync(out) && fs.readFileSync(out, 'utf8')).toMatch(/<tspan[^>]*font-weight="700"[^>]*>hello<\/tspan>[^]*<tspan[^>]*font-weight="400"[^>]*> world<\/tspan>/)
+})
+
+test('a reopened project still shows its layers after a canvas click and zoom to fit', async () => {
+  const page = await launch()
+  await page.getByRole('button', { name: 'New project' }).first().click()
+  await drawRectangle(page)
+  await expect(page.getByRole('status')).toHaveText('Saved')
+  await page.getByRole('button', { name: 'Back to projects' }).click()
+  await page.getByRole('button', { name: 'Open Untitled' }).click()
+  await expect(page.getByRole('treeitem', { name: 'Rectangle 1' })).toBeVisible()
+  const box = (await page.getByLabel('Canvas').boundingBox())!
+  await page.mouse.click(box.x + box.width - 20, box.y + box.height - 20)
+  await page.keyboard.press('Shift+1')
+  await expect(page.getByText(/This page is empty/)).toHaveCount(0)
+  await expect(page.getByRole('treeitem', { name: 'Rectangle 1' })).toBeVisible()
+})
+
+test('layers: a long tree starts at the top and every row can be scrolled to, also after selecting a deep layer', async () => {
+  // A project big enough to overflow the left panel: many pages above the layers, 12 frames of 25 layers each.
+  let doc = emptyDocument()
+  for (let i = 2; i <= 15; i++) { const p = makeNode('PAGE', { name: `Page ${i}` }); doc = { ...doc, pages: [...doc.pages, p.id], nodes: { ...doc.nodes, [p.id]: p } } }
+  for (let f = 0; f < 12; f++) {
+    const frame = makeNode('FRAME', { name: `Frame ${f}`, x: f * 500, y: 0, width: 400, height: 1000 })
+    doc = insert(doc, frame, doc.pages[0])
+    for (let k = 0; k < 25; k++) doc = insert(doc, makeNode('RECTANGLE', { name: `Layer ${f}.${k}`, x: 10, y: k * 40, width: 100, height: 30 }), frame.id)
+  }
+  const at = new Date().toISOString()
+  fs.writeFileSync(path.join(workspace, 'Big.refig'), writeRefig({ meta: { format: 'refig', formatVersion: FORMAT_VERSION, id: crypto.randomUUID(), name: 'Big', createdAt: at, modifiedAt: at, appVersion: '0' }, document: doc, images: {} }))
+
+  const page = await launch()
+  await page.getByRole('button', { name: 'Open Big' }).click()
+  const tree = page.getByRole('tree', { name: 'Layers' })
+  await expect(tree.getByRole('treeitem', { name: 'Frame 11' })).toBeInViewport() // the top-most layer is listed first
+  // Nothing outside the list may scroll: the window and every panel ancestor hide overflow, so a scrolled one can't be scrolled back.
+  const scrolled = () => tree.evaluate((ul) => { const out: string[] = []; for (let e = ul.parentElement; e; e = e.parentElement) if (e.scrollTop) out.push(`${e.tagName}.${e.className}=${e.scrollTop}`); return out })
+  expect(await scrolled()).toEqual([])
+
+  await page.keyboard.press('Control+k')
+  await page.getByRole('combobox', { name: /Search commands/ }).fill('Layer 0.0')
+  await page.getByRole('option', { name: /Layer 0\.0/ }).first().click()
+  await expect(tree.getByRole('treeitem', { name: 'Layer 0.0' })).toBeInViewport()
+  expect(await scrolled()).toEqual([])
+  await tree.evaluate((ul) => ul.scrollTo(0, 0))
+  await expect(tree.getByRole('treeitem', { name: 'Frame 11' })).toBeInViewport()
 })

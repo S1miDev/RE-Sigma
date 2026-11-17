@@ -1,6 +1,6 @@
 // Editor-only drawing aids on top of the page: pixel grid, layout grids, user guides and the rulers. Never exported.
 import type { Color, Comment, Document, LayoutGrid, Node } from '../../../shared/document'
-import { apply, worldBox, worldMatrix, type Pt } from '../model/geometry'
+import { apply, corners, worldBox, worldMatrix, type Pt } from '../model/geometry'
 import { childrenOf } from '../model/ops'
 import type { EditorState } from '../store'
 import { toScreen, type View } from './viewport'
@@ -23,6 +23,40 @@ export function guideAt(s: Pick<AidState, 'doc' | 'pageId' | 'view' | 'rulers' |
   if (!s.guidesVisible || (s.rulers && (p.x < RULER || p.y < RULER))) return -1
   const guides = s.doc.nodes[s.pageId]?.guides ?? []
   return guides.findIndex((g) => Math.abs((g.axis === 'x' ? p.x : p.y) - (g.pos * s.view.zoom + (g.axis === 'x' ? s.view.x : s.view.y))) <= 3)
+}
+
+/** Frame names drawn above top-level frames (see drawOverlay), and where they take clicks. */
+export const LABEL_FONT = '11px "Inter Variable", sans-serif'
+const LABEL_H = 16
+let labelCtx: CanvasRenderingContext2D | null | undefined
+const labelMeasurer = (): Pick<CanvasRenderingContext2D, 'measureText'> => {
+  labelCtx ??= typeof document === 'undefined' ? null : document.createElement('canvas').getContext('2d')
+  if (!labelCtx) return { measureText: (t: string) => ({ width: t.length * 6 }) as TextMetrics } // no canvas (tests): about 6 px a character
+  labelCtx.font = LABEL_FONT
+  return labelCtx
+}
+
+/** The top-level frame (or slice) whose name label is under screen point `p`, topmost first. Labels take clicks before the content under them. */
+export function labelAt(s: Pick<EditorState, 'doc' | 'pageId' | 'view'>, p: Pt): string | null {
+  const m = labelMeasurer()
+  for (const n of childrenOf(s.doc, s.pageId).toReversed()) {
+    if ((n.type !== 'FRAME' && !n.slice) || !n.visible || n.locked) continue
+    const [a, b] = corners(s.doc, n.id).map((c) => toScreen(s.view, c))
+    const w = m.measureText(fitText(m, n.name, Math.hypot(b.x - a.x, b.y - a.y))).width
+    if (p.x >= a.x && p.x <= a.x + w && p.y >= a.y - LABEL_H && p.y < a.y) return n.id
+  }
+  return null
+}
+/** `text` cut with "…" to fit `max` px in the context's current font; empty when not even "…" fits. */
+export function fitText(ctx: Pick<CanvasRenderingContext2D, 'measureText'>, text: string, max: number): string {
+  if (ctx.measureText(text).width <= max) return text
+  let lo = 0, hi = text.length - 1 // binary search for the longest prefix that fits with the ellipsis
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2)
+    if (ctx.measureText(text.slice(0, mid) + '…').width <= max) lo = mid
+    else hi = mid - 1
+  }
+  return lo ? text.slice(0, lo) + '…' : ctx.measureText('…').width <= max ? '…' : ''
 }
 
 /** Pins are drawn on screen at a fixed size; the tip of the pin sits on the comment's point. */

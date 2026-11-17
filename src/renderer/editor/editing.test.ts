@@ -1,7 +1,8 @@
 // Editing: the store (undo, autosave), tools, modes, the pen and point editing.
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import { makeNode, solid } from '../../shared/document'
-import { keyOf, runCommand } from './commands'
+import { emptyDocument, makeNode, solid, type Node } from '../../shared/document'
+import { dive, pick } from './canvas/hit'
+import { handleKey, keyOf, runCommand, type Actions } from './commands'
 import { toSvg } from './export/svg'
 import { worldBox } from './model/geometry'
 import { addPage, childrenOf, group, insert, patch, remove } from './model/ops'
@@ -11,6 +12,7 @@ import { beginGesture, editNode, showPage } from './tools'
 import { insertText, select, textKey } from './tools/textEdit'
 import { open, at, drag, run, penMode } from './testkit'
 
+const NO_ACTIONS = {} as Actions
 beforeEach(() => void vi.useFakeTimers())
 afterEach(() => void vi.useRealTimers())
 
@@ -323,4 +325,69 @@ test('text editing: a style chosen at a bare caret applies to what is typed next
   expect(store.get().mode).toMatchObject({ focus: 7 })
   key('ArrowRight', { shift: true })
   expect(store.get().mode).toMatchObject({ anchor: 7, focus: 7 })
+})
+
+test('tree navigation: Enter selects children, Shift+Enter the parent, Ctrl+A stays inside the parent', () => {
+  const { store, frame, inner, a, b } = open()
+  const key = (k: string, shift = false, ctrl = false) => handleKey({ key: k, code: k === 'a' ? 'KeyA' : k, shiftKey: shift, ctrlKey: ctrl, altKey: false, metaKey: false } as KeyboardEvent, store, NO_ACTIONS)
+  store.set({ selection: [frame] })
+  expect(key('Enter')).toBe(true)
+  expect(store.get().selection).toEqual([inner])
+  expect(key('Enter', true)).toBe(true)
+  expect(store.get().selection).toEqual([frame])
+  expect(key('Enter', true)).toBe(false) // a top-level layer has no parent to select
+  store.set({ selection: [inner] })
+  key('a', false, true)
+  expect(store.get().selection).toEqual([inner])
+  store.set({ selection: [a] })
+  key('a', false, true)
+  expect(store.get().selection).toEqual([frame, a, b])
+})
+
+test('undo and redo revert the document only; the selection stays, minus layers that are gone', () => {
+  const { store, a, b } = open()
+  store.set({ selection: [a] })
+  store.update((d) => patch(d, [a], { x: 999 }))
+  store.set({ selection: [b] })
+  store.undo()
+  expect(store.get().doc.nodes[a].x).toBe(400)
+  expect(store.get().selection).toEqual([b])
+  store.update((d) => remove(d, [b]))
+  store.undo()
+  store.set({ selection: [b] })
+  store.redo() // b is deleted again
+  expect(store.get().selection).toEqual([])
+})
+
+test('click depth: a click selects in the current context, each double-click goes one level deeper, Ctrl goes to the deepest', () => {
+  let doc = emptyDocument()
+  const page = doc.pages[0]
+  const add = (type: 'FRAME' | 'TEXT', parent: string, props: Partial<Node>) => { const n = makeNode(type, { x: 0, y: 0, ...props }); doc = insert(doc, n, parent); return n.id }
+  const desktop = add('FRAME', page, { width: 1440, height: 900 })
+  const section = add('FRAME', desktop, { width: 600, height: 400 })
+  const card = add('FRAME', section, { width: 200, height: 200 }), other = add('FRAME', section, { x: 300, width: 200, height: 200 })
+  const button = add('FRAME', card, { width: 100, height: 40 })
+  const label = add('TEXT', button, { width: 50, height: 20, characters: 'Go' })
+  const p = { x: 5, y: 5 }
+  expect(pick(doc, page, p, [])).toBe(section) // the top-level frame's child
+  expect(dive(doc, page, p, [section])).toEqual({ select: card })
+  expect(pick(doc, page, p, [card])).toBe(card) // a selected layer under the pointer stays, so it can be dragged
+  expect(dive(doc, page, p, [card])).toEqual({ select: button })
+  expect(dive(doc, page, p, [button])).toEqual({ select: label })
+  expect(dive(doc, page, p, [label])).toEqual({ edit: label }) // text editing only once the text itself is selected
+  expect(pick(doc, page, { x: 305, y: 5 }, [card])).toBe(other) // a sibling of the selection
+  expect(pick(doc, page, p, [], { deep: true })).toBe(label)
+  expect(pick(doc, page, { x: 1000, y: 800 }, [])).toBe(desktop) // empty part of a top-level frame
+})
+
+test('Ctrl+D puts the copy of a top-level frame to its right; a copy inside a frame stays in place', () => {
+  const { store, frame, inner } = open()
+  store.set({ selection: [frame] })
+  run(store, 'duplicate')
+  const [copy] = store.get().selection
+  expect(copy).not.toBe(frame)
+  expect(store.get().doc.nodes[copy]).toMatchObject({ x: 100 + 200 + 40, y: 100 })
+  store.set({ selection: [inner] })
+  run(store, 'duplicate')
+  expect(store.get().doc.nodes[store.get().selection[0]]).toMatchObject({ x: 10, y: 10 })
 })

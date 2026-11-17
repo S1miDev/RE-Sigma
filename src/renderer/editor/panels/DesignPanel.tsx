@@ -9,8 +9,9 @@ import { runCommand } from '../commands'
 import { setOf, setVariant, variantProps, variantsOf } from '../model/components'
 import { useSystemFonts } from '../fonts'
 import { applyRunStyle, styleValue } from '../tools/textEdit'
-import { addAutoLayout, patch, resizeNode } from '../model/ops'
+import { addAutoLayout, childrenOf, patch, resizeNode } from '../model/ops'
 import { setMode } from '../model/variables'
+import { replaceColor, selectionColors } from '../model/colors'
 import { useEditor, useStore, type Step } from '../store'
 import { PickField } from './ColorPicks'
 import { ExportControls } from './ExportControls'
@@ -182,6 +183,7 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
         </Paints>
       )}
       {!nodes.some((n) => n.slice) && <Shadows nodes={nodes} />}
+      <SelectionColors ids={ids} />
       <PanelSection title="Export">
         <ExportControls onDone={() => {}} onError={report} />
       </PanelSection>
@@ -650,6 +652,24 @@ function Shadows({ nodes }: { nodes: Node[] }) {
           </div>
         )
       })}
+    </PanelSection>
+  )
+}
+
+/** Every solid colour used inside the selection; editing one recolours all its users at once. Shown for several layers or a layer with children. */
+function SelectionColors({ ids }: { ids: string[] }) {
+  const store = useStore(), doc = useEditor((s) => s.doc)
+  if (ids.length < 2 && !childrenOf(doc, ids[0]).length) return null // a lone leaf layer's colours are already in Fill and Stroke
+  const colors = selectionColors(doc, ids)
+  if (!colors.length) return null
+  return (
+    <PanelSection title="Selection colors">
+      {colors.map((u, i) => (
+        <Row key={i}>
+          <div className="flex-1"><PickField label={`Selection color ${u.hex}`} color={u.color} onChange={(c) => store.update((d) => replaceColor(d, ids, u.hex, c), panelStep('selection-colors', ids))} /></div>
+          <span className="w-8 text-right text-dim" title={`Used ${u.count} times`}>{u.count}</span>
+        </Row>
+      ))}
     </PanelSection>
   )
 }

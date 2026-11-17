@@ -11,6 +11,8 @@ import { pendingText, resyncBooleans } from './model/boolean'
 import type { Box } from './model/geometry'
 import type { Edit } from './model/ops'
 import { normalize } from './normalize'
+import { fitText } from './canvas/text'
+import { put } from './model/ops'
 import type { Anchor } from './model/path'
 
 export type Tool = 'move' | 'hand' | 'frame' | 'section' | 'slice' | 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'star' | 'polygon' | 'pen' | 'pencil' | 'text' | 'scale' | 'comment'
@@ -56,7 +58,7 @@ export interface EditorState {
   plugin: { id: string; name: string; ui: { src: string; w: number; h: number } | null } | null // the running plugin
   toast: string | null // a message for the editor's toast (plugins use it)
 }
-type Snapshot = Pick<EditorState, 'doc' | 'pageId' | 'selection'>
+type Snapshot = Pick<EditorState, 'doc' | 'pageId'> // no selection: undo reverts edits only, the selection stays (minus layers that are gone)
 /**
  * The undo step an edit belongs to. Consecutive edits with the same key share one step: always for a gesture
  * (it rebuilds from where it started each frame), within a second otherwise (typing a value, nudging).
@@ -88,7 +90,7 @@ export function createEditorStore(opened: OpenedProject, api: RefigApi) {
     listeners.forEach((l) => l())
   }
   const subscribe = (l: () => void) => (listeners.add(l), () => void listeners.delete(l))
-  const snapshot = (): Snapshot => ({ doc: state.doc, pageId: state.pageId, selection: state.selection })
+  const snapshot = (): Snapshot => ({ doc: state.doc, pageId: state.pageId })
 
   function register(hash: string, data: Uint8Array) {
     bytes.set(hash, data)
@@ -136,7 +138,7 @@ export function createEditorStore(opened: OpenedProject, api: RefigApi) {
     if (!s) return
     to.push(snapshot())
     lastStep = undefined
-    commit(s.doc, { pageId: s.pageId, selection: s.selection, mode: NO_MODE }) // a mode's state may not match the restored document
+    commit(s.doc, { pageId: s.pageId, mode: NO_MODE }) // a mode's state may not match the restored document
   }
 
   /** Saves now if there are unsaved changes. Resolves false if the save failed (the document stays in memory and is retried). */
@@ -169,8 +171,19 @@ export function createEditorStore(opened: OpenedProject, api: RefigApi) {
     return inflight
   }
 
+  /**
+   * Measures every text box again and lets auto layout follow. Text is measured with whatever font the browser has,
+   * so boxes sized before a font loaded (or saved on a machine with other fonts) are wrong until this runs.
+   * Not an undo step: it corrects the layout, it isn't an edit.
+   */
+  function refitText() {
+    if (disposed) return // fonts can finish loading after the editor closed
+    const texts = Object.values(state.doc.nodes).filter((n) => n.type === 'TEXT'), fitted = texts.map(fitText).filter((n, i) => n !== texts[i])
+    if (fitted.length) commit(normalize(state.doc, put(state.doc, fitted), state.doc))
+  }
+
   return {
-    id, api, get, set, subscribe, update, save,
+    id, api, get, set, subscribe, update, save, refitText,
     undo: () => travel(past, future),
     redo: () => travel(future, past),
     canUndo: () => past.length > 0,

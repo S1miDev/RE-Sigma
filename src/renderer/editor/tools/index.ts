@@ -1,9 +1,9 @@
 // Pointer gestures for the tools: Move (select, drag, marquee, resize, rotate), Hand, Frame, Rectangle, Ellipse, Line, Text.
 // The pen and point editing live in pen.ts. Also the mode switches: setTool, exitMode, editNode, showPage.
 import { makeNode, solid, type Node, type NodeType } from '../../../shared/document'
-import { frameAt, hitTest, marqueeHits } from '../canvas/hit'
+import { frameAt, hitTest, marqueeHits, pick } from '../canvas/hit'
 import { handleAt, handlesOf, type Handle } from '../canvas/overlay'
-import { guideAt, pinAt } from '../canvas/aids'
+import { guideAt, labelAt, pinAt } from '../canvas/aids'
 import { snap, snapTargets } from '../canvas/snap'
 import { apply, bounds, deg, invert, lineBetween, localMatrix, resizeBox, worldBox, worldMatrix, worldRotation } from '../model/geometry'
 import { insert, layoutSlot, moveTo, nextName, patch, resizeNode, topLevel, translate } from '../model/ops'
@@ -96,7 +96,7 @@ function moveToolGesture(store: EditorStore, p: Pointer): Gesture | null {
   if (pin) return void store.set({ openComment: pin.id, draft: null }), null
   const g = guideAt(s, p.screen)
   if (g >= 0) return guideGesture(store, p, g, doc.nodes[pageId].guides![g].axis)
-  const hit = hitTest(doc, pageId, p.world, { deep: p.ctrl, tolerance: 4 / view.zoom })
+  const hit = labelAt(s, p.screen) ?? pick(doc, pageId, p.world, s.selection, { deep: p.ctrl, tolerance: 4 / view.zoom }) // a frame's name selects and drags the frame
   if (!hit) return marqueeGesture(store, p)
   const was = s.selection.includes(hit)
   let selection = s.selection

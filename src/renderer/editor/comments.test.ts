@@ -50,7 +50,7 @@ test('resolved pins hide unless shown; deleting a page deletes its comments; dra
   expect(pinAt(store.get(), { x: 5, y: -5 })).toBeUndefined()
   runCommand(store, 'toggle-resolved-comments')
   expect(pinAt(store.get(), { x: 5, y: -5 })?.id).toBe('c')
-  const ctx = new Proxy({}, { get: (_, k) => (k === 'canvas' ? { width: 100, height: 100 } : () => {}), set: () => true }) as unknown as CanvasRenderingContext2D
+  const ctx = new Proxy({}, { get: (_, k) => (k === 'canvas' ? { width: 100, height: 100 } : k === 'measureText' ? () => ({ width: 0 }) : () => {}), set: () => true }) as unknown as CanvasRenderingContext2D
   expect(() => drawOverlay(ctx, store.get(), 1)).not.toThrow()
   const two = { ...d, pages: [...d.pages, 'p2'], nodes: { ...d.nodes, p2: { ...d.nodes[pageId], id: 'p2' } } }
   expect(removePage(two, pageId).comments).toEqual([])

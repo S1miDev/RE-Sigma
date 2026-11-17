@@ -5,7 +5,7 @@ import { measure } from './measure'
 import { childrenOf } from '../model/ops'
 import { anchorsOf } from '../model/path'
 import type { EditorState, Mode } from '../store'
-import { drawComments, drawGrids, drawGuides, drawRulers, type AidState } from './aids'
+import { drawComments, drawGrids, drawGuides, drawRulers, fitText, LABEL_FONT, type AidState } from './aids'
 import { caretPos, selectionRects } from './caret'
 import { imageBox } from './paintPlan'
 import { layoutText } from './text'
@@ -42,7 +42,7 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: AidState & Pick<Ed
   ctx.lineWidth = 1
   drawGrids(ctx, s, W, H)
 
-  ctx.font = '11px "Inter Variable", sans-serif'
+  ctx.font = LABEL_FONT
   ctx.textBaseline = 'alphabetic'
   for (const n of childrenOf(doc, s.pageId)) {
     if ((n.type !== 'FRAME' && !n.slice) || !n.visible) continue
@@ -58,7 +58,7 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: AidState & Pick<Ed
       ctx.restore()
     }
     ctx.fillStyle = n.component || n.componentSet || n.instanceOf ? COMPONENT : s.selection.includes(n.id) ? ACCENT : '#8c8c8c'
-    ctx.fillText(n.name, p.x, p.y - 6)
+    ctx.fillText(fitText(ctx, n.name, Math.hypot(q[1].x - p.x, q[1].y - p.y)), p.x, p.y - 6) // never wider than its frame, so neighbours' names don't run together
   }
 
   ctx.strokeStyle = ACCENT
@@ -168,3 +168,4 @@ function drawMeasure(ctx: CanvasRenderingContext2D, s: AidState & Pick<EditorSta
   }
   ctx.textAlign = 'start'
 }
+

@@ -25,10 +25,12 @@ export const isTyping = (t: EventTarget | null) =>
 
 /**
  * True when a key or clipboard event belongs to the page rather than the editor's shortcuts: typing in a field,
- * anything while a dialog is open or inside a menu, and Enter/Space on a focused button (which press it).
+ * anything while a dialog is open or inside a menu, Enter/Space on a focused button (which press it), and a plain
+ * character typed while the right panel itself has focus: a click that just missed a field must not switch canvas tools.
  */
 export function keyBelongsToPage(e: Event): boolean {
-  const t = e.target instanceof HTMLElement ? e.target : null, key = (e as KeyboardEvent).key
+  const t = e.target instanceof HTMLElement ? e.target : null, k = e as KeyboardEvent, key = k.key
   return isTyping(t) || document.querySelector('[aria-modal="true"]') !== null || t?.closest('[role="menu"]') != null
     || (t?.closest('button') != null && (key === 'Enter' || key === ' '))
+    || (key?.length === 1 && !k.ctrlKey && !k.metaKey && !k.altKey && t?.matches('aside[data-side="right"]') === true)
 }

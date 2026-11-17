@@ -1,6 +1,6 @@
 import type { Document, Node } from '../../../shared/document'
 import { apply, contains, intersects, invert, localMatrix, worldBox, worldMatrix, type Box, type Pt } from '../model/geometry'
-import { childrenOf } from '../model/ops'
+import { childrenOf, lineage } from '../model/ops'
 import { hasPath, isMask } from './paintPlan'
 
 /** Whether a point (in the node's own coordinates) is on the node's shape. Vectors use their box, with slack so flat ones stay clickable. */
@@ -43,6 +43,35 @@ export function hitTest(doc: Document, pageId: string, p: Pt, opts: { deep?: boo
     return null
   }
   return hit(pageId, p)
+}
+
+/** The layers under a page point, outermost first, down to the deepest one. Sections are left out: like the page, they only hold things. */
+export function pathAt(doc: Document, pageId: string, p: Pt, tolerance?: number): string[] {
+  const leaf = hitTest(doc, pageId, p, { deep: true, tolerance })
+  return lineage(doc, leaf).toReversed().filter((n) => n.type !== 'PAGE' && !n.section).map((n) => n.id)
+}
+
+/**
+ * What a click selects, as in Figma: the deepest layer with `deep` (Ctrl); a selected layer under the point stays
+ * (so it can be dragged); a sibling of a selected layer, or the layer at that level, is the current context;
+ * otherwise a top-level layer, or the child of a top-level frame.
+ */
+export function pick(doc: Document, pageId: string, p: Pt, selection: string[], opts: { deep?: boolean; tolerance?: number } = {}): string | null {
+  const path = pathAt(doc, pageId, p, opts.tolerance)
+  if (!path.length) return null
+  if (opts.deep) return path.at(-1)!
+  const kept = path.find((id) => selection.includes(id))
+  if (kept) return kept
+  for (let i = path.length - 1; i > 0; i--) if (selection.some((id) => doc.nodes[id]?.parentId === path[i - 1])) return path[i]
+  return doc.nodes[path[0]].type === 'FRAME' && path.length > 1 ? path[1] : path[0]
+}
+
+/** What a double-click does: select one level deeper than the selected layer under the point, or edit that layer once it is the deepest. */
+export function dive(doc: Document, pageId: string, p: Pt, selection: string[], tolerance?: number): { select: string } | { edit: string } | null {
+  const path = pathAt(doc, pageId, p, tolerance), i = path.findIndex((id) => selection.includes(id))
+  if (!path.length) return null
+  if (i < 0) return { select: pick(doc, pageId, p, selection, { tolerance })! }
+  return i === path.length - 1 ? { edit: path[i] } : { select: path[i + 1] }
 }
 
 /** Nodes touched by a marquee. A frame is taken whole only when fully enclosed; otherwise its children are tested. */

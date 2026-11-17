@@ -102,7 +102,7 @@ test('the overlay draws rulers, guides, pixel grid and layout grids without erro
   store.update((d) => patch(patch(d, [frame], { layoutGrids: [cols, { ...cols, kind: 'ROWS' }, { ...cols, kind: 'GRID', size: 10 }] }), [page], { guides: [{ axis: 'x', pos: 5 }, { axis: 'y', pos: 9 }] }))
   store.set({ rulers: true, selection: [frame], overlay: { guide: { axis: 'x', pos: 5 } } })
   const calls: string[] = []
-  const ctx = new Proxy({ canvas: { width: 800, height: 600 } }, { get: (t, k) => (k in t ? (t as never)[k] : (...a: unknown[]) => void calls.push(`${String(k)}:${a.length}`)), set: () => true }) as unknown as CanvasRenderingContext2D
+  const ctx = new Proxy({ canvas: { width: 800, height: 600 } }, { get: (t, k) => (k in t ? (t as never)[k] : k === 'measureText' ? () => ({ width: 0 }) : (...a: unknown[]) => void calls.push(`${String(k)}:${a.length}`)), set: () => true }) as unknown as CanvasRenderingContext2D
   for (const zoom of [1, 16]) {
     store.set({ view: { x: 0, y: 0, zoom } })
     calls.length = 0
@@ -115,7 +115,7 @@ test('drawing the overlay leaves the page children intact (it once emptied the c
   const { store, page } = open()
   const before = childrenOf(store.get().doc, page).length
   expect(before).toBeGreaterThan(0)
-  const ctx = new Proxy({ canvas: { width: 800, height: 600 } }, { get: (t, k) => (k in t ? (t as never)[k] : () => {}), set: () => true }) as unknown as CanvasRenderingContext2D
+  const ctx = new Proxy({ canvas: { width: 800, height: 600 } }, { get: (t, k) => (k in t ? (t as never)[k] : k === 'measureText' ? () => ({ width: 0 }) : () => {}), set: () => true }) as unknown as CanvasRenderingContext2D
   drawOverlay(ctx, store.get(), 1)
   drawOverlay(ctx, store.get(), 1)
   expect(childrenOf(store.get().doc, page).length).toBe(before)

@@ -42,7 +42,11 @@ export function Editor({ opened, api, onExit }: { opened: OpenedProject; api: Re
   useEffect(() => {
     store.attach()
     void refreshPlugins(store)
-    return () => (stopPlugin(store), store.dispose())
+    // Text boxes are measured with the fonts loaded so far; measure again once the fonts in use have arrived.
+    const refit = () => store.refitText()
+    void document.fonts?.ready.then(refit)
+    document.fonts?.addEventListener?.('loadingdone', refit)
+    return () => (document.fonts?.removeEventListener?.('loadingdone', refit), stopPlugin(store), store.dispose())
   }, [store])
   const shown = useSyncExternalStore(store.subscribe, () => store.get().toast)
   useEffect(() => {

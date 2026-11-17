@@ -5,6 +5,7 @@ import { expect, test, vi } from 'vitest'
 import type { ExportFile, ImportResult, ProjectSummary, RefigApi, VersionInfo } from '../shared/api'
 import { emptyDocument, makeNode, type Document } from '../shared/document'
 import { App } from './App'
+import { insert } from './editor/model/ops'
 
 /** A typed in-memory stand-in for window.refig. */
 function fakeApi(names: string[] = []) {
@@ -524,4 +525,45 @@ test('Editor: the Assets panel lists components and puts an instance on the curr
   await user.clear(within(assets).getByLabelText('Filter assets'))
   await user.click(within(assets).getByRole('button', { name: /Component/ }))
   expect(screen.getByRole('treeitem', { name: /Component/ })).toHaveAttribute('aria-selected', 'true')
+})
+
+/** Opens a project whose page holds frame "Card" with rectangle "Swatch" inside it. */
+async function openNested() {
+  const f = fakeApi(['Alpha']), user = userEvent.setup()
+  let doc = emptyDocument()
+  const card = makeNode('FRAME', { name: 'Card', x: 0, y: 0, width: 200, height: 200 }), swatch = makeNode('RECTANGLE', { name: 'Swatch', x: 20, y: 20, width: 50, height: 50 })
+  doc = insert(insert(doc, card, doc.pages[0]), swatch, card.id)
+  f.docs.set(f.list[0].id, doc)
+  render(<App api={f.api} />)
+  await user.click(await screen.findByRole('button', { name: 'Open Alpha' }))
+  return { user, canvas: await screen.findByLabelText('Canvas'), tree: () => screen.getByRole('tree', { name: 'Layers' }) }
+}
+
+test('Layers: selecting on the canvas opens the parents, scrolls to the row and highlights it', async () => {
+  const { user, canvas, tree } = await openNested() // the scrolling itself needs real layout: see the e2e test "layers: …"
+  await user.click(within(tree()).getByRole('button', { name: 'Collapse Card' }))
+  expect(within(tree()).queryByRole('treeitem', { name: 'Swatch' })).toBeNull()
+  fireEvent.pointerDown(canvas, { clientX: 30, clientY: 30, button: 0, pointerId: 1, ctrlKey: true }) // Ctrl+click selects inside the frame
+  fireEvent.pointerUp(canvas, { clientX: 30, clientY: 30, pointerId: 1, ctrlKey: true })
+  const row = within(tree()).getByRole('treeitem', { name: 'Swatch' })
+  expect(row).toHaveAttribute('aria-selected', 'true')
+})
+
+test('Layers: while filtering, a matching layer keeps its children and can be collapsed', async () => {
+  const { user, tree } = await openNested()
+  await user.type(screen.getByLabelText('Filter layers'), 'card')
+  expect(within(tree()).getByRole('treeitem', { name: 'Swatch' })).toBeInTheDocument()
+  await user.click(within(tree()).getByRole('button', { name: 'Collapse Card' }))
+  expect(within(tree()).queryByRole('treeitem', { name: 'Swatch' })).toBeNull()
+})
+
+test('Editor: letters typed after a click in the Design panel do not switch canvas tools', async () => {
+  const { user, draw } = await openEditor()
+  await user.keyboard('r')
+  draw(100, 100, 260, 180)
+  await user.click(screen.getByRole('complementary', { name: 'Design' }))
+  await user.keyboard('c')
+  expect(screen.getByRole('button', { name: /^Comment/ })).toHaveAttribute('aria-pressed', 'false')
+  await user.keyboard('{Control>}z{/Control}') // shortcuts with Ctrl still work
+  expect(screen.getByText(/This page is empty/)).toBeInTheDocument()
 })

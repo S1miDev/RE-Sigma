@@ -1,10 +1,10 @@
-import { createContext, memo, useContext, useMemo, useState, type DragEvent } from 'react'
+import { createContext, memo, useContext, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { isContainer, type Document, type Node } from '../../../shared/document'
 import { ColorField, Icon, IconButton, Input, NumberField, type IconName } from '../../ui'
 import { isMask } from '../canvas/paintPlan'
 import { toWorld, zoomToFit } from '../canvas/viewport'
 import { assetsOf, instantiate } from '../model/components'
-import { addPage, childrenOf, moveTo, movePage, patch, removePage } from '../model/ops'
+import { addPage, childrenOf, lineage, moveTo, movePage, patch, removePage } from '../model/ops'
 import { deleteStyle, LINKS, renameStyle, updateStyleFrom, type Link } from '../model/styles'
 import { addMode, createCollection, createVariable, deleteCollection, deleteMode, deleteVariable, renameCollection, renameMode, renameVariable, setVariableValue } from '../model/variables'
 import { useEditor, useStore } from '../store'
@@ -274,6 +274,13 @@ function Layers() {
     return { doc, q, collapsed, renaming, drop, keeps, zoneOf, onDrop, setCollapsed, setRenaming, setDrop }
   }, [doc, q, collapsed, renaming, drop, store])
 
+  // Selecting on the canvas opens every layer above the selection, so its row is there to scroll to.
+  const selection = useEditor((s) => s.selection)
+  useEffect(() => {
+    const above = selection.flatMap((id) => lineage(doc, id).slice(1).map((n) => n.id)).filter((id) => collapsed.has(id))
+    if (above.length) setCollapsed(new Set([...collapsed].filter((id) => !above.includes(id))))
+  }, [selection]) // eslint-disable-line react-hooks/exhaustive-deps -- only a selection change opens layers; collapsing one by hand stays
+
   const empty = childrenOf(doc, pageId).length === 0
   const none = !empty && q !== '' && !childrenOf(doc, pageId).some(tree.keeps)
   return (
@@ -293,21 +300,39 @@ function Layers() {
   )
 }
 
-function LayerRows({ parentId, depth }: { parentId: string; depth: number }) {
+/**
+ * Scrolls the layer list (only the list) so `row` shows. Not scrollIntoView: that also scrolls every ancestor,
+ * and the panels and the window hide their overflow, so a scrolled ancestor could never be scrolled back.
+ */
+function scrollRowIntoList(row: HTMLElement) {
+  const list = row.closest<HTMLElement>('[role="tree"]')
+  if (!list) return
+  const r = row.getBoundingClientRect(), l = list.getBoundingClientRect()
+  if (r.top < l.top) list.scrollTop -= l.top - r.top
+  else if (r.bottom > l.bottom) list.scrollTop += Math.min(r.bottom - l.bottom, r.top - l.top)
+}
+
+/** `all`: show every child, unfiltered (the rows sit inside a layer that matches the filter). */
+function LayerRows({ parentId, depth, all = false }: { parentId: string; depth: number; all?: boolean }) {
   const { doc, q, keeps } = useContext(TreeContext)!
-  return childrenOf(doc, parentId).toReversed().filter((n) => !q || keeps(n)).map((n) => <LayerRow key={n.id} n={n} depth={depth} />)
+  return childrenOf(doc, parentId).toReversed().filter((n) => !q || all || keeps(n)).map((n) => <LayerRow key={n.id} n={n} depth={depth} all={all} />)
 }
 
 /** One layer and its children. Watches only its own selected state, so a selection change re-renders just the rows that flip. */
-const LayerRow = memo(function LayerRow({ n, depth }: { n: Node; depth: number }) {
+const LayerRow = memo(function LayerRow({ n, depth, all }: { n: Node; depth: number; all: boolean }) {
   const store = useStore(), openMenu = useContextMenu()
   const { doc, q, collapsed, renaming, drop, zoneOf, onDrop, setCollapsed, setRenaming, setDrop } = useContext(TreeContext)!
   const selected = useEditor((s) => s.selection.includes(n.id))
-      const kids = childrenOf(doc, n.id).length > 0, open = q ? true : !collapsed.has(n.id)
+  const row = useRef<HTMLDivElement>(null)
+  useEffect(() => { if (selected && row.current) scrollRowIntoList(row.current) }, [selected])
+  // While filtering, the path down to a match is held open; a match and everything inside it open and close as usual.
+      const matches = !!q && n.name.toLowerCase().includes(q), forced = !!q && !all && !matches
+      const kids = childrenOf(doc, n.id).length > 0, open = forced || !collapsed.has(n.id)
       const mark = drop?.id === n.id ? (drop.zone === 'inside' ? 'outline outline-1 -outline-offset-1 outline-accent' : drop.zone === 'above' ? 'shadow-[inset_0_2px_0_var(--color-accent)]' : 'shadow-[inset_0_-2px_0_var(--color-accent)]') : ''
       return (
         <li role="treeitem" aria-selected={selected} aria-expanded={kids ? open : undefined} aria-label={n.name}>
           <div
+            ref={row}
             draggable={renaming !== n.id}
             onDragStart={(e) => { if (!selected) store.set({ selection: [n.id] }); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', n.name) }}
             onDragOver={(e) => { e.preventDefault(); const zone = zoneOf(e, n); if (drop?.id !== n.id || drop.zone !== zone) setDrop({ id: n.id, zone }) }}
@@ -343,7 +368,7 @@ const LayerRow = memo(function LayerRow({ n, depth }: { n: Node; depth: number }
               <IconButton label={n.visible ? `Hide ${n.name}` : `Show ${n.name}`} icon={n.visible ? 'eye' : 'eyeOff'} aria-pressed={!n.visible} onClick={() => store.update((d) => patch(d, [n.id], { visible: !n.visible }))} />
             </span>
           </div>
-          {kids && open && <ul role="group"><LayerRows parentId={n.id} depth={depth + 1} /></ul>}
+          {kids && open && <ul role="group"><LayerRows parentId={n.id} depth={depth + 1} all={all || matches} /></ul>}
         </li>
       )
 })

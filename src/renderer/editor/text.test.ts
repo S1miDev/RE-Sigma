@@ -6,6 +6,8 @@ import { layoutText } from './canvas/text'
 import { renderPage } from './canvas/render'
 import { toSvg } from './export/svg'
 import { insert } from './model/ops'
+import { createEditorStore } from './store'
+import type { RefigApi } from '../../shared/api'
 
 const text = (extra: Partial<Node>) => makeNode('TEXT', { characters: 'hello world', width: 100, height: 20, fills: [solid(0, 0, 0)], ...extra })
 function scene(extra: Partial<Node>) {
@@ -70,4 +72,22 @@ test('refig round-trips the text options and rejects bad values', () => {
   expect(() => bad({ textCase: 'NOPE' })).toThrow(/textCase/)
   expect(() => bad({ maxLines: -1 })).toThrow(/maxLines/)
   expect(() => bad({ listStyle: 'X' })).toThrow(/listStyle/)
+})
+
+test('refitText measures text boxes again (as after a font loads) and auto layout follows, without an undo step', () => {
+  let doc = emptyDocument()
+  const row = makeNode('FRAME', { x: 0, y: 0, width: 300, height: 40, layout: { mode: 'HORIZONTAL', gap: 0, padding: [0, 0, 0, 0], align: 'MIN', hugW: true, hugH: true } })
+  const label = text({ characters: 'View projects', width: 10, height: 20 }) // sized with another font
+  doc = insert(insert(doc, row, doc.pages[0]), label, row.id)
+  const store = createEditorStore({ summary: { id: 'p', name: 'P', modifiedAt: '', thumbnail: null }, document: doc, images: {} }, {} as RefigApi)
+  store.refitText()
+  const fitted = store.get().doc.nodes
+  expect(fitted[label.id].width).toBe(layoutText(fitted[label.id]).width)
+  expect(fitted[label.id].width).toBeGreaterThan(10)
+  expect(fitted[row.id].width).toBe(fitted[label.id].width) // the hugging frame grew with it
+  expect(store.canUndo()).toBe(false)
+  const before = store.get().doc
+  store.refitText()
+  expect(store.get().doc).toBe(before) // nothing to fix: no change
+  store.dispose()
 })

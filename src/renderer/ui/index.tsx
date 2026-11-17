@@ -235,7 +235,8 @@ export function SidePanel({ side, label, children }: { side: 'left' | 'right'; l
   const [width, setWidth] = useState(240)
   const drag = useRef<{ x: number; w: number } | null>(null)
   return (
-    <aside aria-label={label} style={{ width }} className={cx('relative flex shrink-0 flex-col bg-panel', side === 'left' ? 'border-r border-line' : 'border-l border-line')}>
+    // tabIndex -1: a click anywhere in the panel focuses it, so key events say they came from here (see keyBelongsToPage)
+    <aside aria-label={label} data-side={side} tabIndex={-1} style={{ width }} className={cx('relative flex shrink-0 flex-col bg-panel outline-none', side === 'left' ? 'border-r border-line' : 'border-l border-line')}>
       {children}
       <div
         role="separator"
