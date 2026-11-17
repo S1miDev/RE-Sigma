@@ -1,8 +1,14 @@
 // Selection outlines, handles, marquee and snap guides. Drawn in screen pixels on top of the page.
 import type { Document } from '../../../shared/document'
-import { apply, corners, worldMatrix, type Box, type Pt } from '../model/geometry'
+import { apply, corners, worldBox, worldMatrix, type Pt } from '../model/geometry'
+import { measure } from './measure'
 import { childrenOf } from '../model/ops'
-import type { Guides } from './snap'
+import { anchorsOf } from '../model/path'
+import type { EditorState, Mode } from '../store'
+import { drawComments, drawGrids, drawGuides, drawRulers, fitText, LABEL_FONT, type AidState } from './aids'
+import { caretPos, selectionRects } from './caret'
+import { imageBox } from './paintPlan'
+import { layoutText } from './text'
 import { toScreen, type View } from './viewport'
 
 const ACCENT = '#0d99ff'
@@ -20,24 +26,39 @@ export function handlesOf(doc: Document, id: string, view: View): Handle[] {
   if (n.type !== 'LINE') out.push({ kind: 'rotate', hx: 0, hy: -1, at: at(n.width / 2, -22 / view.zoom) })
   return out
 }
-export const handleAt = (handles: Handle[], p: Pt, radius = 7) => handles.find((h) => Math.hypot(h.at.x - p.x, h.at.y - p.y) <= radius)
+/** The image being cropped: its four corners in screen coordinates (clockwise from the top left) and the paint, if the mode still holds. */
+export function cropCorners(doc: Document, mode: Mode, view: View, image: (hash: string) => { width: number; height: number } | undefined) {
+  if (mode.kind !== 'crop') return null
+  const n = doc.nodes[mode.id], p = n?.fills[mode.paint], img = p?.type === 'IMAGE' ? image(p.hash) : undefined
+  if (!n || p?.type !== 'IMAGE' || !img) return null
+  const b = imageBox(p, n.width, n.height, img.width, img.height), m = worldMatrix(doc, n.id)
+  return { paint: p, corners: [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]].map(([x, y]) => toScreen(view, apply(m, { x, y }))) }
+}
+export const handleAt =(handles: Handle[], p: Pt, radius = 7) => handles.find((h) => Math.hypot(h.at.x - p.x, h.at.y - p.y) <= radius)
 
-export function drawOverlay(
-  ctx: CanvasRenderingContext2D,
-  s: { doc: Document; pageId: string; selection: string[]; view: View; overlay: { marquee?: Box; guides?: Guides }; tool: string },
-  dpr: number,
-) {
+export function drawOverlay(ctx: CanvasRenderingContext2D, s: AidState & Pick<EditorState, 'tool' | 'mode' | 'hover' | 'altDown'>, dpr: number, image: (hash: string) => { width: number; height: number } | undefined = () => undefined) {
   const { doc, view } = s, W = ctx.canvas.width / dpr, H = ctx.canvas.height / dpr
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.lineWidth = 1
+  drawGrids(ctx, s, W, H)
 
-  ctx.font = '11px "Inter Variable", sans-serif'
+  ctx.font = LABEL_FONT
   ctx.textBaseline = 'alphabetic'
   for (const n of childrenOf(doc, s.pageId)) {
-    if (n.type !== 'FRAME' || !n.visible) continue
-    const p = toScreen(view, corners(doc, n.id)[0])
+    if ((n.type !== 'FRAME' && !n.slice) || !n.visible) continue
+    const q = corners(doc, n.id).map((c) => toScreen(view, c)), p = q[0]
+    if (n.slice) { // a slice draws nothing itself: show where it is
+      ctx.save()
+      ctx.setLineDash([4, 3])
+      ctx.strokeStyle = '#8c8c8c'
+      ctx.beginPath()
+      q.forEach((c, i) => (i ? ctx.lineTo(c.x, c.y) : ctx.moveTo(c.x, c.y)))
+      ctx.closePath()
+      ctx.stroke()
+      ctx.restore()
+    }
     ctx.fillStyle = n.component || n.componentSet || n.instanceOf ? COMPONENT : s.selection.includes(n.id) ? ACCENT : '#8c8c8c'
-    ctx.fillText(n.name, p.x, p.y - 6)
+    ctx.fillText(fitText(ctx, n.name, Math.hypot(q[1].x - p.x, q[1].y - p.y)), p.x, p.y - 6) // never wider than its frame, so neighbours' names don't run together
   }
 
   ctx.strokeStyle = ACCENT
@@ -49,7 +70,49 @@ export function drawOverlay(
     ctx.closePath()
     ctx.stroke()
   }
-  if (s.selection.length === 1 && s.tool === 'move') {
+  // points of the path being drawn or edited replace the resize handles
+  // (the pen's points are in its parent's coordinates; an edited vector's in its own)
+  const { mode } = s, n = 'id' in mode ? doc.nodes[mode.id] : undefined
+  const points = !n ? null
+    : mode.kind === 'pen' ? { subs: [{ anchors: mode.anchors, closed: false }], m: worldMatrix(doc, n.parentId) }
+    : mode.kind === 'points' ? { subs: anchorsOf(n), m: worldMatrix(doc, n.id) } : null
+  if (mode.kind === 'text' && n?.type === 'TEXT') {
+    // selection boxes and the caret, laid out like the text itself
+    const layout = layoutText(n, { editing: true }), m = worldMatrix(doc, n.id)
+    const quad = (x: number, y: number, w: number, h: number) => [[x, y], [x + w, y], [x + w, y + h], [x, y + h]].map(([px, py]) => toScreen(view, apply(m, { x: px, y: py })))
+    ctx.fillStyle = 'rgba(13, 153, 255, 0.3)'
+    for (const r of selectionRects(layout, Math.min(mode.anchor, mode.focus), Math.max(mode.anchor, mode.focus))) {
+      const q = quad(r.x, r.y, r.w, r.h)
+      ctx.beginPath(); q.forEach((pt, i) => (i ? ctx.lineTo(pt.x, pt.y) : ctx.moveTo(pt.x, pt.y))); ctx.closePath(); ctx.fill()
+    }
+    if (mode.anchor === mode.focus) {
+      const c = caretPos(layout, mode.focus), q = quad(c.x, c.y, 0, c.h)
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5 // shortcut: a solid caret, no blink
+      ctx.beginPath(); ctx.moveTo(q[0].x, q[0].y); ctx.lineTo(q[3].x, q[3].y); ctx.stroke()
+      ctx.strokeStyle = ACCENT; ctx.lineWidth = 1
+    }
+  }
+  const crop = cropCorners(doc, mode, view, image)
+  if (crop) {
+    // the whole image, outlined, with a handle on each corner to scale it
+    ctx.beginPath()
+    crop.corners.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)))
+    ctx.closePath(); ctx.stroke()
+    ctx.fillStyle = '#fff'
+    for (const p of crop.corners) { ctx.beginPath(); ctx.rect(p.x - 3.5, p.y - 3.5, 7, 7); ctx.fill(); ctx.stroke() }
+  } else if (points) {
+    const at =(q: Pt) => toScreen(view, apply(points.m, q)), sel = mode.kind === 'points' ? mode.sel : null
+    points.subs.forEach((sub, si) => sub.anchors.forEach((a, i) => {
+      const p = at(a)
+      for (const h of [a.in, a.out]) if (h) {
+        const q = at(h)
+        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke()
+        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(q.x, q.y, 3, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
+      }
+      ctx.fillStyle = sel?.s === si && sel.i === i ? ACCENT : '#fff'
+      ctx.beginPath(); ctx.rect(p.x - 3.5, p.y - 3.5, 7, 7); ctx.fill(); ctx.stroke()
+    }))
+  } else if (s.selection.length === 1 && s.tool === 'move') {
     const handles = handlesOf(doc, s.selection[0], view), rotate = handles.find((h) => h.kind === 'rotate')
     if (rotate) {
       const top = handles.find((h) => h.hx === 0 && h.hy === -1 && h.kind === 'resize') ?? rotate
@@ -76,4 +139,33 @@ export function drawOverlay(
   if (guides?.x !== undefined) { const x = guides.x * view.zoom + view.x; ctx.moveTo(x, 0); ctx.lineTo(x, H) }
   if (guides?.y !== undefined) { const y = guides.y * view.zoom + view.y; ctx.moveTo(0, y); ctx.lineTo(W, y) }
   ctx.stroke()
+  drawGuides(ctx, s, W, H)
+  drawMeasure(ctx, s)
+  drawComments(ctx, s)
+  drawRulers(ctx, s, W, H)
 }
+
+/** Alt held over a layer: outline it and, with a selection, show the distances from the selection to it. */
+function drawMeasure(ctx: CanvasRenderingContext2D, s: AidState & Pick<EditorState, 'hover' | 'altDown'>) {
+  const { doc, view } = s
+  if (!s.altDown || !s.hover || !doc.nodes[s.hover]) return
+  ctx.strokeStyle = '#ff3b6b'
+  ctx.beginPath()
+  corners(doc, s.hover).forEach((c, i) => { const p = toScreen(view, c); i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y) })
+  ctx.closePath()
+  ctx.stroke()
+  const a = worldBox(doc, s.selection), b = worldBox(doc, [s.hover])
+  if (!a || !b || s.selection.includes(s.hover)) return
+  ctx.textAlign = 'center'
+  for (const m of measure(a, b)) {
+    const p = toScreen(view, { x: m.x1, y: m.y1 }), q = toScreen(view, { x: m.x2, y: m.y2 })
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke()
+    const x = (p.x + q.x) / 2, y = (p.y + q.y) / 2, w = ctx.measureText(m.label).width + 8
+    ctx.fillStyle = '#ff3b6b'
+    ctx.fillRect(x - w / 2, y - 8, w, 16)
+    ctx.fillStyle = '#fff'
+    ctx.fillText(m.label, x, y + 4)
+  }
+  ctx.textAlign = 'start'
+}
+

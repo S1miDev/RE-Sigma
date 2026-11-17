@@ -1,17 +1,29 @@
-import { useRef, useState } from 'react'
-import type { ExportKind } from '../../../shared/api'
-import { CONSTRAINTS, LAYOUT_ALIGNS, solid, STROKE_ALIGNS, TEXT_ALIGNS, type AutoLayout, type Constraint, type Document, type DropShadow, type Node, type Paint } from '../../../shared/document'
-import { Button, ColorField, IconButton, NumberField, PanelSection, Select, type IconName } from '../../ui'
-import { COMMANDS } from '../commands'
+import { useRef } from 'react'
+import {
+  BLEND_MODES, BOOL_OPS, GRID_KINDS, colorAt, CONSTRAINTS, convertPaint, gradientAngle, IMAGE_MODES, LAYOUT_ALIGNS, rotateGradient, solid, STROKE_ALIGNS, STROKE_CAPS, STROKE_ENDS, STROKE_JOINS, TEXT_ALIGNS, TEXT_CASES, TEXT_DECORATIONS, TEXT_LISTS, TEXT_VALIGNS, typeLabel,
+  type AutoLayout, type BlendMode, type BoolOp, type Constraint, type Document, type DropShadow, type Effect, type GradientStop, type ImagePaint, type LayoutGrid, type Node, type Paint, type PaintKind, type RunStyle,
+} from '../../../shared/document'
+import { Button, IconButton, Input, NumberField, PanelSection, Row, Select, type IconName } from '../../ui'
+import { canMask } from '../canvas/paintPlan'
+import { runCommand } from '../commands'
 import { setOf, setVariant, variantProps, variantsOf } from '../model/components'
-import { exportSelection } from '../export'
-import { addAutoLayout, patch, resizeNode } from '../model/ops'
-import { useEditor, useStore } from '../store'
+import { useSystemFonts } from '../fonts'
+import { applyRunStyle, styleValue } from '../tools/textEdit'
+import { addAutoLayout, childrenOf, patch, resizeNode } from '../model/ops'
+import { setMode } from '../model/variables'
+import { replaceColor, selectionColors } from '../model/colors'
+import { useEditor, useStore, type Step } from '../store'
+import { PickField } from './ColorPicks'
+import { ExportControls } from './ExportControls'
+import { PrototypeSection } from './PrototypeSection'
+import { StyleButton } from './StyleButton'
+import { VariableButton } from './VariableButton'
 
 const FONTS = ['Inter', 'Arial', 'Georgia', 'Times New Roman', 'Courier New', 'Verdana', 'Segoe UI', 'Tahoma', 'Trebuchet MS']
 const WEIGHTS: [number, string][] = [[100, 'Thin'], [200, 'Extra Light'], [300, 'Light'], [400, 'Regular'], [500, 'Medium'], [600, 'Semi Bold'], [700, 'Bold'], [800, 'Extra Bold'], [900, 'Black']]
-const TYPE_LABEL: Record<Node['type'], string> = { PAGE: 'Page', FRAME: 'Frame', GROUP: 'Group', RECTANGLE: 'Rectangle', ELLIPSE: 'Ellipse', LINE: 'Line', TEXT: 'Text', VECTOR: 'Vector' }
-const Row = ({ children }: { children: React.ReactNode }) => <div className="flex items-center gap-1.5">{children}</div>
+const PRESETS: [string, number, number][] = [['iPhone 15', 393, 852], ['Android', 360, 800], ['iPad', 820, 1180], ['Desktop', 1440, 1024], ['Laptop', 1280, 832], ['A4', 595, 842], ['Slide 16:9', 1920, 1080]]
+/** Panel edits of the same field on the same layers within a second share one undo step. */
+const panelStep = (field: string, ids: string[]): Step => ({ key: `panel:${field}:${ids.join()}` })
 
 export function DesignPanel({ report }: { report(e: unknown): void }) {
   const store = useStore()
@@ -19,19 +31,23 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
   const nodes = selection.map((id) => doc.nodes[id]).filter(Boolean)
   const ids = nodes.map((n) => n.id)
   /** Applies a change to every selected node. Edits to the same field within a second share one undo step. */
-  const edit = (change: Partial<Node>, tag: string) => store.update((d) => patch(d, ids, change), `panel:${tag}:${ids.join()}`)
+  const edit = (change: Partial<Node>, tag: string) => store.update((d) => patch(d, ids, change), panelStep(tag, ids))
 
   if (!nodes.length) {
     const page = doc.nodes[pageId], bg = page.fills[0]
     return (
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div data-keep-text className="min-h-0 flex-1 overflow-auto">
         <PanelSection title="Page">
           {bg?.type === 'SOLID' && (
             <Row>
-              <ColorField label="Page background" color={bg.color} onChange={(color) => store.update((d) => patch(d, [pageId], { fills: [{ ...bg, color: { ...color, a: 1 }, visible: true }] }), 'panel:page-bg')} />
+              <PickField label="Page background" color={bg.color} onChange={(color) => store.update((d) => patch(d, [pageId], { fills: [{ ...bg, color: { ...color, a: 1 }, visible: true }] }), panelStep('page-bg', [pageId]))} />
             </Row>
           )}
+          {!!page.guides?.length && <Row><Button className="flex-1" onClick={() => store.update((d) => patch(d, [pageId], { guides: undefined }))}>Clear guides ({page.guides.length})</Button></Row>}
           <p className="text-dim">Select a layer to edit its properties.</p>
+        </PanelSection>
+        <PanelSection title="Export">
+          <ExportControls onDone={() => {}} onError={report} />
         </PanelSection>
       </div>
     )
@@ -42,28 +58,48 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
   const all = (...types: Node['type'][]) => nodes.every((n) => types.includes(n.type))
   const none = (...types: Node['type'][]) => nodes.every((n) => !types.includes(n.type))
   const resize = (size: { width?: number; height?: number }) =>
-    store.update((d) => ids.reduce((acc, id) => resizeNode(acc, id, { x: acc.nodes[id].x, y: acc.nodes[id].y, width: acc.nodes[id].width, height: acc.nodes[id].height, ...size }), d), `panel:size:${ids.join()}`)
+    store.update((d) => ids.reduce((acc, id) => resizeNode(acc, id, { x: acc.nodes[id].x, y: acc.nodes[id].y, width: acc.nodes[id].width, height: acc.nodes[id].height, ...size }), d), panelStep('size', ids))
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto">
-      <PanelSection title={nodes.length === 1 ? TYPE_LABEL[first.type] : `${nodes.length} layers selected`}>
+    <div data-keep-text className="min-h-0 flex-1 overflow-auto">
+      <PanelSection title={nodes.length === 1 ? typeLabel(first.type) : `${nodes.length} layers selected`}>
         <Row>
           <NumberField label="X" prefix="X" className="flex-1" value={common('x')} onChange={(x) => edit({ x }, 'x')} />
           <NumberField label="Y" prefix="Y" className="flex-1" value={common('y')} onChange={(y) => edit({ y }, 'y')} />
         </Row>
+        {nodes.length === 1 && first.type === 'FRAME' && !first.section && (
+          <Row>
+            <Select aria-label="Size preset" className="flex-1" value="" onChange={(e) => { const p = PRESETS[+e.target.value]; resize({ width: p[1], height: p[2] }) }}>
+              <option value="" disabled>Size preset</option>
+              {PRESETS.map(([name, w, h], i) => <option key={name} value={i}>{name} ({w}×{h})</option>)}
+            </Select>
+          </Row>
+        )}
         <Row>
           <NumberField label="Width" prefix="W" className="flex-1" min={1} value={common('width')} onChange={(width) => resize({ width })} />
           {none('LINE', 'TEXT') ? <NumberField label="Height" prefix="H" className="flex-1" min={1} value={common('height')} onChange={(height) => resize({ height })} /> : <div className="flex-1" />}
         </Row>
         <Row>
           <NumberField label="Rotation" prefix="∠" className="flex-1" min={-180} max={180} value={common('rotation')} onChange={(rotation) => edit({ rotation }, 'rotation')} />
-          {all('RECTANGLE', 'FRAME') ? <NumberField label="Corner radius" prefix="◜" className="flex-1" min={0} value={common('cornerRadius')} onChange={(cornerRadius) => edit({ cornerRadius }, 'radius')} /> : <div className="flex-1" />}
+          {all('RECTANGLE', 'FRAME') ? <NumberField label="Corner radius" prefix="◜" className="flex-1" min={0} value={nodes.some((n) => n.cornerRadii) ? null : common('cornerRadius')} onChange={(cornerRadius) => edit({ cornerRadius, cornerRadii: undefined }, 'radius')} /> : <div className="flex-1" />}
+          {all('RECTANGLE', 'FRAME') && <VariableButton field="cornerRadius" type="NUMBER" nodes={nodes} />}
         </Row>
         <Row>
           <NumberField label="Opacity" prefix="%" className="flex-1" min={0} max={100} value={common('opacity') === null ? null : Math.round(common('opacity')! * 100)} onChange={(v) => edit({ opacity: v / 100 }, 'opacity')} />
-          <div className="flex-1" />
+          <Select aria-label="Blend mode" className="flex-1" value={nodes.every((n) => (n.blendMode ?? 'NORMAL') === (nodes[0].blendMode ?? 'NORMAL')) ? (nodes[0].blendMode ?? 'NORMAL') : ''} onChange={(e) => edit({ blendMode: e.target.value as BlendMode }, 'blend')}>
+            <option value="" disabled>Mixed</option>
+            {BLEND_MODES.map((m) => <option key={m} value={m}>{typeLabel(m as never).replace(/_/g, ' ')}</option>)}
+          </Select>
         </Row>
-        {all('FRAME') && (
+        {all('RECTANGLE', 'FRAME') && <CornerSection nodes={nodes} edit={edit} />}
+        {all('ELLIPSE') && <ArcSection nodes={nodes} edit={edit} />}
+        {all('STAR', 'POLYGON') && (
+          <Row>
+            <NumberField label="Points" prefix="★" className="flex-1" min={3} max={60} value={common('points') ?? null} onChange={(points) => edit({ points: Math.round(points) }, 'points')} />
+            {all('STAR') ? <NumberField label="Inner radius" prefix="%" className="flex-1" min={1} max={99} value={nodes.every((n) => n.innerRatio === first.innerRatio) ? Math.round((first.innerRatio ?? 0.38) * 100) : null} onChange={(v) => edit({ innerRatio: v / 100 }, 'inner-ratio')} /> : <div className="flex-1" />}
+          </Row>
+        )}
+        {all('FRAME') && !nodes.some((n) => n.section) && (
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={common('clipsContent') === true} onChange={(e) => edit({ clipsContent: e.target.checked }, 'clip')} />
             Clip content
@@ -85,7 +121,7 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
               const names = axis === 'h' ? { MIN: 'Left', MAX: 'Right', STRETCH: 'Left & right', CENTER: 'Center', SCALE: 'Scale' } : { MIN: 'Top', MAX: 'Bottom', STRETCH: 'Top & bottom', CENTER: 'Center', SCALE: 'Scale' }
               return (
                 <Select key={axis} aria-label={axis === 'h' ? 'Horizontal constraint' : 'Vertical constraint'} className="flex-1" value={value}
-                  onChange={(e) => store.update((d) => patch(d, ids, (n) => ({ constraints: { h: 'MIN', v: 'MIN', ...n.constraints, [axis]: e.target.value as Constraint } })), `panel:constraint-${axis}:${ids.join()}`)}>
+                  onChange={(e) => store.update((d) => patch(d, ids, (n) => ({ constraints: { h: 'MIN', v: 'MIN', ...n.constraints, [axis]: e.target.value as Constraint } })), panelStep(`constraint-${axis}`, ids))}>
                   {!value && <option value="" disabled>Mixed</option>}
                   {CONSTRAINTS.map((c) => <option key={c} value={c}>{names[c]}</option>)}
                 </Select>
@@ -96,24 +132,58 @@ export function DesignPanel({ report }: { report(e: unknown): void }) {
       )}
 
       {nodes.length === 1 && (first.component || first.componentSet || first.instanceOf) && <ComponentSection node={first} />}
-      {nodes.length === 1 && first.type === 'FRAME' && <AutoLayoutSection node={first} edit={edit} />}
+      {nodes.length === 1 && first.type === 'FRAME' && !first.section && <AutoLayoutSection node={first} edit={edit} />}
+      {nodes.length === 1 && !first.slice && <PrototypeSection node={first} edit={edit} />}
+      {nodes.length === 1 && first.type === 'FRAME' && !first.section && <LayoutGridSection node={first} edit={edit} />}
+      {nodes.length === 1 && first.type === 'FRAME' && doc.collections.length > 0 && (
+        <PanelSection title="Variable modes">
+          {doc.collections.map((c) => (
+            <Row key={c.id}>
+              <span className="w-20 truncate text-dim" title={c.name}>{c.name}</span>
+              <Select aria-label={`${c.name} mode`} className="flex-1" value={first.modes?.[c.id] ?? ''} onChange={(e) => store.update((d) => setMode(d, ids, c.id, e.target.value || undefined))}>
+                <option value="">Inherit</option>
+                {c.modes.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </Select>
+            </Row>
+          ))}
+        </PanelSection>
+      )}
+      {nodes.length === 1 && canMask(first) && (
+        <PanelSection title="Mask">
+          <Row>
+            <Button className="flex-1" aria-pressed={!!first.mask} onClick={() => runCommand(store, 'use-as-mask')}>{first.mask ? 'Remove mask' : 'Use as mask'}</Button>
+          </Row>
+        </PanelSection>
+      )}
+      {nodes.length === 1 && first.type === 'BOOLEAN' && (
+        <PanelSection title="Boolean">
+          <Row>
+            <Select aria-label="Boolean operation" className="flex-1" value={first.boolOp ?? 'UNION'} onChange={(e) => edit({ boolOp: e.target.value as BoolOp }, 'bool-op')}>
+              {BOOL_OPS.map((o) => <option key={o} value={o}>{o[0] + o.slice(1).toLowerCase()}</option>)}
+            </Select>
+          </Row>
+        </PanelSection>
+      )}
 
       {all('TEXT') && <TextSection nodes={nodes} edit={edit} common={common} />}
-      {none('GROUP', 'LINE') && <Paints title="Fill" field="fills" nodes={nodes} report={report} />}
-      {none('GROUP') && (
+      {none('GROUP', 'LINE') && !nodes.some((n) => n.slice) && <Paints title="Fill" field="fills" nodes={nodes} report={report} />}
+      {none('GROUP') && !nodes.some((n) => n.slice) && (
         <Paints title="Stroke" field="strokes" nodes={nodes} report={report}>
           <Row>
             <NumberField label="Stroke weight" prefix="≡" className="flex-1" min={0} value={common('strokeWeight')} onChange={(strokeWeight) => edit({ strokeWeight }, 'stroke-weight')} />
-            {none('LINE', 'TEXT', 'VECTOR') ? (
+            <VariableButton field="strokeWeight" type="NUMBER" nodes={nodes} />
+            {none('LINE', 'TEXT', 'VECTOR', 'BOOLEAN', 'STAR', 'POLYGON') ? (
               <Select aria-label="Stroke align" className="flex-1" value={common('strokeAlign') ?? ''} onChange={(e) => edit({ strokeAlign: e.target.value as Node['strokeAlign'] }, 'stroke-align')}>
                 {common('strokeAlign') === null && <option value="" disabled>Mixed</option>}
                 {STROKE_ALIGNS.map((a) => <option key={a} value={a}>{a[0] + a.slice(1).toLowerCase()}</option>)}
               </Select>
             ) : <div className="flex-1" />}
           </Row>
+          <StrokeStyle nodes={nodes} edit={edit} />
         </Paints>
       )}
-      {none('GROUP') && <Shadows nodes={nodes} />}
+      {!nodes.some((n) => n.slice) && <Shadows nodes={nodes} />}
+      <SelectionColors ids={ids} />
       <PanelSection title="Export">
         <ExportControls onDone={() => {}} onError={report} />
       </PanelSection>
@@ -128,10 +198,113 @@ function propertyValues(doc: Document, setId: string): Record<string, string[]> 
   return out
 }
 
+type Edit = (change: Partial<Node>, tag: string) => void
+
+const END_NAMES = { NONE: 'None', ARROW: 'Arrow', TRIANGLE: 'Triangle', CIRCLE: 'Circle', DIAMOND: 'Diamond' }
+
+/** Dash pattern, cap, join, end markers (lines and vectors) and per-side weights (rectangles and frames). */
+function StrokeStyle({ nodes, edit }: { nodes: Node[]; edit: Edit }) {
+  const first = nodes[0]
+  const same = <K extends keyof Node>(k: K, dflt: Node[K]) => (nodes.every((n) => (n[k] ?? dflt) === (first[k] ?? dflt)) ? (first[k] ?? dflt) : '')
+  const all = (...types: Node['type'][]) => nodes.every((n) => types.includes(n.type))
+  const dash = nodes.every((n) => (n.strokeDash ?? []).join() === (first.strokeDash ?? []).join()) ? (first.strokeDash ?? []).join(' ') : ''
+  const sel = <K extends 'strokeCap' | 'strokeJoin' | 'strokeStart' | 'strokeEnd'>(key: K, label: string, options: readonly string[], dflt: string, names?: Record<string, string>) => (
+    <Select aria-label={label} className="flex-1" value={String(same(key, dflt as Node[K]))} onChange={(e) => edit({ [key]: e.target.value } as Partial<Node>, key)}>
+      {same(key, dflt as Node[K]) === '' && <option value="" disabled>Mixed</option>}
+      {options.map((o) => <option key={o} value={o}>{names?.[o] ?? o[0] + o.slice(1).toLowerCase()}</option>)}
+    </Select>
+  )
+  const sides = all('RECTANGLE', 'FRAME') && nodes.every((n) => n.strokeSides)
+  const setSides = (s: NonNullable<Node['strokeSides']> | undefined) => edit(s ? { strokeSides: s, strokeWeight: Math.max(...s) } : { strokeSides: undefined }, 'stroke-sides')
+  return (
+    <>
+      <Row>
+        <Input aria-label="Stroke dash" className="flex-1" placeholder="Dash, gap" key={dash} defaultValue={dash}
+          onBlur={(e) => {
+            const v = e.target.value.split(/[\s,]+/).filter(Boolean).map(Number).slice(0, 8)
+            if (v.every((x) => Number.isFinite(x) && x >= 0)) edit({ strokeDash: v.length ? v : undefined }, 'stroke-dash')
+          }}
+          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()} />
+      </Row>
+      <Row>
+        {sel('strokeCap', 'Stroke cap', STROKE_CAPS, 'NONE')}
+        {sel('strokeJoin', 'Stroke join', STROKE_JOINS, 'MITER')}
+      </Row>
+      {all('LINE', 'VECTOR') && (
+        <Row>
+          {sel('strokeStart', 'Start marker', STROKE_ENDS, 'NONE', END_NAMES)}
+          {sel('strokeEnd', 'End marker', STROKE_ENDS, 'NONE', END_NAMES)}
+        </Row>
+      )}
+      {all('RECTANGLE', 'FRAME') && (
+        <>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={!!sides} onChange={(e) => setSides(e.target.checked ? [first.strokeWeight, first.strokeWeight, first.strokeWeight, first.strokeWeight] : undefined)} />
+            Independent sides
+          </label>
+          {sides && (
+            <Row>
+              {['Top', 'Right', 'Bottom', 'Left'].map((name, i) => (
+                <NumberField key={name} label={`Stroke ${name.toLowerCase()}`} prefix={name[0]} className="flex-1" min={0} value={nodes.every((n) => n.strokeSides![i] === first.strokeSides![i]) ? first.strokeSides![i] : null}
+                  onChange={(v) => setSides(first.strokeSides!.map((x, j) => (j === i ? v : x)) as NonNullable<Node['strokeSides']>)} />
+              ))}
+            </Row>
+          )}
+        </>
+      )}
+    </>
+  )
+}
+const CORNERS = ['top left', 'top right', 'bottom right', 'bottom left']
+
+/** Corner smoothing, and independent radii for one selected rectangle or frame. */
+function CornerSection({ nodes, edit }: { nodes: Node[]; edit: Edit }) {
+  const first = nodes[0], radii = nodes.length === 1 ? first.cornerRadii : undefined
+  const smooth = nodes.every((n) => (n.cornerSmoothing ?? 0) === (first.cornerSmoothing ?? 0)) ? Math.round((first.cornerSmoothing ?? 0) * 100) : null
+  return (
+    <>
+      <Row>
+        <NumberField label="Corner smoothing" prefix="⌒" className="flex-1" min={0} max={100} value={smooth} onChange={(v) => edit({ cornerSmoothing: v ? v / 100 : undefined }, 'smoothing')} />
+        {nodes.length === 1 ? (
+          <label className="flex flex-1 items-center gap-2">
+            <input type="checkbox" checked={!!radii} onChange={(e) => edit(e.target.checked ? { cornerRadii: [first.cornerRadius, first.cornerRadius, first.cornerRadius, first.cornerRadius] } : { cornerRadius: radii?.[0] ?? first.cornerRadius, cornerRadii: undefined }, 'corners')} />
+            Independent
+          </label>
+        ) : <div className="flex-1" />}
+      </Row>
+      {radii && (
+        <Row>
+          {CORNERS.map((name, i) => (
+            <NumberField key={name} label={`Corner radius ${name}`} prefix={'↖↗↘↙'[i]} className="min-w-0 flex-1" min={0} value={radii[i]}
+              onChange={(v) => edit({ cornerRadii: radii.map((r, j) => (j === i ? v : r)) as NonNullable<Node['cornerRadii']> }, 'radii')} />
+          ))}
+        </Row>
+      )}
+    </>
+  )
+}
+
+/** An ellipse's arc: where it starts, how far it sweeps and how large the hole is. A full ellipse has no arc. */
+function ArcSection({ nodes, edit }: { nodes: Node[]; edit: Edit }) {
+  const first = nodes[0], arc = first.arc ?? { start: 0, sweep: 360, inner: 0 }
+  const same = nodes.every((n) => JSON.stringify(n.arc) === JSON.stringify(first.arc))
+  const set = (change: Partial<typeof arc>) => {
+    const next = { ...arc, ...change }
+    edit({ arc: next.start === 0 && next.sweep === 360 && next.inner === 0 ? undefined : next }, 'arc')
+  }
+  return (
+    <Row>
+      <NumberField label="Arc start" prefix="⌓" className="min-w-0 flex-1" min={-360} max={360} value={same ? arc.start : null} onChange={(start) => set({ start })} />
+      <NumberField label="Arc sweep" prefix="∠" className="min-w-0 flex-1" min={-360} max={360} value={same ? arc.sweep : null} onChange={(sweep) => set({ sweep })} />
+      <NumberField label="Arc ratio" prefix="◌" className="min-w-0 flex-1" min={0} max={99} value={same ? Math.round(arc.inner * 100) : null} onChange={(v) => set({ inner: v / 100 })} />
+    </Row>
+  )
+}
+
 /** Main component: make instances. Instance: where it comes from, and the way back out. */
 function ComponentSection({ node }: { node: Node }) {
   const store = useStore(), doc = useEditor((s) => s.doc)
-  const run = (id: string) => COMMANDS.find((c) => c.id === id)!.run(store, { back() {}, openExport() {} })
+  const run = (id: string) => runCommand(store, id)
   if (node.componentSet) {
     const props = propertyValues(doc, node.id)
     return (
@@ -199,6 +372,7 @@ function AutoLayoutSection({ node, edit }: { node: Node; edit(change: Partial<No
               <option value="VERTICAL">Vertical</option>
             </Select>
             <NumberField label="Gap" prefix="↔" className="flex-1" min={0} value={L.gap} onChange={(gap) => set({ gap }, 'gap')} />
+            <VariableButton field="layout.gap" type="NUMBER" nodes={[node]} />
           </Row>
           <Row>
             {(['Top', 'Right', 'Bottom', 'Left'] as const).map((side, i) => (
@@ -220,42 +394,129 @@ function AutoLayoutSection({ node, edit }: { node: Node; edit(change: Partial<No
   )
 }
 
-function TextSection({ nodes, edit, common }: { nodes: Node[]; edit(change: Partial<Node>, tag: string): void; common<K extends keyof Node>(k: K): Node[K] | null }) {
-  const family = common('fontFamily'), weight = common('fontWeight'), align = common('textAlign')
-  const fonts = family && !FONTS.includes(family) ? [family, ...FONTS] : FONTS // keep an imported file's font selectable
+const NEW_GRID: LayoutGrid = { kind: 'COLUMNS', size: 8, count: 12, gutter: 20, margin: 0, color: { r: 1, g: 0.2, b: 0.2, a: 0.1 } }
+
+/** Layout grids of a frame: an editor overlay (square grid, columns or rows), also linkable to a grid style. */
+function LayoutGridSection({ node, edit }: { node: Node; edit(change: Partial<Node>, tag: string): void }) {
+  const grids = node.layoutGrids ?? []
+  const set = (next: LayoutGrid[], tag: string) => edit({ layoutGrids: next.length ? next : undefined }, tag)
+  const at = (i: number, change: Partial<LayoutGrid>, tag: string) => set(grids.map((g, j) => (j === i ? { ...g, ...change } : g)), `grid${i}-${tag}`)
   return (
-    <PanelSection title="Text">
-      <Select aria-label="Font family" value={family ?? ''} onChange={(e) => edit({ fontFamily: e.target.value }, 'font')}>
+    <PanelSection title="Layout grid" action={
+      <>
+        <StyleButton link="gridStyle" nodes={[node]} />
+        <IconButton label="Add layout grid" icon="plus" onClick={() => set([...grids, { ...NEW_GRID, ...(grids.length === 0 && { kind: 'GRID' as const }) }], 'add')} />
+      </>
+    }>
+      {grids.map((g, i) => (
+        <div key={i} className="flex flex-col gap-1.5">
+          <Row>
+            <Select aria-label={`Grid ${i + 1} type`} className="flex-1" value={g.kind} onChange={(e) => at(i, { kind: e.target.value as LayoutGrid['kind'] }, 'kind')}>
+              {GRID_KINDS.map((k) => <option key={k} value={k}>{k[0] + k.slice(1).toLowerCase()}</option>)}
+            </Select>
+            <PickField label={`Grid ${i + 1} color`} color={g.color} onChange={(color) => at(i, { color }, 'color')} />
+            <IconButton label={`Remove grid ${i + 1}`} icon="minus" onClick={() => set(grids.filter((_, j) => j !== i), 'remove')} />
+          </Row>
+          {g.kind === 'GRID' ? (
+            <Row><NumberField label={`Grid ${i + 1} size`} prefix="#" className="flex-1" min={1} value={g.size} onChange={(size) => at(i, { size }, 'size')} /></Row>
+          ) : (
+            <>
+              <Row>
+                <NumberField label={`Grid ${i + 1} count`} prefix="#" className="flex-1" min={1} max={1000} value={g.count} onChange={(count) => at(i, { count: Math.round(count) }, 'count')} />
+                <NumberField label={`Grid ${i + 1} gutter`} prefix="↔" className="flex-1" min={0} value={g.gutter} onChange={(gutter) => at(i, { gutter }, 'gutter')} />
+                <NumberField label={`Grid ${i + 1} margin`} prefix="M" className="flex-1" min={0} value={g.margin} onChange={(margin) => at(i, { margin }, 'margin')} />
+              </Row>
+            </>
+          )}
+        </div>
+      ))}
+    </PanelSection>
+  )
+}
+
+function TextSection({ nodes, edit, common }: { nodes: Node[]; edit(change: Partial<Node>, tag: string): void; common<K extends keyof Node>(k: K): Node[K] | null }) {
+  const store = useStore(), mode = useEditor((s) => s.mode)
+  // While one text is being edited, character-level fields act on the selected range (or what is typed next), not on the whole node.
+  const editing = mode.kind === 'text' && nodes.length === 1 && nodes[0].id === mode.id ? mode : null
+  const val = <K extends keyof RunStyle>(k: K): RunStyle[K] | null => (editing ? styleValue(editing, nodes[0], k) : (common(k as keyof Node) as RunStyle[K] | null))
+  const set = (change: RunStyle, tag: string, refocus = true) => {
+    if (!(editing && applyRunStyle(store, change))) return edit(change as Partial<Node>, tag)
+    if (refocus) document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Edit text"]')?.focus() // keep typing after a panel change
+  }
+  const family = val('fontFamily'), weight = val('fontWeight'), align = common('textAlign')
+  const italic = val('fontItalic'), truncate = common('textTruncate')
+  const system = useSystemFonts()
+  const base = system.length ? system : FONTS
+  const fonts = family && !base.includes(family) ? [family, ...base] : base // keep an imported file's font selectable
+  const paint = nodes[0].fills.find((p) => p.visible && p.type === 'SOLID')
+  const colour = (editing ? val('fill') : null) ?? (paint?.type === 'SOLID' ? paint.color : { r: 0, g: 0, b: 0, a: 1 })
+  return (
+    <PanelSection title={editing ? 'Text (selection)' : 'Text'} action={editing ? undefined : <StyleButton link="textStyle" nodes={nodes} />}>
+      <Select aria-label="Font family" value={family ?? ''} onChange={(e) => set({ fontFamily: e.target.value }, 'font')}>
         {family === null && <option value="" disabled>Mixed</option>}
         {fonts.map((f) => <option key={f}>{f}</option>)}
       </Select>
       <Row>
-        <Select aria-label="Font weight" className="flex-1" value={weight ?? ''} onChange={(e) => edit({ fontWeight: Number(e.target.value) }, 'weight')}>
+        <Select aria-label="Font weight" className="flex-1" value={weight ?? ''} onChange={(e) => set({ fontWeight: Number(e.target.value) }, 'weight')}>
           {(weight === null || !WEIGHTS.some(([w]) => w === weight)) && <option value={weight ?? ''} disabled>{weight ?? 'Mixed'}</option>}
           {WEIGHTS.map(([w, name]) => <option key={w} value={w}>{name}</option>)}
         </Select>
-        <NumberField label="Font size" className="w-16" min={1} max={2000} value={common('fontSize') ?? null} onChange={(fontSize) => edit({ fontSize }, 'size')} />
+        <NumberField label="Font size" className="w-16" min={1} max={2000} value={val('fontSize') ?? null} onChange={(fontSize) => set({ fontSize }, 'size')} />
+        {!editing && <VariableButton field="fontSize" type="NUMBER" nodes={nodes} />}
       </Row>
       <Row>
-        <NumberField label="Line height" prefix="↕" className="flex-1" min={0} placeholder="Auto" value={common('lineHeight') || null} onChange={(lineHeight) => edit({ lineHeight }, 'line-height')} />
-        <NumberField label="Letter spacing" prefix="↔" className="flex-1" step={0.5} value={common('letterSpacing') ?? null} onChange={(letterSpacing) => edit({ letterSpacing }, 'spacing')} />
+        <NumberField label="Line height" prefix="↕" className="flex-1" min={0} placeholder="Auto" value={val('lineHeight') || null} onChange={(lineHeight) => set({ lineHeight }, 'line-height')} />
+        <NumberField label="Letter spacing" prefix="↔" className="flex-1" step={0.5} value={val('letterSpacing') ?? null} onChange={(letterSpacing) => set({ letterSpacing }, 'spacing')} />
       </Row>
       <div role="group" aria-label="Text align" className="flex gap-1">
         {TEXT_ALIGNS.map((a) => (
           <IconButton key={a} label={`Align ${a.toLowerCase()}`} icon={`align${a[0]}${a.slice(1).toLowerCase()}` as IconName} active={align === a} aria-pressed={align === a} onClick={() => edit({ textAlign: a }, 'align')} />
         ))}
       </div>
+      <Row>
+        <Select aria-label="Text decoration" className="flex-1" value={val('textDecoration') ?? 'NONE'} onChange={(e) => set({ textDecoration: e.target.value as RunStyle['textDecoration'] }, 'decoration')}>
+          {TEXT_DECORATIONS.map((v) => <option key={v} value={v}>{v === 'NONE' ? 'No decoration' : v === 'UNDERLINE' ? 'Underline' : 'Strikethrough'}</option>)}
+        </Select>
+        <Select aria-label="Text case" className="flex-1" value={val('textCase') ?? 'ORIGINAL'} onChange={(e) => set({ textCase: e.target.value as RunStyle['textCase'] }, 'case')}>
+          {TEXT_CASES.map((v) => <option key={v} value={v}>{{ ORIGINAL: 'Original case', UPPER: 'UPPER', LOWER: 'lower', TITLE: 'Title Case' }[v]}</option>)}
+        </Select>
+      </Row>
+      {editing && <Row><PickField label="Text" color={colour} onChange={(fill) => set({ fill }, 'text-colour', false)} /></Row>}
+      <Row>
+        <Select aria-label="List style" className="flex-1" value={common('listStyle') ?? 'NONE'} onChange={(e) => edit({ listStyle: e.target.value as Node['listStyle'] }, 'list')}>
+          {TEXT_LISTS.map((v) => <option key={v} value={v}>{{ NONE: 'No list', BULLET: 'Bullets', NUMBERED: 'Numbers' }[v]}</option>)}
+        </Select>
+        <Select aria-label="Vertical align" className="flex-1" value={common('textAlignVertical') ?? 'TOP'} onChange={(e) => edit({ textAlignVertical: e.target.value as Node['textAlignVertical'] }, 'valign')}>
+          {TEXT_VALIGNS.map((v) => <option key={v} value={v}>{{ TOP: 'Align top', CENTER: 'Align middle', BOTTOM: 'Align bottom' }[v]}</option>)}
+        </Select>
+      </Row>
+      <Row>
+        <Button aria-pressed={italic === true} onClick={() => set({ fontItalic: !italic }, 'italic')}>Italic</Button>
+        <Button aria-pressed={truncate === true} onClick={() => edit({ textTruncate: !truncate }, 'truncate')}>Truncate</Button>
+        <NumberField label="Max lines" className="w-16" min={0} placeholder="∞" value={common('maxLines') || null} onChange={(maxLines) => edit({ maxLines }, 'max-lines')} />
+      </Row>
       {nodes.some((n) => !n.textAutoWidth) && <Button onClick={() => edit({ textAutoWidth: true }, 'auto-width')}>Auto width</Button>}
+      {nodes.some((n) => n.textFixedHeight) && <Button onClick={() => edit({ textFixedHeight: false }, 'auto-height')}>Auto height</Button>}
     </PanelSection>
   )
 }
+
+/** Show/hide and remove buttons for one row of a fill, stroke or shadow list. */
+const RowActions = ({ name, visible, onToggle, onRemove }: { name: string; visible: boolean; onToggle(): void; onRemove(): void }) => (
+  <>
+    <IconButton label={`${visible ? 'Hide' : 'Show'} ${name}`} icon={visible ? 'eye' : 'eyeOff'} aria-pressed={!visible} onClick={onToggle} />
+    <IconButton label={`Remove ${name}`} icon="minus" onClick={onRemove} />
+  </>
+)
+
+const PAINT_KINDS: [PaintKind, string][] =[['SOLID', 'Solid'], ['LINEAR', 'Linear'], ['RADIAL', 'Radial'], ['ANGULAR', 'Angular'], ['DIAMOND', 'Diamond']]
 
 /** Fill or stroke list. With several layers selected it shows the first layer's paints and applies edits to all. */
 function Paints({ title, field, nodes, report, children }: { title: string; field: 'fills' | 'strokes'; nodes: Node[]; report(e: unknown): void; children?: React.ReactNode }) {
   const store = useStore(), file = useRef<HTMLInputElement>(null)
   const ids = nodes.map((n) => n.id), paints = nodes[0][field]
   const set = (next: Paint[], tag?: string) =>
-    store.update((d) => patch(d, ids, (n) => ({ [field]: next, ...(field === 'strokes' && next.length && !n.strokeWeight && { strokeWeight: 1 }) })), tag && `panel:${field}:${tag}:${ids.join()}`)
+    store.update((d) => patch(d, ids, (n) => ({ [field]: next, ...(field === 'strokes' && next.length && !n.strokeWeight && { strokeWeight: 1 }) })), tag ? panelStep(`${field}:${tag}`, ids) : undefined)
   const at = (i: number, p: Paint) => paints.map((old, j) => (j === i ? p : old))
   const addImage = async (f: File | undefined) => {
     if (!f) return
@@ -269,6 +530,7 @@ function Paints({ title, field, nodes, report, children }: { title: string; fiel
   return (
     <PanelSection title={title} action={
       <div className="flex">
+        <StyleButton link={field === 'fills' ? 'fillStyle' : 'strokeStyle'} nodes={nodes} />
         {field === 'fills' && (
           <>
             <IconButton label="Add image fill" icon="image" onClick={() => file.current?.click()} />
@@ -280,13 +542,60 @@ function Paints({ title, field, nodes, report, children }: { title: string; fiel
     }>
       {paints.length > 0 && (
         <>
-          {paints.map((p, i) => (
-            <Row key={i}>
-              {p.type === 'SOLID' ? <ColorField label={`${title} ${i + 1}`} color={p.color} onChange={(color) => set(at(i, { ...p, color }), `color${i}`)} /> : <span className="flex h-6 flex-1 items-center rounded bg-raised px-1.5 text-dim">Image</span>}
-              <IconButton label={p.visible ? `Hide ${title.toLowerCase()} ${i + 1}` : `Show ${title.toLowerCase()} ${i + 1}`} icon={p.visible ? 'eye' : 'eyeOff'} aria-pressed={!p.visible} onClick={() => set(at(i, { ...p, visible: !p.visible }))} />
-              <IconButton label={`Remove ${title.toLowerCase()} ${i + 1}`} icon="minus" onClick={() => set(paints.filter((_, j) => j !== i))} />
-            </Row>
-          ))}
+          {paints.map((p, i) => {
+            const name = `${title} ${i + 1}`
+            return (
+              <div key={i} className="flex flex-col gap-1.5">
+                {/* the type gets its own line so the colour field below keeps the full width */}
+                <Row>
+                  {p.type !== 'IMAGE' ? (
+                    <Select aria-label={`${name} type`} className="flex-1" value={p.type === 'SOLID' ? 'SOLID' : p.kind} onChange={(e) => set(at(i, convertPaint(p, e.target.value as PaintKind)))}>
+                      {PAINT_KINDS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+                    </Select>
+                  ) : <span className="flex h-6 flex-1 items-center rounded bg-raised px-1.5 text-dim">Image</span>}
+                  <RowActions name={`${title.toLowerCase()} ${i + 1}`} visible={p.visible} onToggle={() => set(at(i, { ...p, visible: !p.visible }))} onRemove={() => set(paints.filter((_, j) => j !== i))} />
+                </Row>
+                <Row><NumberField label={`${name} opacity`} prefix="%" className="flex-1" min={0} max={100} value={Math.round((p.opacity ?? 1) * 100)} onChange={(v) => set(at(i, { ...p, opacity: v / 100 }), `opacity${i}`)} /></Row>
+                {p.type === 'IMAGE' && (
+                  <>
+                    <Row>
+                      <Select aria-label={`${name} image mode`} className="flex-1" value={p.scaleMode ?? 'FILL'} onChange={(e) => set(at(i, { ...p, scaleMode: e.target.value as ImagePaint['scaleMode'] }))}>
+                        {IMAGE_MODES.map((m) => <option key={m} value={m}>{m[0] + m.slice(1).toLowerCase()}</option>)}
+                      </Select>
+                      {p.scaleMode === 'CROP' && field === 'fills' && nodes.length === 1 && <Button onClick={() => store.set({ mode: { kind: 'crop', id: ids[0], paint: i } })}>Crop</Button>}
+                    </Row>
+                    {(p.scaleMode === 'CROP' || p.scaleMode === 'TILE') && (
+                      <>
+                        <Row><NumberField label={`${name} scale`} prefix="%" className="flex-1" min={1} max={10000} value={Math.round((p.scale ?? 1) * 100)} onChange={(v) => set(at(i, { ...p, scale: v / 100 }), `scale${i}`)} /></Row>
+                        <Row>
+                          <NumberField label={`${name} offset X`} prefix="X" className="flex-1" value={Math.round(p.offsetX ?? 0)} onChange={(v) => set(at(i, { ...p, offsetX: v }), `ox${i}`)} />
+                          <NumberField label={`${name} offset Y`} prefix="Y" className="flex-1" value={Math.round(p.offsetY ?? 0)} onChange={(v) => set(at(i, { ...p, offsetY: v }), `oy${i}`)} />
+                        </Row>
+                      </>
+                    )}
+                  </>
+                )}
+                {p.type === 'SOLID' && <Row><PickField label={name} color={p.color} onChange={(color) => set(at(i, { ...p, color }), `color${i}`)} /><VariableButton field={`${field}.${i}.color`} type="COLOR" nodes={nodes} /></Row>}
+                {p.type === 'GRADIENT' && <Row><NumberField label={`${name} angle`} prefix="∠" className="flex-1" min={-180} max={180} value={Math.round(gradientAngle(p))} onChange={(deg) => set(at(i, rotateGradient(p, deg)), `angle${i}`)} /></Row>}
+                {p.type === 'GRADIENT' && (
+                  <div className="flex flex-col gap-1.5">
+                    {p.stops.map((s, k) => {
+                      const stop = (change: Partial<GradientStop>, tag: string) => set(at(i, { ...p, stops: p.stops.map((o, j) => (j === k ? { ...o, ...change } : o)) }), `${tag}${i}-${k}`)
+                      return (
+                        <Row key={k}>
+                          <NumberField label={`${name} stop ${k + 1} position`} prefix="@" className="w-12" min={0} max={100} value={Math.round(s.pos * 100)} onChange={(v) => stop({ pos: v / 100 }, 'pos')} />
+                          <PickField label={`${name} stop ${k + 1}`} color={s.color} onChange={(color) => stop({ color }, 'stop')} />
+                          {p.stops.length > 2 && <IconButton label={`Remove ${name} stop ${k + 1}`} icon="minus" onClick={() => set(at(i, { ...p, stops: p.stops.filter((_, j) => j !== k) }))} />}
+                        </Row>
+                      )
+                    })}
+                    {/* .refig files hold at most 32 stops per gradient */}
+                    <Button disabled={p.stops.length >= 32} onClick={() => set(at(i, { ...p, stops: [...p.stops, { pos: 0.5, color: colorAt(p.stops, 0.5) }] }))}>Add stop</Button>
+                  </div>
+                )}
+              </div>
+            )
+          })}
           {children}
         </>
       )}
@@ -294,64 +603,73 @@ function Paints({ title, field, nodes, report, children }: { title: string; fiel
   )
 }
 
+const BLUR_NAME = { LAYER_BLUR: 'Layer blur', BACKGROUND_BLUR: 'Background blur' } as const
+const SHADOW: DropShadow = { visible: true, x: 0, y: 4, blur: 4, spread: 0, color: { r: 0, g: 0, b: 0, a: 0.25 } }
+
 function Shadows({ nodes }: { nodes: Node[] }) {
   const store = useStore()
-  const ids = nodes.map((n) => n.id), effects = nodes[0].effects
-  const set = (next: DropShadow[], tag?: string) => store.update((d) => patch(d, ids, { effects: next }), tag && `panel:shadow:${tag}:${ids.join()}`)
-  const at = (i: number, change: Partial<DropShadow>, tag: string) => set(effects.map((s, j) => (j === i ? { ...s, ...change } : s)), `${tag}${i}`)
+  const ids = nodes.map((n) => n.id), effects = nodes[0].effects, group = nodes[0].type === 'GROUP'
+  const set = (next: Effect[], tag?: string) => store.update((d) => patch(d, ids, { effects: next }), tag ? panelStep(`shadow:${tag}`, ids) : undefined)
+  const at = (i: number, change: Partial<DropShadow>, tag: string) => set(effects.map((s, j) => (j === i ? ({ ...s, ...change } as Effect) : s)), `${tag}${i}`)
+  const add = (e: Effect) => set([...effects, e])
+  const actions = (
+    <>
+      <StyleButton link="effectStyle" nodes={nodes} />
+      {!group && <IconButton label="Add drop shadow" icon="plus" onClick={() => add(SHADOW)} />}
+      {!group && <IconButton label="Add inner shadow" icon="plus" onClick={() => add({ ...SHADOW, type: 'INNER_SHADOW', y: 2 })} />}
+      <IconButton label="Add layer blur" icon="plus" onClick={() => add({ type: 'LAYER_BLUR', visible: true, blur: 4 })} />
+      {!group && <IconButton label="Add background blur" icon="plus" onClick={() => add({ type: 'BACKGROUND_BLUR', visible: true, blur: 8 })} />}
+    </>
+  )
   return (
-    <PanelSection title="Drop shadow" action={<IconButton label="Add drop shadow" icon="plus" onClick={() => set([...effects, { visible: true, x: 0, y: 4, blur: 4, spread: 0, color: { r: 0, g: 0, b: 0, a: 0.25 } }])} />}>
-      {effects.length > 0 &&
-        effects.map((s, i) => (
+    <PanelSection title="Effects" action={actions}>
+      {effects.map((s, i) => {
+        const toggle = () => set(effects.map((e, j) => (j === i ? { ...e, visible: !e.visible } : e)))
+        const remove = () => set(effects.filter((_, j) => j !== i))
+        if (!('color' in s))
+          return (
+            <Row key={i}>
+              <NumberField label={`${BLUR_NAME[s.type]} ${i + 1}`} prefix="B" className="flex-1" min={0} value={s.blur} onChange={(blur) => at(i, { blur }, 'blur')} />
+              <RowActions name={`${BLUR_NAME[s.type].toLowerCase()} ${i + 1}`} visible={s.visible} onToggle={toggle} onRemove={remove} />
+            </Row>
+          )
+        const name = s.type === 'INNER_SHADOW' ? 'Inner shadow' : 'Shadow'
+        return (
           <div key={i} className="flex flex-col gap-1.5">
             <Row>
-              <ColorField label={`Shadow ${i + 1}`} color={s.color} onChange={(color) => at(i, { color }, 'color')} />
-              <IconButton label={s.visible ? `Hide shadow ${i + 1}` : `Show shadow ${i + 1}`} icon={s.visible ? 'eye' : 'eyeOff'} aria-pressed={!s.visible} onClick={() => set(effects.map((e, j) => (j === i ? { ...e, visible: !e.visible } : e)))} />
-              <IconButton label={`Remove shadow ${i + 1}`} icon="minus" onClick={() => set(effects.filter((_, j) => j !== i))} />
+              <PickField label={`${name} ${i + 1}`} color={s.color} onChange={(color) => at(i, { color }, 'color')} />
+              <VariableButton field={`effects.${i}.color`} type="COLOR" nodes={nodes} />
+              <RowActions name={`${name.toLowerCase()} ${i + 1}`} visible={s.visible} onToggle={toggle} onRemove={remove} />
             </Row>
             <Row>
-              <NumberField label={`Shadow ${i + 1} X`} prefix="X" className="flex-1" value={s.x} onChange={(x) => at(i, { x }, 'x')} />
-              <NumberField label={`Shadow ${i + 1} Y`} prefix="Y" className="flex-1" value={s.y} onChange={(y) => at(i, { y }, 'y')} />
+              <NumberField label={`${name} ${i + 1} X`} prefix="X" className="flex-1" value={s.x} onChange={(x) => at(i, { x }, 'x')} />
+              <NumberField label={`${name} ${i + 1} Y`} prefix="Y" className="flex-1" value={s.y} onChange={(y) => at(i, { y }, 'y')} />
             </Row>
             <Row>
-              <NumberField label={`Shadow ${i + 1} blur`} prefix="B" className="flex-1" min={0} value={s.blur} onChange={(blur) => at(i, { blur }, 'blur')} />
-              <NumberField label={`Shadow ${i + 1} spread`} prefix="S" className="flex-1" value={s.spread} onChange={(spread) => at(i, { spread }, 'spread')} />
+              <NumberField label={`${name} ${i + 1} blur`} prefix="B" className="flex-1" min={0} value={s.blur} onChange={(blur) => at(i, { blur }, 'blur')} />
+              <NumberField label={`${name} ${i + 1} spread`} prefix="S" className="flex-1" value={s.spread} onChange={(spread) => at(i, { spread }, 'spread')} />
             </Row>
           </div>
-        ))}
+        )
+      })}
     </PanelSection>
   )
 }
 
-/** Format + scale + button. Exports the current selection; used in the Design panel and the File → Export… dialog. */
-export function ExportControls({ onDone, onError }: { onDone(path: string | null): void; onError(e: unknown): void }) {
-  const store = useStore()
-  const hasSelection = useEditor((s) => s.selection.length > 0)
-  const [kind, setKind] = useState<ExportKind>('png')
-  const [scale, setScale] = useState(1)
-  const [busy, setBusy] = useState(false)
-  const run = async () => {
-    setBusy(true)
-    try {
-      onDone(await exportSelection(store, kind, scale))
-    } catch (e) {
-      onError(e)
-    }
-    setBusy(false)
-  }
+/** Every solid colour used inside the selection; editing one recolours all its users at once. Shown for several layers or a layer with children. */
+function SelectionColors({ ids }: { ids: string[] }) {
+  const store = useStore(), doc = useEditor((s) => s.doc)
+  if (ids.length < 2 && !childrenOf(doc, ids[0]).length) return null // a lone leaf layer's colours are already in Fill and Stroke
+  const colors = selectionColors(doc, ids)
+  if (!colors.length) return null
   return (
-    <>
-      <Row>
-        <Select aria-label="Export scale" className="flex-1" value={scale} disabled={kind !== 'png'} onChange={(e) => setScale(Number(e.target.value))}>
-          {[1, 2, 3].map((s) => <option key={s} value={s}>{s}x</option>)}
-        </Select>
-        <Select aria-label="Export format" className="flex-1" value={kind} onChange={(e) => setKind(e.target.value as ExportKind)}>
-          <option value="png">PNG</option>
-          <option value="svg">SVG</option>
-          <option value="pdf">PDF</option>
-        </Select>
-      </Row>
-      <Button onClick={run} disabled={busy || !hasSelection}>{busy ? 'Exporting…' : 'Export selection'}</Button>
-    </>
+    <PanelSection title="Selection colors">
+      {colors.map((u, i) => (
+        <Row key={i}>
+          <div className="flex-1"><PickField label={`Selection color ${u.hex}`} color={u.color} onChange={(c) => store.update((d) => replaceColor(d, ids, u.hex, c), panelStep('selection-colors', ids))} /></div>
+          <span className="w-8 text-right text-dim" title={`Used ${u.count} times`}>{u.count}</span>
+        </Row>
+      ))}
+    </PanelSection>
   )
 }

@@ -3,6 +3,7 @@ RE-Sigma: features missing vs Figma, implemented in list order
 Source of the list: comparison of RE-Sigma with Figma's editor (2026-11-13).
 Workflow per feature: plan -> implement -> unit tests (npm test) -> typecheck (npm run typecheck)
 -> e2e check in the packaged app (npm run test:e2e -- -g "<name>") -> commit -> update this file.
+Log every bug/issue found while building a feature in issues.txt.
 
 Status legend: [done] [in progress] [todo]
 
@@ -39,7 +40,7 @@ Status legend: [done] [in progress] [todo]
        Known limits: deleting a node inside an instance does nothing (the sync recreates it);
        every edit re-syncs all instances (shortcut: comment, cache when documents get large);
        a new field on Node must be added to OVERRIDABLE or it won't reach instances.
- 4. [done] Variants / component sets (commit: see `git log --grep "Add variants"`)
+ 4. [done] Variants / component sets (commit cc4854c)
        FRAME flag `componentSet`; variants are its child main components, properties in the
        layer name ("Size=L, Tone=Dark"). Code: variantProps, combineAsVariants, addVariant,
        setVariant in src/renderer/editor/model/components.ts.
@@ -50,38 +51,285 @@ Status legend: [done] [in progress] [todo]
        New sets get auto layout (row, gap 20, padding 20) so variants never overlap.
        Skipped: property editor on the set (rename the variant layer instead), boolean/text/
        instance-swap component properties, dashed set border, .fig import of sets.
- 5. [todo] Gradient fills (linear, radial, angular, diamond)
- 6. [todo] Pen tool + vector node editing
- 7. [todo] Pencil (freehand) tool
- 8. [todo] Boolean operations (union, subtract, intersect, exclude) + flatten
- 9. [todo] Masks
-10. [todo] Star, polygon, arrow tools; ellipse arcs; per-corner radius; corner smoothing
-11. [todo] Blend modes and per-fill opacity
-12. [todo] Inner shadow, layer blur, background blur
-13. [todo] Stroke options: dashes, caps, joins, arrowheads, per-side weight
-14. [todo] Image fill modes (fill/fit/crop/tile), SVG/image file import, drag-drop files
-15. [todo] Rich text: mixed styles, decoration, case, lists, vertical align, truncation, system fonts
-16. [todo] Styles: color, text, effect, grid
-17. [todo] Variables / design tokens with modes
-18. [todo] Rulers, draggable guides, pixel grid, layout grids
-19. [todo] Right-click context menu
-20. [todo] Command palette (Ctrl+K) and search in layers/pages
-21. [todo] Section tool; frame size presets
-22. [todo] Multi-export per layer (JPG/WebP, 1x/2x), slices, whole-page export
-23. [todo] Eyedropper; color picker with recent + document colors
-24. [todo] Copy/paste properties, paste-over, cross-app clipboard
-25. [todo] Alt-hover measurement, scale tool (K), bulk rename, find & replace
-26. [todo] Prototyping: interactions, preview mode
-27. [todo] Comments
-28. [todo] Dev mode / inspect, code export
-29. [todo] Plugins / widgets API
-30. [todo] Version history, libraries, cloud sync, multiplayer
-31. [todo] Assets panel
-32. [todo] Outline text; font embedding in SVG/PDF export
+ 5. [done] Gradient fills (commit 6860185)
+       Paint type GRADIENT {kind LINEAR/RADIAL/ANGULAR/DIAMOND, from, to, stops}; handles in the
+       node's normalized box, like Figma. Helpers (gradient, rotateGradient, convertPaint, colorAt)
+       in src/shared/document.ts. Fills and strokes.
+       Canvas: src/renderer/editor/canvas/gradient.ts. Shape/vector fills exact; text fills and
+       strokes in pixel space (linear exact, others use a circle: shortcut comment).
+       SVG/PDF: linear/radial gradients, diamond as 4 clipped quadrants; angular shape fills become
+       a 256px raster image, angular text/strokes use the first stop (shortcut comment).
+       Design panel: type select per paint, angle field, stop rows (position, colour), Add stop.
+       .fig import: figGradient() in fig.ts (stops, opacity, handles from the inverse transform).
+       Neither fixture has gradients, so the import is only tested on hand-built paints.
+       Skipped: on-canvas gradient handles, per-stop interpolation, paint opacity (#11).
+       Known nit: stop rows clip the hex field to about 4 characters.
+       Review fixes (ultrareview of 6860185, see `git log --grep "Fix gradient review"`):
+       - Gradients keep Figma's third (width) handle `w`. Everything draws through
+         gradientMatrix() (canonical gradient space → box), so rotated diamonds, elliptical radials
+         and skewed linears are exact on canvas and in SVG. Text/strokes: linear and diamond are
+         exact; radial/angular still use a circle.
+       - .fig import: near-singular transforms and >32 paints per list are skipped and reported;
+         >32 stops are reported.
+       - FORMAT_VERSION is 2, so older apps refuse gradient files with "newer version".
+       - Zero-height vectors draw gradient strokes; Add stop stops at 32; text editing shows a
+         gradient's midpoint colour; SVG vector clips carry clip-rule.
+ 6. [done] Pen tool + vector node editing (commit: see `git log --grep "Add pen tool"`)
+       Paths as anchors with Bézier handles: src/renderer/editor/model/path.ts (parsePath,
+       pathData, anchorsOf, withAnchors — re-fits the box, keeps points in place on the page).
+       Pen (P): click = corner, drag = symmetric handles, Shift = 45°, click the first point to
+       close; Enter/Escape/tool change finishes; a lone point is removed; one undo step per path.
+       In-progress points live in store `pen` (path data can't hold the last point's out-handle).
+       Point editing: Enter or double-click a VECTOR; drag points/handles; Delete removes a point;
+       Escape/Enter/click away ends it. Imported outlined strokes are dropped on edit.
+       Skipped: add a point on a segment, bend tool / breaking handle symmetry, multi-point
+       selection, continuing an open path, exact curve bounds (box wraps the handles).
+ 7. [done] Pencil (freehand) tool (commit: see `git log --grep "Add pencil tool"`)
+       Shift+P. Drag draws a VECTOR: raw polyline while dragging, then fitStroke() in model/path.ts
+       (Douglas-Peucker to 1.5 screen px, Catmull-Rom handles) when released; one undo step. Tool stays
+       on Pencil, the new stroke is selected. Code: src/renderer/editor/tools/pencil.ts.
+       Skipped: pressure/velocity width, closing a stroke by returning to its start, smoothing strength,
+       merging strokes. Known limits are in issues.txt.
+ 8. [done] Boolean operations (union, subtract, intersect, exclude) + flatten (commit: see `git log --grep "Add boolean"`)
+       Live node type BOOLEAN (container) with `boolOp`; its children are the operands (bottom one is the base,
+       upper ones are united/subtracted/intersected/excluded), not drawn. Its `vector` is computed from them, so
+       every renderer draws it like a VECTOR (hasPath() in canvas/paintPlan.ts). Engine: paper.js (paper-core,
+       headless: paper.setup with no canvas). Code: model/boolean.ts (booleanVector, syncBooleans, makeBoolean,
+       flatten); syncBooleans runs in normalize() after fitGroups, only for booleans whose subtree changed.
+       Commands: Union Ctrl+Alt+U, Subtract Ctrl+Alt+S, Intersect Ctrl+Alt+I, Exclude Ctrl+Alt+X, Flatten Ctrl+E
+       (several nodes flatten as their union; a group becomes the union of its children). Ungroup releases operands.
+       Design panel: "Boolean" section with the operation select. New boolean takes the bottom operand's paints.
+       Operands: rectangle, frame (as rectangle), ellipse, vector, group, nested boolean. Hidden ones are ignored.
+       FORMAT_VERSION is 3 (BOOLEAN + boolOp in .refig); older files read unchanged.
+       Skipped: text and line operands (text outlines come with #32), importing live booleans from .fig (they stay
+       flattened VECTORs), selection box = union of operands (not the result), on-canvas operand highlight,
+       dragging into/out of a boolean from the layers panel is not specially handled.
+       Known limits are in issues.txt.
+ 9. [done] Masks (commit: see `git log --grep "Add masks"`)
+       Node `mask` flag (rectangle, frame, ellipse, vector, boolean): the layer draws nothing and clips every sibling
+       above it in the same parent (Figma's rule); a hidden mask clips nothing. Helpers canMask/isMask in
+       canvas/paintPlan.ts. Canvas: drawChildren() in canvas/render.ts (ctx.clip per mask, restored at the end of the
+       sibling list). SVG/PDF: siblings() in export/svg.ts wraps the layers above a mask in <g clip-path> using a
+       <clipPath transform=mask matrix>. Hit-testing: masked layers only answer inside the mask (canvas/hit.ts, shared
+       containsPoint()); the mask layer itself stays clickable.
+       Ctrl+Alt+M "Use as mask": one shape toggles; several are grouped and the bottom-most becomes the mask.
+       Design panel "Mask" button, mask icon in layers. .fig import reads `mask`. FORMAT_VERSION is 4.
+       Skipped: alpha/luminance masks, text/line/group masks, mask-aware group bounds and marquee, mask outline on canvas.
+       Known limits are in issues.txt.
+10. [done] Star, polygon, arrow tools; ellipse arcs; per-corner radius; corner smoothing (commit: see `git log --grep "Add shape"`)
+       Path maker: model/shapes.ts (cornerPath, arcPath, starPath, arrowSubs, syncShapes); everything is path data in
+       the node's box, so canvas (trace() in canvas/render.ts), SVG/PDF, booleans and masks reuse it.
+       STAR and POLYGON are parametric nodes (`points`, STAR `innerRatio`); their computed `vector` is rebuilt in
+       normalize() (syncShapes) and they draw through hasPath() like vectors/booleans. Tools: Star Shift+S, Polygon
+       Shift+G, Arrow Shift+L (drag; Shift = 45 degrees). Arrow is a plain VECTOR: shaft + filled triangular head.
+       Ellipse `arc` {start, sweep, inner} (degrees, clockwise from 3 o'clock; ring when inner > 0). Rectangle/frame
+       `cornerRadii` [tl, tr, br, bl] (wins over cornerRadius) and `cornerSmoothing` 0-1 (Figma's squircle, the
+       open figma-squircle construction). A plain uniform radius still draws as roundRect / <rect rx>.
+       Design panel: Points / Inner radius, Arc start / sweep / ratio, Corner smoothing, Independent corners.
+       .fig import reads the four corner radii and cornerSmoothing. FORMAT_VERSION is 5.
+       Skipped: rounding star/polygon corners, on-canvas arc handles, arrowhead styles (stroke ends are #13),
+       importing .fig stars/polygons as parametric nodes (they stay VECTORs). Known limits are in issues.txt.
+11. [done] Blend modes and per-fill opacity
+       Node `blendMode` (Figma's 16 modes, BLEND_CSS in shared/document.ts; canvas globalCompositeOperation, SVG mix-blend-mode;
+       overridable on instances). Paint `opacity` (0-1) on fills and strokes, multiplies with color.a; Design panel: Blend mode
+       select beside Opacity, `Fill N opacity` per paint. .refig validates both; .fig import reads node blendMode and image paint
+       opacity. FORMAT_VERSION is 6.
+       Skipped: per-paint blend mode, group isolation layer (blended group children blend one by one), .fig LINEAR_BURN/DODGE
+       and PASS_THROUGH (treated as normal), .fig solid/gradient opacity still baked into color.a, PDF fidelity unchecked.
+12. [done] Inner shadow, layer blur, background blur
+       `Node.effects` is now Effect[] (DROP_SHADOW | INNER_SHADOW | LAYER_BLUR | BACKGROUND_BLUR); an untyped entry is a drop
+       shadow, so older files read unchanged. paintsOf() decides what each node draws for canvas and SVG. Canvas: inner shadow
+       via the off-canvas shadow trick inside a clip, layer blur via ctx.filter, background blur re-draws the canvas blurred
+       inside the node's outline. SVG: mask+blur inner shadow, feGaussianBlur layer blur. Design panel: Effects section with four
+       add buttons (groups only get layer blur). .fig import maps INNER_SHADOW, FOREGROUND_BLUR, BACKGROUND_BLUR. FORMAT_VERSION is 7.
+       Skipped: background blur in SVG export and in PNG export of a selection (nothing is behind it), layer blur on a group
+       blurs children one by one and replaces rather than adds to an ancestor's, inner shadow spread ignored on vectors and arcs,
+       .fig blur field names (`radius`) unchecked against a real file, no visual check in the running app yet.
+13. [done] Stroke options: dashes, caps, joins, arrowheads, per-side weight
+       Node `strokeDash` [dash, gap...], `strokeCap` NONE/ROUND/SQUARE, `strokeJoin` MITER/BEVEL/ROUND, `strokeStart`/`strokeEnd`
+       markers (NONE/ARROW/TRIANGLE/CIRCLE/DIAMOND, LINE and open VECTOR) and `strokeSides` [t,r,b,l] (RECTANGLE/FRAME; strokeWeight holds
+       their max). strokeStyle/sidesPath/endMarks in canvas/paintPlan.ts feed canvas and SVG. Design panel: dash field, cap/join,
+       start/end marker, Independent sides. .refig validates all; .fig import reads cap, join, dashPattern, border*Weight.
+       FORMAT_VERSION is 8.
+       Skipped: per-side corners/align (drawn inside, square), dash on per-side edges, on-canvas marker handles, .fig arrow caps and
+       .fig field names unchecked against a real file, PDF fidelity unchecked, markers on outlined (imported) vector strokes.
+14. [done] Image fill modes (fill/fit/crop/tile), SVG/image file import, drag-drop files
+       IMAGE paint gains `scaleMode` FILL/FIT/CROP/TILE, `scale`, `offsetX/Y` (FORMAT_VERSION 9). imageBox in canvas/paintPlan.ts feeds
+       canvas (drawImage / createPattern) and SVG (<image> / <pattern>; toSvg takes an optional imageSize). Design panel: mode, scale,
+       offset, Crop button. Double-click an image enters crop mode (tools/crop.ts): drag moves, a corner scales about the centre.
+       "Place image..." (Ctrl+Shift+K) and file drop go through placeFile in clipboard.ts. SVG files import as a FRAME of VECTORs
+       (importSvg.ts, model/svgPath.ts: relative/H/V/S/T/arc commands, transforms, solid fill/stroke); groups are flattened.
+       Skipped: SVG gradients, clipPath, masks, filters, <use>, <text>, <image>, CSS classes (named in a toast), Toolbar button,
+       .fig scale-mode field names unchecked against a real file, PDF fidelity of tiled fills unchecked, arc flags written without
+       separators in SVG paths, running the app/e2e by hand.
+15. [done] Rich text (whole-node): italic, decoration, case, lists, vertical align, truncation, system fonts
+       Node `fontItalic`, `textDecoration` NONE/UNDERLINE/STRIKETHROUGH, `textCase` ORIGINAL/UPPER/LOWER/TITLE, `textAlignVertical`,
+       `textTruncate` + `maxLines`, `listStyle` NONE/BULLET/NUMBERED, `textFixedHeight` (FORMAT_VERSION 10; all overridable).
+       canvas/text.ts layoutText is the single layout (case, list prefixes with hanging indent, truncation with an ellipsis, vertical offset);
+       each line carries its final x/y, used by canvas drawText (decoration drawn as a bar) and SVG (text-decoration, font-style).
+       Resizing a TEXT's height sets textFixedHeight (panel button "Auto height" undoes it). Design panel: decoration, case, list,
+       vertical-align selects, Italic/Truncate toggles, max lines. editor/fonts.ts lists installed fonts via queryLocalFonts (falls back to FONTS).
+       .fig import maps italic, textDecoration, textCase, textAlignVertical, textTruncation/maxLines, textAutoResize NONE.
+       Skipped: mixed styles per range (15b), .fig list/paragraph data, paragraph spacing/indent, nested lists, running the app/e2e by hand,
+       queryLocalFonts under Electron unchecked. Known limits are in issues.txt.
+15b. [done] Rich text: mixed styles per character range
+       Node `runs` [{len, style}] covers `characters`; a run overrides fontFamily/Weight/Size/Italic, decoration, case, letterSpacing,
+       lineHeight and a solid `fill` (FORMAT_VERSION 11; overridable). model/richText.ts: runsOf (always repairs coverage), splice,
+       styleRange, commonStyle. canvas/text.ts layoutText now returns lines of styled segments (a word and its space are one segment,
+       sizes share a baseline, line height = tallest run); canvas drawText and SVG tspans draw per segment.
+       Editing has no textarea showing text any more: a transparent textarea at the caret takes keys/IME/clipboard, the caret and selection are drawn
+       by canvas/overlay.ts from canvas/caret.ts (caretPos, indexAt, selectionRects, wordAt). tools/textEdit.ts: typing, arrows (Ctrl = word,
+       Up/Down keep the column), Home/End, Backspace/Delete, Ctrl+A/B/I/U, double click = word, triple = paragraph, drag selects,
+       a style chosen at a bare caret applies to what is typed next. Edits are live in one undo step per node. While editing, the Design
+       panel styles the selection (title "Text (selection)", plus a text colour). .fig import maps characterStyleIDs/styleOverrideTable.
+       Skipped: styled copy/paste (plain text only), caret blink, IME composition preview on the canvas, bidi, truncation while editing,
+       .fig run field names unchecked against a real file, per-range gradients. Known limits are in issues.txt.
+16. [done] Styles: color, text, effect (grid styles came with #18)
+       Document `styles` [{id, name, kind FILL|TEXT|EFFECT, value}] and node links `fillStyle`/`strokeStyle`/`effectStyle`/`textStyle` (FORMAT_VERSION 12;
+       links are overridable). model/styles.ts: createStyle, applyStyle, detachStyle, updateStyleFrom, renameStyle, deleteStyle, and resolveStyles,
+       which normalize runs before syncInstances (ordinary nodes) and after it (instance nodes with overridden links) to copy each style's value onto its nodes,
+       so renderers and exporters are unchanged. A hand edit to a linked field detaches it; a dangling link is dropped. Design panel: StyleButton menu
+       in Fill, Stroke, Effects and Text (apply, create from selection, detach); left panel Styles list (rename by double click, update from selection, delete).
+       Skipped: grid styles (#18), per-range text styles, a style preview/editor, .fig style import, e2e and app not run by hand. Known limits are in issues.txt.
+17. [done] Variables / design tokens with modes (COLOR and NUMBER)
+       Document `collections` [{id, name, modes[], variables[{id, name, type, values per mode}]}], node `bindings` (field key -> variable id) and `modes`
+       (collection -> mode, inherited from ancestors; FORMAT_VERSION 13; both overridable). model/variables.ts: resolveVariables, which normalize runs next to
+       resolveStyles (ordinary nodes before syncInstances, instance nodes after it, since an instance can sit in another mode), copies the value for the
+       node's mode onto the bound field, so renderers and exporters are unchanged. A hand edit unbinds; a dangling binding is dropped. Bindable: solid fill/stroke
+       colors, shadow colors, cornerRadius, strokeWeight, fontSize, layout.gap. UI: VariableButton beside those fields, "Variable modes" in the frame section,
+       left panel Variables table (modes as columns, rename by double click). Tests: variables.test.ts.
+       Skipped: STRING/BOOLEAN variables, opacity (unit clash), padding, aliases, gradient stops, bound style values, .fig import, e2e, app not run by hand.
+18. [done] Rulers, draggable guides, pixel grid, layout grids (+ grid styles)
+       Document (FORMAT_VERSION 14): PAGE `guides` [{axis, pos}], FRAME `layoutGrids` [{kind GRID|COLUMNS|ROWS, size, count, gutter, margin, color}] (overridable),
+       `gridStyle` link and a GRID style kind (model/styles.ts LINKS). Editor-only view state in the store: rulers (Shift+R, off), guides (Ctrl+;), pixel grid
+       (Ctrl+', from 800 % zoom), layout grids (Ctrl+Shift+4). canvas/aids.ts draws them from drawOverlay; tools/guides.ts: a drag from a ruler makes a guide, a drag on
+       a guide moves it, dragging it back into the ruler (or off the canvas) deletes it; snap() takes the guides as extra lines for move, resize and draw. Design panel:
+       "Layout grid" section on a single frame (+ grid style button), "Clear guides" with nothing selected. Never exported. Tests: guides.test.ts.
+       Skipped: snapping to layout-grid edges, per-grid align/width, .fig import, typing a guide's position, units other than px, remembering the toggles between
+       sessions, e2e and app not run by hand (the canvas drawing is only smoke-tested with a stub context).
+19. [done] Right-click context menu
+       panels/ContextMenu.tsx: ContextMenuHost (in Editor Layout) + useContextMenu(); items are COMMANDS ids, so labels, shortcuts and enabled states
+       are shared with the main menu. Canvas right-click hit-tests and selects (empty space clears the selection and shows paste / select all only);
+       layer rows open the same menu. Tests: app.test.tsx.
+       Skipped: submenus, keyboard-opened menu (Shift+F10), item icons, e2e and app not run by hand.
+20. [done] Command palette (Ctrl+K) and search in layers/pages
+       panels/Palette.tsx (a Dialog, opened by the `command-palette` command via Actions.openPalette): substring search over COMMANDS (disabled ones
+       shown dimmed, not runnable), pages and every layer of every page; choosing a layer switches page, selects it and zooms to it. Empty query lists
+       commands only. Up/Down/Enter. The Layers panel has a "Filter layers" field (matches keep their ancestors, everything expands). Tests: app.test.tsx.
+       Skipped: fuzzy ranking and recents, searching text content/styles/variables, opening from inside a text field, page-list filter,
+       e2e and app not run by hand.
+21. [done] Section tool; frame size presets
+       A section is a FRAME with `section: true` (format v15; refig.ts reads/validates it, docs/project-format.md). Tool `section` (Shift+X,
+       tools/index.ts SHAPES) is always drawn at page level, no clip, light grey; the Design panel hides clip/auto layout/grids for it. A "Size preset"
+       select (DesignPanel PRESETS) above W/H resizes a selected non-section frame. Tests: app.test.tsx.
+       Skipped: importing .fig SECTION as a section, a section icon in the layers panel, presets while drawing with the Frame tool,
+       a refig round-trip test for `section`, e2e and app not run by hand.
+22. [done] Multi-export per layer (JPG/WebP, 1x/2x), slices, whole-page export
+       Document (FORMAT_VERSION 16): any node `exports` [{suffix, format png|jpg|webp|svg|pdf, scale}] (<= 20), RECTANGLE `slice` (refig.ts validates,
+       docs/project-format.md). ExportControls: quick format/scale row + "Export selection" (or "Export page" with nothing selected), "+" saves the row to the
+       selected layer (or the page), saved rows editable, "Export saved settings" -> one file per setting. API `exportFiles` (folder picker; ipc.ts `encode`
+       validates raster headers, de-duplicates names). export/index.ts: exportSelection / exportSettings / exportPage; renderToCanvas and toSvg take a `region`
+       (a slice exports the page content under it; JPG gets a white background). Slice tool (S): page-level fill-less RECTANGLE, dashed outline in
+       canvas/overlay.ts, no fill/stroke/effects in the Design panel. Tests: app.test.tsx, export.test.ts, formats.test.ts.
+       Skipped: JPG/WebP quality setting, fixed-size export (512w), `/` folders in slice names, .fig import of exports/slices, a slice's own hit-test by
+       edge only (not checked by hand), jsdom has no canvas so raster rendering is untested, e2e and app not run by hand.
+23. [done] Eyedropper; color picker with recent + document colors
+       Every Design-panel colour field (panels/ColorPicks.tsx PickField = ColorField + a popover) lists recent and document colours and, where the
+       platform has window.EyeDropper, a "Pick from screen" button. documentColors/pushColor in model/colors.ts; recent lives in EditorState (session only,
+       no format change). Picks go through the field's own onChange, so undo/autosave are unchanged. Tests: colors.test.ts, app.test.tsx.
+       Skipped: recent colours across sessions, HSV picker, swatches on variable fields, recording hex-typed/native-picker colours as recent, an eyedropper
+       that ignores canvas handles/guides (it samples screen pixels); window.EyeDropper unverified in the packaged Electron build, e2e and app not run by hand.
+24. [done] Copy/paste properties, paste into selection, paste text from other apps
+       clipboard.ts: copyProps/pasteProps (Ctrl+Alt+C, Ctrl+Alt+Shift+V: Ctrl+Alt+V is distribute-v) carry paints, stroke, effects, corners, style links and,
+       for text, the font fields to the selection in one undo step. "Paste into selection" (Ctrl+Shift+V) pastes into the selected container keeping x/y.
+       Ctrl+V of foreign text makes a TEXT layer (placeText); copy() writes the layer names to the system clipboard so its own paste isn't mistaken for
+       foreign text. No format change. Tests: clipboard.test.ts.
+       Skipped: writing PNG/SVG/JSON to the system clipboard, cross-window paste, pasting SVG markup text, "replace selection", runs/variable bindings in
+       paste properties, a paste-properties context-menu entry (not checked), e2e and app not run by hand.
+25. [done] Alt-hover measurement, scale tool (K), bulk rename, find & replace
+       Alt-hover: store `hover`/`altDown` (view state); Canvas tracks them; canvas/measure.ts gives the gaps (or edge offsets when boxes overlap), overlay.ts
+       drawMeasure draws them in pink with pills. Scale tool (K, tools/scale.ts): drag from the selection's top-left; model/scale.ts scaleTree scales
+       x/y/size, strokes, radii, text size/line height/spacing (and runs), effects, layout gap/padding, layout grids, image offsets; one undo step.
+       Rename layers (Ctrl+F2, RenameDialog): pattern {name} {n} {parent}, start number, find/replace. Find and replace (Ctrl+F, FindDialog): text content
+       (runs kept, auto-name follows) or layer names, over the selection or the page. model/rename.ts. No format change. Tests: bulk.test.ts, app.test.tsx.
+       Skipped: a numeric "Scale" field in the Design panel, non-uniform/centre scaling, bound variables/styles re-overwrite scaled values, rotated parents
+       shift scaled children slightly (shortcut: comment), measuring rotated layers (uses their axis-aligned box), regex find, find across all pages,
+       e2e and app not run by hand.
+26. [done] Prototyping: interactions, preview mode
+       Document (FORMAT_VERSION 17): Node.interactions (trigger click/hover/press/key/delay; action navigate/back/overlay/closeOverlay/url; transition
+       instant/dissolve/slide*, duration, easing) and FRAME flowStart. Validated in refig.ts (max 20, http(s) links only). model/prototype.ts is the pure
+       logic (startFrames, presentFrom, interactionAt with bubbling, step over {stack, overlays}, transitionAt). hitTest got `ignoreLocked`. Design panel
+       "Prototype" section (PrototypeSection.tsx); Present button / Ctrl+Alt+Enter (store.preview) opens PreviewOverlay.tsx: fullscreen canvas over
+       the editor drawing frames via renderToCanvas, animated transitions, overlays on a dimmed backdrop, Esc leaves. "Open link" goes through the new
+       api.openExternal (main validates http(s)). Toggle flow starting point command. Tests: prototype.test.ts, formats.test.ts, app.test.tsx.
+       Skipped: connection arrows on the canvas, overlay position/close-on-outside-click, transitions for back/overlays (instant), smart animate, drag
+       triggers, variables/conditionals, interactions per instance (not in OVERRIDABLE), dangling targets are ignored rather than cleaned up, rotated
+       frames in click mapping (shortcut: comment), real-canvas drawing not unit-tested (jsdom), e2e not written, app not run by hand.
+27. [done] Comments
+       Format 18: Document.comments [{id,page,x,y,text,at,resolved?,replies?}] (validated in refig.ts; page must exist; max 1000 / 100 replies / 5000 chars).
+       model/comments.ts (add/reply/setResolved/remove, one undo step each), comment tool (C) drops a draft pin, canvas pins (aids.ts drawComments/pinAt),
+       CommentPopover (thread, reply, resolve, delete), Comments section in the left panel with a Resolved toggle, deleting a page deletes its comments.
+       Tests: comments.test.ts, formats.test.ts, app.test.tsx.
+       Skipped: authors, mentions, notifications, pins following moved nodes (shortcut: comment in document.ts), editing a posted message, e2e, app not run by hand.
+28. [done] Dev mode / inspect, code export
+       Store `dev` (view state, no format change); Shift+D / top-bar "Dev mode" button swaps the Design panel for InspectPanel.tsx (position, size, edges to
+       the parent, solid colours, typography, Code, Assets via ExportControls) and hides the toolbar. model/code.ts: cssOf (size/position, fills incl.
+       gradients, strokes, radii, effects, auto layout, text; bound variables -> var(--collection-name, value)), htmlOf (nested divs + stylesheet). Code
+       tab: CSS, HTML + CSS, SVG (toSvg); Copy uses navigator.clipboard. Tests: code.test.ts, app.test.tsx.
+       Skipped: read-only enforcement (tools/shortcuts still edit), Swift/Kotlin/Tailwind, "ready for dev" status/annotations, text runs in code (first
+       fill/whole-node style only), diamond/image fills and per-side border colours, rotated-parent offsets, e2e and app not run by hand.
+29. [done] Plugins (code + sandboxed UI)
+       A plugin is a folder in userData/plugins (env REFIG_PLUGINS) with manifest.json + main .js (+ ui .html); docs/plugins.md, example in
+       docs/examples/plugin-hello. main/plugins.ts: listPlugins, resolveFile, readCode (shim + main file); api listPlugins/readPluginCode/
+       openPluginsFolder; protocol refig-plugin://<id>/<file> serves the UI with its own CSP (default-src 'none'). The code runs in a BLOB worker
+       (a worker must be same-origin, so refig-plugin:// workers fail; CSP worker-src blob:), the UI in <iframe sandbox="allow-scripts">.
+       editor/plugins/host.ts runPlugin: validated methods only (getSelection/getNode/getChildren/setSelection/createNode/updateNode/removeNodes/
+       notify/showUI/postToUI/closePlugin; whitelisted fields, solid fills only, 1000 creates), one undo step per run, 30 s idle stop.
+       PluginUI.tsx relays UI <-> worker. Palette entries, Main menu > Plugins, "Open plugins folder". No format change.
+       Tests: plugins.test.ts, host.test.ts, app.test.tsx, e2e (network blocked, UI, one undo).
+       Skipped: widgets, figma.* compatibility, plugin storage/permissions, hot reload, image/vector/component creation, plugin-specific selection
+       change events, dev mode (npm run dev) has no CSP so plugins can reach the network there, sandbox is only as strong as Chromium's (no signing).
+       Other e2e tests (auto-layout, constraints, instance, boolean) fail in this run; not checked whether they failed before #29.
+30. [done] Version history, libraries (local only)
+       History: .refig entries history/<uuid>.json {id,name?,at,auto,document} (refig.ts HistoryEntry; whitelist widened; images used only by a version are
+       kept). projects.ts keeps the versions in the open-project session, so autosave doesn't re-read the file: save() adds an automatic one at most every
+       10 min and only when the document changed (20 kept), saveVersion adds a named one (50 kept) and also saves the document; getVersion, deleteVersion,
+       listVersions. api: listVersions/saveVersion/getVersion/deleteVersion/readLibrary. File > Version history (VersionsDialog.tsx): save with a name,
+       Restore (saves "Before restore" first, then one undo step via store.update), Delete.
+       Libraries: format 19, Document.libraries [{projectId,name,links}] (links: the library's ids -> the copies' ids). model/library.ts importFromLibrary
+       copies the library's components (and the components they instantiate) onto a page "Library: <name>", with the styles and variable collections they use,
+       remapping instanceOf/ref/style links/bindings/modes; the same call is the update (linked items get the library content again, new ones are added, copies
+       of dropped ones are deleted, a moved copy keeps its place); removeLibrary unlinks. File > Libraries (LibrariesDialog.tsx). A library is whatever is saved on
+       disk for that project, there is no publish step. Tests: projects.test.ts, formats.test.ts, model/library.test.ts, app.test.tsx.
+       Skipped: comparing or previewing a version, naming/restoring part of a document, publish/permissions, team libraries, prototype links in copied
+       components (dropped), pulling in a single component, detecting that a library changed, e2e, app not run by hand.
+       Cloud sync and multiplayer moved to #33 (they need a backend).
+31. [done] Assets panel
+       model/components.ts assetsOf (top-level components/sets per page, library copies included), newInstance (shared with Create instance), instantiate
+       (centred on a point). LeftPanel Assets section (hidden without components): filter, grouped by page, click = instance at the viewport centre,
+       drag onto the canvas (Editor.tsx drop, type application/x-refig-asset). Tests: components.test.ts, app.test.tsx.
+       Skipped: previews/thumbnails, grid view, descriptions, swap from assets, "library changed" badges, e2e, app not run by hand.
+32. [done] Outline text; font embedding in SVG/PDF export
+       fontkit (types: src/renderer/fontkit.d.ts). editor/fontFile.ts: loadFont (installed font via queryLocalFonts, else the bundled Inter woff2), preloadFonts,
+       fontFaces (base64 @font-face). model/textPath.ts textToPath: glyph outlines placed from layoutText (kerning/letterSpacing, underline/strike as bars).
+       boolean.ts shapeOf takes TEXT, so Flatten and Union/Subtract/... outline text; commands.ts withFonts loads the fonts first (async only when the
+       selection has text). toSvg(…, fontFaces) puts <style>@font-face</style> in defs; export/index.ts passes it; the PDF print page CSP allows font-src data:.
+       Tests: textPath.test.ts, export.test.ts. No format change.
+       Skipped: subsetting (whole font file embedded per weight/style), emoji/colour fonts, font-feature settings, the font's own underline metrics, outlined
+       text in live booleans re-computing when fonts change, e2e, app not run by hand (PDF embedding relies on Chromium's printToPDF).
+33. [todo] Backend: accounts, cloud sync, realtime multiplayer (cursors, presence), shared team libraries
+       Needs a server that doesn't exist yet: accounts, a sync API for .refig projects (conflict handling on id + modifiedAt), a realtime channel with
+       CRDT/OT edits on Document, and comment authors (document.ts Comment says so). Version history (#30) and libraries (#30) are the local parts it builds on.
 
-Next step: #5 Gradient fills. Plan first. Paint union is in src/shared/document.ts; touch points:
-canvas render.ts, export svg.ts, DesignPanel Paints, refig.ts validation, fig.ts import
-(gradients are currently dropped and counted as omitted).
+Next step: #33 (needs a backend). Plan first.
 
-Known unrelated issue: e2e test "imports a Figma .fig file and reports what was omitted"
-fails on main too. It expects VECTOR in the omitted list, but VECTORs import now.
+Reviewing the feature commits: `/code-review ultra cc7cc81` reviews everything since before #1.
+
+Code review of the rest (see `git log --grep "Fix issues found in code review"`):
+- Fixed: gestures inside a main component recorded stray overrides on instances (and could
+  drop real ones), so instances stopped following. syncInstances now gets the undo step's base
+  doc from store.update and only counts fields that differ from it.
+- Fixed: variant switching depended on the order properties are listed in names.
+- Fixed: Ctrl+Alt+letter shortcuts on AltGr layouts (keyOf uses the physical key with Alt).
+- Fixed: Space couldn't press a focused button; PDF print page now has a strict CSP;
+  the stale .fig import e2e assertion (the whole e2e suite passes again).

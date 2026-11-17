@@ -1,0 +1,5 @@
+{
+  "name": "Hello shapes",
+  "main": "code.js",
+  "ui": "ui.html"
+}

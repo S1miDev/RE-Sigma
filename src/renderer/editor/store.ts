@@ -1,17 +1,33 @@
 // Editor state for one open project: document, selection, view, undo history, images and autosave.
 import { createContext, useContext, useSyncExternalStore } from 'react'
-import type { OpenedProject, RefigApi } from '../../shared/api'
-import type { Document } from '../../shared/document'
+import type { OpenedProject, PluginInfo, RefigApi } from '../../shared/api'
+import type { Color, Document, Guide, RunStyle } from '../../shared/document'
 import { errorText } from '../util'
 import { thumbnail } from './canvas/render'
 import type { Guides } from './canvas/snap'
-import { fitText } from './canvas/text'
 import type { View } from './canvas/viewport'
+import { preloadFonts } from './fontFile'
+import { pendingText, resyncBooleans } from './model/boolean'
 import type { Box } from './model/geometry'
-import { syncInstances } from './model/components'
-import { autoLayout, fitGroups, put } from './model/ops'
+import type { Edit } from './model/ops'
+import { normalize } from './normalize'
+import { fitText } from './canvas/text'
+import { put } from './model/ops'
+import type { Anchor } from './model/path'
 
-export type Tool = 'move' | 'hand' | 'frame' | 'rectangle' | 'ellipse' | 'line' | 'text'
+export type Tool = 'move' | 'hand' | 'frame' | 'section' | 'slice' | 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'star' | 'polygon' | 'pen' | 'pencil' | 'text' | 'scale' | 'comment'
+/**
+ * What a node is being edited as, if anything: its characters (text), a path being drawn (pen; its points live here,
+ * in parent coordinates, because path data can't hold the last point's outgoing handle until the next segment
+ * exists), or a VECTOR's points (sel = subpath, anchor). A mode ends when its node goes away.
+ */
+export type Mode =
+  | { kind: 'none' }
+  | { kind: 'text'; id: string; anchor: number; focus: number; goalX?: number; pending?: RunStyle } // selection as indices into characters; pending: a style chosen at a bare caret for what is typed next
+  | { kind: 'pen'; id: string; anchors: Anchor[] }
+  | { kind: 'points'; id: string; sel: { s: number; i: number } | null }
+  | { kind: 'crop'; id: string; paint: number } // moving and scaling the image of the node's `paint`th fill (scaleMode CROP)
+export const NO_MODE: Mode = { kind: 'none' }
 export interface EditorState {
   name: string
   doc: Document
@@ -20,42 +36,51 @@ export interface EditorState {
   tool: Tool
   view: View
   size: { w: number; h: number } // canvas viewport in CSS px
-  editingText: string | null
-  overlay: { marquee?: Box; guides?: Guides }
+  mode: Mode
+  overlay: { marquee?: Box; guides?: Guides; guide?: Guide } // guide: the user guide being dragged
   save: 'saved' | 'dirty' | 'saving' | 'error'
   saveError?: string
   uiHidden: boolean
+  rulers: boolean // view aids, not part of the document
+  preview: string | null // the frame a running prototype preview started from; view state only
+  dev: boolean // Dev mode: the right panel inspects instead of edits; view state only
+  pixelGrid: boolean
+  guidesVisible: boolean
+  layoutGridsVisible: boolean
   tick: number // bumped when an image finishes decoding
+  recent: Color[] // colours picked lately, newest first; session-only
+  hover: string | null // the layer under the pointer while no gesture runs; view state only
+  draft: { page: string; x: number; y: number } | null // a comment pin being placed; view state only
+  openComment: string | null // the thread shown beside its pin
+  showResolved: boolean
+  altDown: boolean // Alt is held: measure from the selection to the hovered layer
+  plugins: PluginInfo[] // installed plugins (a scan of the plugins folder); view state only
+  plugin: { id: string; name: string; ui: { src: string; w: number; h: number } | null } | null // the running plugin
+  toast: string | null // a message for the editor's toast (plugins use it)
 }
-type Snapshot = Pick<EditorState, 'doc' | 'pageId' | 'selection'>
+type Snapshot = Pick<EditorState, 'doc' | 'pageId'> // no selection: undo reverts edits only, the selection stays (minus layers that are gone)
+/**
+ * The undo step an edit belongs to. Consecutive edits with the same key share one step: always for a gesture
+ * (it rebuilds from where it started each frame), within a second otherwise (typing a value, nudging).
+ */
+export type Step = { key: string; gesture?: boolean }
+let gestures = 0
+/** A fresh step for one pointer gesture, or a named one (`of`) that a later edit can join. */
+export const gestureStep = (of?: string): Step => ({ key: `gesture:${of ?? ++gestures}`, gesture: true })
 
 export const AUTOSAVE_MS = 1000
 const RETRY_MS = 5000
 const HISTORY = 200
 
-/** Re-measures text nodes changed since `prev`. */
-function fitTexts(prev: Document, next: Document): Document {
-  const refit = Object.values(next.nodes).filter((n) => n.type === 'TEXT' && prev.nodes[n.id] !== n).map(fitText).filter((n) => next.nodes[n.id] !== n)
-  return refit.length ? put(next, refit) : next
-}
-/** Text boxes follow their content, groups wrap their children and auto-layout frames place theirs, whatever edit was made. */
-function normalize(prev: Document, next: Document): Document {
-  if (next === prev) return prev
-  // instances sync first, while `next` still holds exactly what the user changed (their overrides)
-  next = syncInstances(prev, next)
-  // auto layout can change a text box's width (fill), so text is measured again and laid out once more
-  return autoLayout(fitTexts(prev, autoLayout(fitGroups(fitTexts(prev, next)))))
-}
-
 export function createEditorStore(opened: OpenedProject, api: RefigApi) {
   const id = opened.summary.id
   let state: EditorState = {
     name: opened.summary.name, doc: opened.document, pageId: opened.document.pages[0], selection: [], tool: 'move',
-    view: { x: 0, y: 0, zoom: 1 }, size: { w: 0, h: 0 }, editingText: null, overlay: {}, save: 'saved', uiHidden: false, tick: 0,
+    view: { x: 0, y: 0, zoom: 1 }, size: { w: 0, h: 0 }, mode: NO_MODE, overlay: {}, save: 'saved', uiHidden: false, rulers: false, preview: null, dev: false, pixelGrid: true, guidesVisible: true, layoutGridsVisible: true, tick: 0, recent: [], draft: null, openComment: null, showResolved: false, hover: null, altDown: false, plugins: [], plugin: null, toast: null,
   }
   const listeners = new Set<() => void>()
   const past: Snapshot[] = [], future: Snapshot[] = []
-  let lastTag: string | undefined, lastAt = 0
+  let lastStep: Step | undefined, lastAt = 0
   let dirty = false, disposed = false, timer: ReturnType<typeof setTimeout> | undefined, inflight: Promise<boolean> | null = null
   const bytes = new Map<string, Uint8Array>(), bitmaps = new Map<string, ImageBitmap>()
 
@@ -65,7 +90,7 @@ export function createEditorStore(opened: OpenedProject, api: RefigApi) {
     listeners.forEach((l) => l())
   }
   const subscribe = (l: () => void) => (listeners.add(l), () => void listeners.delete(l))
-  const snapshot = (): Snapshot => ({ doc: state.doc, pageId: state.pageId, selection: state.selection })
+  const snapshot = (): Snapshot => ({ doc: state.doc, pageId: state.pageId })
 
   function register(hash: string, data: Uint8Array) {
     bytes.set(hash, data)
@@ -76,37 +101,44 @@ export function createEditorStore(opened: OpenedProject, api: RefigApi) {
 
   function commit(doc: Document, p: Partial<EditorState> = {}) {
     const pageId = doc.nodes[p.pageId ?? state.pageId] ? (p.pageId ?? state.pageId) : doc.pages[0]
-    const editingText = p.editingText !== undefined ? p.editingText : state.editingText
-    set({ ...p, doc, pageId, selection: (p.selection ?? state.selection).filter((i) => doc.nodes[i]), editingText: editingText && doc.nodes[editingText] ? editingText : null })
+    const mode = p.mode ?? state.mode
+    set({ ...p, doc, pageId, selection: (p.selection ?? state.selection).filter((i) => doc.nodes[i]), mode: 'id' in mode && !doc.nodes[mode.id] ? NO_MODE : mode })
     dirty = true
     if (state.save !== 'saving') set({ save: 'dirty' })
     clearTimeout(timer)
     timer = setTimeout(() => void save(), AUTOSAVE_MS)
   }
 
-  /**
-   * Applies an edit and records an undo step. Consecutive edits with the same `tag` share one step
-   * (always for 'gesture…' tags, within a second otherwise). `select` replaces the selection.
-   */
-  function update(fn: (doc: Document) => Document, tag?: string, select?: string[]) {
-    const doc = normalize(state.doc, fn(state.doc))
+  /** Applies an edit and records an undo step (see Step). An edit that returns ids selects them (when there are any). */
+  function update(fn: (doc: Document) => Document | Edit, step?: Step) {
+    const now = Date.now(), joins = !!step && step.key === lastStep?.key && (!!step.gesture || now - lastAt < 1000)
+    const out = fn(state.doc), [next, ids] = 'doc' in out ? [out.doc, out.ids] : [out, []]
+    const select = ids.length ? ids : undefined
+    // A gesture recomputes each frame from the document it started on, so the step's start is the true "before".
+    const doc = normalize(state.doc, next, joins ? (past.at(-1)?.doc ?? state.doc) : state.doc)
     if (doc === state.doc) return select && set({ selection: select })
-    const now = Date.now()
-    if (!(tag !== undefined && tag === lastTag && (tag.startsWith('gesture') || now - lastAt < 1000))) {
+    if (!joins) {
       past.push(snapshot())
       if (past.length > HISTORY) past.shift()
     }
     future.length = 0
-    lastTag = tag
+    lastStep = step
     lastAt = now
     commit(doc, select ? { selection: select } : {})
+    // booleans skip text whose fonts aren't loaded; once they are, bring those booleans up to date (no undo step)
+    const pending = Object.values(doc.nodes).filter((n) => n.type === 'BOOLEAN').flatMap((b) => pendingText(doc, b.id))
+    if (pending.length) void preloadFonts(pending).then((warning) => {
+      const d = resyncBooleans(state.doc)
+      if (d !== state.doc) commit(d)
+      if (warning) set({ toast: warning })
+    }, () => undefined) // nothing loaded: the booleans keep leaving the text out, and the next edit tries again
   }
   function travel(from: Snapshot[], to: Snapshot[]) {
     const s = from.pop()
     if (!s) return
     to.push(snapshot())
-    lastTag = undefined
-    commit(s.doc, { pageId: s.pageId, selection: s.selection, editingText: null })
+    lastStep = undefined
+    commit(s.doc, { pageId: s.pageId, mode: NO_MODE }) // a mode's state may not match the restored document
   }
 
   /** Saves now if there are unsaved changes. Resolves false if the save failed (the document stays in memory and is retried). */
@@ -139,8 +171,19 @@ export function createEditorStore(opened: OpenedProject, api: RefigApi) {
     return inflight
   }
 
+  /**
+   * Measures every text box again and lets auto layout follow. Text is measured with whatever font the browser has,
+   * so boxes sized before a font loaded (or saved on a machine with other fonts) are wrong until this runs.
+   * Not an undo step: it corrects the layout, it isn't an edit.
+   */
+  function refitText() {
+    if (disposed) return // fonts can finish loading after the editor closed
+    const texts = Object.values(state.doc.nodes).filter((n) => n.type === 'TEXT'), fitted = texts.map(fitText).filter((n, i) => n !== texts[i])
+    if (fitted.length) commit(normalize(state.doc, put(state.doc, fitted), state.doc))
+  }
+
   return {
-    id, api, get, set, subscribe, update, save,
+    id, api, get, set, subscribe, update, save, refitText,
     undo: () => travel(past, future),
     redo: () => travel(future, past),
     canUndo: () => past.length > 0,

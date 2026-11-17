@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>body { font: 13px system-ui; margin: 12px } input { width: 4em }</style>
+<label>How many? <input id="n" type="number" value="3" min="1" max="20"></label>
+<button id="go">Create</button>
+<script>
+  // The UI talks to code.js only through the editor: parent.postMessage out, window 'message' in.
+  document.getElementById('go').onclick = () => parent.postMessage({ type: 'make', count: Number(document.getElementById('n').value) }, '*')
+</script>

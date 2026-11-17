@@ -1,4 +1,6 @@
-import type { Box, Pt } from '../model/geometry'
+import { worldBox, type Box, type Pt } from '../model/geometry'
+import { childrenOf } from '../model/ops'
+import type { EditorStore } from '../store'
 
 /** screen = world · zoom + (x, y) */
 export interface View { x: number; y: number; zoom: number }
@@ -22,4 +24,10 @@ export function fitView(box: Box | null, size: { w: number; h: number }, pad = 4
   }
   const zoom = Math.min(maxZoom, Math.max(MIN_ZOOM, Math.min((size.w - pad * 2) / (box.w || 1), (size.h - pad * 2) / (box.h || 1))))
   return { zoom, x: size.w / 2 - (box.x + box.w / 2) * zoom, y: size.h / 2 - (box.y + box.h / 2) * zoom }
+}
+
+/** Zooms to fit the whole page (never past `maxZoom`: 100 % when a page opens, any zoom on request). */
+export function zoomToFit(store: EditorStore, maxZoom?: number) {
+  const s = store.get()
+  store.set({ view: fitView(worldBox(s.doc, childrenOf(s.doc, s.pageId).map((n) => n.id)), s.size, 48, maxZoom) })
 }

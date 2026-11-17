@@ -2,3 +2,5 @@ node_modules
 out
 dist
 test-results
+PROGRESS.txt
+issues.txt

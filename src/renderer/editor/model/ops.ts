@@ -12,26 +12,21 @@ export function childrenOf(doc: Document, parentId: string): Node[] {
   if (!index) {
     index = new Map()
     for (const n of Object.values(doc.nodes)) if (n.parentId) index.set(n.parentId, [...(index.get(n.parentId) ?? []), n])
-    for (const list of index.values()) list.sort(byOrder)
+    for (const list of index.values()) Object.freeze(list.sort(byOrder)) // shared by every caller: mutating one (pop, sort…) once emptied pages on screen, so it throws instead
     indexes.set(doc, index)
   }
   return index.get(parentId) ?? []
 }
 export const descendants = (doc: Document, id: string): Node[] => childrenOf(doc, id).flatMap((c) => [c, ...descendants(doc, c.id)])
-export function pageOf(doc: Document, id: string): string | null {
-  let n: Node | undefined = doc.nodes[id]
-  while (n && n.type !== 'PAGE') n = n.parentId ? doc.nodes[n.parentId] : undefined
-  return n?.id ?? null
+/** The node and then each of its ancestors, up to its page. Empty for a missing id. */
+export function lineage(doc: Document, id: string | null | undefined): Node[] {
+  const out: Node[] = []
+  for (let n = id ? doc.nodes[id] : undefined; n; n = n.parentId ? doc.nodes[n.parentId] : undefined) out.push(n)
+  return out
 }
-export function isAncestor(doc: Document, ancestor: string, id: string): boolean {
-  for (let n = doc.nodes[id]; n?.parentId; n = doc.nodes[n.parentId]) if (n.parentId === ancestor) return true
-  return false
-}
-function depth(doc: Document, id: string) {
-  let d = 0
-  for (let n = doc.nodes[id]; n?.parentId; n = doc.nodes[n.parentId]) d++
-  return d
-}
+export const pageOf = (doc: Document, id: string): string | null => lineage(doc, id).find((n) => n.type === 'PAGE')?.id ?? null
+export const isAncestor = (doc: Document, ancestor: string, id: string) => lineage(doc, id).slice(1).some((n) => n.id === ancestor)
+export const depth = (doc: Document, id: string) => Math.max(0, lineage(doc, id).length - 1)
 /** Existing non-page ids with no selected ancestor, in document (z) order. */
 export function topLevel(doc: Document, ids: string[]): string[] {
   const set = new Set(ids.filter((id) => doc.nodes[id] && doc.nodes[id].type !== 'PAGE'))
@@ -39,6 +34,9 @@ export function topLevel(doc: Document, ids: string[]): string[] {
   const path = (id: string): string => (doc.nodes[id].parentId ? `${path(doc.nodes[id].parentId!)} ${doc.nodes[id].order}` : '')
   return [...set].filter((id) => ![...set].some((a) => isAncestor(doc, a, id))).sort((a, b) => (path(a) < path(b) ? -1 : 1))
 }
+
+/** An edit that also names the nodes it made or freed: the editor selects them. */
+export type Edit = { doc: Document; ids: string[] }
 
 export const put = (doc: Document, nodes: Node[]): Document => ({ ...doc, nodes: { ...doc.nodes, ...Object.fromEntries(nodes.map((n) => [n.id, n])) } })
 export const patch = (doc: Document, ids: string[], change: Partial<Node> | ((n: Node) => Partial<Node>)): Document =>
@@ -51,7 +49,13 @@ export function nextName(doc: Document, base: string): string {
   return `${base} ${max + 1}`
 }
 
-const topOrder = (doc: Document, parentId: string) => orderBetween(childrenOf(doc, parentId).at(-1)?.order)
+/** An order key on top of a parent's children. */
+export const topOrder = (doc: Document, parentId: string) => orderBetween(childrenOf(doc, parentId).at(-1)?.order)
+/** An order key directly above a node, below its next sibling. */
+export function orderAbove(doc: Document, n: Node): string {
+  const siblings = childrenOf(doc, n.parentId!)
+  return orderBetween(n.order, siblings[siblings.findIndex((s) => s.id === n.id) + 1]?.order)
+}
 
 /** Adds a node on top of its parent's children. */
 export const insert = (doc: Document, node: Node, parentId: string): Document => put(doc, [{ ...node, parentId, order: topOrder(doc, parentId) }])
@@ -135,9 +139,9 @@ export function fit(doc: Document, id: string): Document {
     ...kids.map((k) => ({ ...k, x: k.x - b.x, y: k.y - b.y })),
   ])
 }
-/** Groups always wrap their children; a group with no children is removed. */
+/** Groups (and boolean nodes) always wrap their children; one with no children is removed. */
 export function fitGroups(doc: Document): Document {
-  const groups = Object.values(doc.nodes).filter((n) => n.type === 'GROUP').sort((a, b) => depth(doc, b.id) - depth(doc, a.id))
+  const groups = Object.values(doc.nodes).filter((n) => n.type === 'GROUP' || n.type === 'BOOLEAN').sort((a, b) => depth(doc, b.id) - depth(doc, a.id))
   for (const g of groups) doc = childrenOf(doc, g.id).length ? fit(doc, g.id) : remove(doc, [g.id])
   return doc
 }
@@ -155,7 +159,7 @@ export function follow(c: Constraint, p: number, s: number, from: number, to: nu
 /** Sets a node's box. Resizing a group scales its children with it. */
 function setBox(doc: Document, id: string, box: Rect): Document {
   const n = doc.nodes[id]
-  if (n.type === 'GROUP' && n.width && n.height) {
+  if ((n.type === 'GROUP' || n.type === 'BOOLEAN') && n.width && n.height) {
     // shortcut: a rotated child is scaled along the group's axes, not sheared; exact only for unrotated children.
     const sx = box.width / n.width, sy = box.height / n.height
     for (const k of childrenOf(doc, id)) doc = setBox(doc, k.id, { x: k.x * sx, y: k.y * sy, width: k.width * sx, height: k.height * sy })
@@ -177,6 +181,7 @@ export function resizeNode(doc: Document, id: string, box: Rect): Document {
   return patch(doc, [id], {
     ...(n.layout && (w || h) && { layout: { ...n.layout, hugW: n.layout.hugW && !w, hugH: n.layout.hugH && !h } }),
     ...(w && n.fillW && { fillW: false }), ...(h && n.fillH && { fillH: false }),
+    ...(h && n.type === 'TEXT' && { textFixedHeight: true }),
   })
 }
 
@@ -238,25 +243,20 @@ export function layoutSlot(doc: Document, frameId: string, p: Pt, exclude: strin
 }
 
 /** Wraps the nodes in a new GROUP or FRAME placed where the top-most one was. */
-export function group(doc: Document, ids: string[], type: 'GROUP' | 'FRAME'): { doc: Document; id: string | null } {
+export function group(doc: Document, ids: string[], type: 'GROUP' | 'FRAME' | 'BOOLEAN', props: Partial<Node> = {}): Edit {
   const items = topLevel(doc, ids)
-  if (!items.length) return { doc, id: null }
-  const top = doc.nodes[items.at(-1)!], parentId = top.parentId!
-  const siblings = childrenOf(doc, parentId)
-  const box = makeNode(type, {
-    name: nextName(doc, type === 'GROUP' ? 'Group' : 'Frame'), parentId, clipsContent: false,
-    order: orderBetween(top.order, siblings[siblings.indexOf(top) + 1]?.order),
-  })
-  doc = fit(moveTo(put(doc, [box]), items, box.id), box.id)
-  return { doc, id: box.id }
+  if (!items.length) return { doc, ids: [] }
+  const top = doc.nodes[items.at(-1)!]
+  const box = makeNode(type, { name: nextName(doc, type === 'FRAME' ? 'Frame' : 'Group'), parentId: top.parentId, clipsContent: false, order: orderAbove(doc, top), ...props })
+  return { doc: fit(moveTo(put(doc, [box]), items, box.id), box.id), ids: [box.id] }
 }
 
 /** Dissolves groups/frames, leaving their children in place. Returns the freed children. */
-export function ungroup(doc: Document, ids: string[]): { doc: Document; ids: string[] } {
+export function ungroup(doc: Document, ids: string[]): Edit {
   const freed: string[] = []
   for (const id of topLevel(doc, ids)) {
     const g = doc.nodes[id]
-    if ((g.type !== 'GROUP' && g.type !== 'FRAME') || g.instanceOf) continue // an instance's children can't leave it; detach it first
+    if (!['GROUP', 'FRAME', 'BOOLEAN'].includes(g.type) || g.instanceOf) continue // an instance's children can't leave it; detach it first
     const kids = childrenOf(doc, id).map((k) => k.id)
     doc = remove(moveTo(doc, kids, g.parentId!, { before: id }), [id])
     freed.push(...kids)
@@ -270,11 +270,11 @@ export function cloneTree(root: Node, kids: (id: string) => Node[], parentId: st
   return [copy, ...kids(root.id).flatMap((k) => cloneTree(k, kids, copy.id, k.order))]
 }
 /** Duplicates in place, each copy directly above its original. */
-export function duplicate(doc: Document, ids: string[]): { doc: Document; ids: string[] } {
+export function duplicate(doc: Document, ids: string[]): Edit {
   const out: string[] = []
   for (const id of topLevel(doc, ids)) {
-    const n = doc.nodes[id], siblings = childrenOf(doc, n.parentId!)
-    const copies = cloneTree(n, (i) => childrenOf(doc, i), n.parentId!, orderBetween(n.order, siblings[siblings.indexOf(n) + 1]?.order))
+    const n = doc.nodes[id]
+    const copies = cloneTree(n, (i) => childrenOf(doc, i), n.parentId!, orderAbove(doc, n))
     doc = put(doc, copies)
     out.push(copies[0].id)
   }
@@ -296,15 +296,16 @@ export function reorder(doc: Document, ids: string[], to: 'forward' | 'backward'
   return doc
 }
 
-export function addPage(doc: Document): { doc: Document; id: string } {
+/** Appends a page; it is the document's last one. */
+export function addPage(doc: Document): Document {
   const page = makeNode('PAGE', { name: nextName(doc, 'Page'), fills: [solid(0.96, 0.96, 0.96)] })
-  return { doc: { ...put(doc, [page]), pages: [...doc.pages, page.id] }, id: page.id }
+  return { ...put(doc, [page]), pages: [...doc.pages, page.id] }
 }
 /** The last page can't be removed. */
 export function removePage(doc: Document, id: string): Document {
   if (doc.pages.length < 2 || !doc.pages.includes(id)) return doc
   const gone = new Set([id, ...descendants(doc, id).map((n) => n.id)])
-  return { ...doc, pages: doc.pages.filter((p) => p !== id), nodes: Object.fromEntries(Object.entries(doc.nodes).filter(([k]) => !gone.has(k))) }
+  return { ...doc, pages: doc.pages.filter((p) => p !== id), comments: doc.comments.filter((c) => c.page !== id), nodes: Object.fromEntries(Object.entries(doc.nodes).filter(([k]) => !gone.has(k))) }
 }
 export function movePage(doc: Document, id: string, toIndex: number): Document {
   const pages = doc.pages.filter((p) => p !== id)

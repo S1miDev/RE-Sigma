@@ -1,6 +1,6 @@
+// Document model: geometry, ops, layout, constraints, hit testing, export, paths.
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import type { RefigApi } from '../../shared/api'
-import { emptyDocument, makeNode, solid, type AutoLayout, type Constraint, type Document, type Node, type NodeType } from '../../shared/document'
+import { colorAt, convertPaint, gradient, gradientAngle, gradientMatrix, makeNode, rotateGradient, solid, type Constraint, type Node, type Paint } from '../../shared/document'
 import { frameAt, hitTest, marqueeHits } from './canvas/hit'
 import { handleAt, handlesOf } from './canvas/overlay'
 import { snap, snapTargets } from './canvas/snap'
@@ -8,27 +8,12 @@ import { fitView, toScreen, toWorld, zoomAt } from './canvas/viewport'
 import { COMMANDS, keyOf } from './commands'
 import { toSvg } from './export/svg'
 import { apply, corners, invert, lineBetween, localMatrix, mul, resizeBox, worldBox } from './model/geometry'
-import { addAutoLayout, addPage, align, autoLayout, childrenOf, distribute, duplicate, group, insert, moveTo, movePage, patch, put, remove, removePage, reorder, resizeNode, topLevel, translate, ungroup } from './model/ops'
-import { setVariant, syncInstances, variantProps, variantsOf } from './model/components'
-import { AUTOSAVE_MS, createEditorStore } from './store'
-import { beginGesture, type Pointer } from './tools'
+import { addAutoLayout, addPage, align, autoLayout, childrenOf, distribute, duplicate, group, insert, moveTo, movePage, patch, remove, removePage, reorder, resizeNode, topLevel, translate, ungroup } from './model/ops'
+import { anchorsOf, fitStroke, parsePath, pathData, withAnchors } from './model/path'
+import { near, scene, names, open, at, drag, row, boxOf, pinned, black } from './testkit'
 
-const near = (a: number, b: number) => expect(a).toBeCloseTo(b, 6)
-function scene() {
-  let doc: Document = emptyDocument()
-  const page = doc.pages[0]
-  const add = (type: NodeType, parentId: string, props: Partial<Node>) => {
-    const n = makeNode(type, { fills: [solid(1, 0, 0)], ...props })
-    doc = insert(doc, n, parentId)
-    return n.id
-  }
-  const frame = add('FRAME', page, { x: 100, y: 100, width: 200, height: 200 })
-  const inner = add('RECTANGLE', frame, { x: 10, y: 10, width: 50, height: 50 })
-  const a = add('RECTANGLE', page, { x: 400, y: 0, width: 100, height: 100 })
-  const b = add('ELLIPSE', page, { x: 450, y: 50, width: 100, height: 100 })
-  return { doc, page, frame, inner, a, b }
-}
-const names = (doc: Document, parent: string) => childrenOf(doc, parent).map((n) => n.id)
+beforeEach(() => void vi.useFakeTimers())
+afterEach(() => void vi.useRealTimers())
 
 test('matrices: a rotated node maps its corners about its centre, and inverts', () => {
   const n = makeNode('RECTANGLE', { x: 10, y: 20, width: 100, height: 50, rotation: 90 })
@@ -98,19 +83,19 @@ test('group wraps children, ungroup restores them in place', () => {
   const { doc, page, frame, a, b } = scene()
   const g = group(doc, [a, b], 'GROUP')
   expect(doc.nodes[a].parentId).toBe(page)
-  const box = g.doc.nodes[g.id!]
+  const box = g.doc.nodes[g.ids[0]]
   expect(box).toMatchObject({ type: 'GROUP', x: 400, y: 0, width: 150, height: 150 })
-  expect(g.doc.nodes[a]).toMatchObject({ parentId: g.id, x: 0, y: 0 })
+  expect(g.doc.nodes[a]).toMatchObject({ parentId: g.ids[0], x: 0, y: 0 })
   expect(g.doc.nodes[b]).toMatchObject({ x: 50, y: 50 })
-  expect(names(g.doc, page)).toEqual([frame, g.id])
+  expect(names(g.doc, page)).toEqual([frame, g.ids[0]])
 
-  const un = ungroup(g.doc, [g.id!])
+  const un = ungroup(g.doc, [g.ids[0]])
   expect(un.ids).toEqual([a, b])
-  expect(un.doc.nodes[g.id!]).toBeUndefined()
+  expect(un.doc.nodes[g.ids[0]]).toBeUndefined()
   expect(un.doc.nodes[b]).toMatchObject({ parentId: page, x: 450, y: 50 })
 
   // resizing a group scales its children
-  const scaled = resizeNode(g.doc, g.id!, { x: 400, y: 0, width: 300, height: 150 })
+  const scaled = resizeNode(g.doc, g.ids[0], { x: 400, y: 0, width: 300, height: 150 })
   expect(scaled.nodes[b]).toMatchObject({ x: 100, width: 200, height: 100 })
 })
 
@@ -135,13 +120,13 @@ test('translate moves by a page delta even inside a rotated parent', () => {
 
 test('pages: add, reorder, remove (never the last one)', () => {
   const { doc, page } = scene()
-  const added = addPage(doc)
-  expect(added.doc.nodes[added.id].name).toBe('Page 2')
-  expect(movePage(added.doc, added.id, 0).pages).toEqual([added.id, page])
-  const removed = removePage(added.doc, page)
-  expect(removed.pages).toEqual([added.id])
-  expect(Object.keys(removed.nodes)).toEqual([added.id])
-  expect(removePage(removed, added.id)).toBe(removed)
+  const added = addPage(doc), id = added.pages.at(-1)!
+  expect(added.nodes[id].name).toBe('Page 2')
+  expect(movePage(added, id, 0).pages).toEqual([id, page])
+  const removed = removePage(added, page)
+  expect(removed.pages).toEqual([id])
+  expect(Object.keys(removed.nodes)).toEqual([id])
+  expect(removePage(removed, id)).toBe(removed)
 })
 
 test('viewport: zoomAt keeps the point under the cursor; fitView centres', () => {
@@ -167,7 +152,7 @@ test('hit testing: top-most wins, frames expose children, groups answer for thei
   expect(hitTest(patch(doc, [b], { locked: true }), page, { x: 490, y: 90 })).toBe(a)
   expect(hitTest(patch(doc, [inner], { visible: false }), page, { x: 120, y: 120 })).toBe(frame)
   const g = group(doc, [a, b], 'GROUP')
-  expect(hitTest(g.doc, page, { x: 490, y: 90 })).toBe(g.id)
+  expect(hitTest(g.doc, page, { x: 490, y: 90 })).toBe(g.ids[0])
   expect(hitTest(g.doc, page, { x: 490, y: 90 }, { deep: true })).toBe(b)
   expect(hitTest(g.doc, page, { x: 410, y: 140 })).toBeNull() // inside the group's box but on no child
   const line = insert(doc, makeNode('LINE', { ...lineBetween({ x: 0, y: 300 }, { x: 100, y: 400 }), strokes: [solid(0, 0, 0)] }), page)
@@ -226,163 +211,6 @@ test('SVG export escapes text and reflects the selection box', () => {
   expect(svg).toContain('fill="rgb(255,0,0)"')
 })
 
-// ── store ────────────────────────────────────────────────────────────────────────────────────────────────────────────
-function fakeApi(over: Partial<RefigApi> = {}) {
-  const saveProject = vi.fn(async (id: string) => ({ id, name: 'P', modifiedAt: '', thumbnail: null }))
-  return { api: { saveProject, addImage: vi.fn(async () => 'h'.repeat(64)), ...over } as unknown as RefigApi, saveProject }
-}
-function open(over: Partial<RefigApi> = {}) {
-  const s = scene(), f = fakeApi(over)
-  const store = createEditorStore({ summary: { id: 'p1', name: 'P', modifiedAt: '', thumbnail: null }, document: s.doc, images: {} }, f.api)
-  return { ...s, ...f, store }
-}
-beforeEach(() => void vi.useFakeTimers())
-afterEach(() => void vi.useRealTimers())
-
-test('store: undo/redo restore document and selection; tagged edits share one step', () => {
-  const { store, a, doc } = open()
-  store.update((d) => patch(d, [a], { x: 1 }), undefined, [a])
-  store.update((d) => patch(d, [a], { x: 2 }), 'gesture1')
-  store.update((d) => patch(d, [a], { x: 3 }), 'gesture1')
-  expect(store.get().doc.nodes[a].x).toBe(3)
-  store.undo()
-  expect(store.get().doc.nodes[a].x).toBe(1)
-  expect(store.get().selection).toEqual([a])
-  store.undo()
-  expect(store.get().doc).toBe(doc)
-  expect(store.canUndo()).toBe(false)
-  store.redo(); store.redo()
-  expect(store.get().doc.nodes[a].x).toBe(3)
-  store.update((d) => remove(d, [a]))
-  expect(store.get().selection).toEqual([]) // selection never points at a deleted node
-  expect(store.canRedo()).toBe(false)
-  store.update((d) => d) // a no-op adds no history
-  store.undo()
-  expect(store.get().doc.nodes[a]).toBeDefined()
-})
-
-test('store: groups refit and empty groups vanish after any edit', () => {
-  const { store, a, b } = open()
-  let gid = ''
-  store.update((d) => { const g = group(d, [a, b], 'GROUP'); gid = g.id!; return g.doc })
-  store.update((d) => patch(d, [b], { x: 200 }))
-  expect(store.get().doc.nodes[gid].width).toBe(300)
-  store.update((d) => remove(d, [a, b]))
-  expect(store.get().doc.nodes[gid]).toBeUndefined()
-})
-
-test('store: autosaves after the debounce, reports failure, keeps the document and retries', async () => {
-  let fail = true
-  const { store, a, saveProject } = open({ saveProject: vi.fn(async () => { if (fail) throw new Error("Error invoking remote method 'refig:saveProject': Error: disk full"); return { id: 'p1', name: 'P', modifiedAt: '', thumbnail: null } }) })
-  expect(saveProject).toBeDefined()
-  const save = store.api.saveProject as ReturnType<typeof vi.fn>
-  store.update((d) => patch(d, [a], { x: 9 }))
-  expect(store.get().save).toBe('dirty')
-  await vi.advanceTimersByTimeAsync(AUTOSAVE_MS - 1)
-  expect(save).not.toHaveBeenCalled()
-  await vi.advanceTimersByTimeAsync(1)
-  expect(save).toHaveBeenCalledTimes(1)
-  expect(store.get()).toMatchObject({ save: 'error', saveError: 'disk full' })
-  expect(store.get().doc.nodes[a].x).toBe(9)
-  expect(store.isDirty()).toBe(true)
-  fail = false
-  await vi.advanceTimersByTimeAsync(5000)
-  expect(store.get().save).toBe('saved')
-  expect(save.mock.calls.at(-1)![1].nodes[a].x).toBe(9)
-  expect(await store.save()).toBe(true) // nothing to do
-  expect(save).toHaveBeenCalledTimes(2)
-})
-
-test('store: an edit made while a save is in flight is saved afterwards', async () => {
-  let release = () => {}
-  const save = vi.fn(() => new Promise<never>((done) => (release = () => done(undefined as never))))
-  const { store, a } = open({ saveProject: save as never })
-  store.update((d) => patch(d, [a], { x: 1 }))
-  const first = store.save()
-  store.update((d) => patch(d, [a], { x: 2 }))
-  expect(store.get().save).toBe('saving')
-  release()
-  await first
-  expect(store.get().save).toBe('dirty')
-  await vi.advanceTimersByTimeAsync(AUTOSAVE_MS)
-  release()
-  await vi.advanceTimersByTimeAsync(0)
-  expect(save).toHaveBeenCalledTimes(2)
-  expect(store.get().save).toBe('saved')
-})
-
-// ── tools ────────────────────────────────────────────────────────────────────────────────────────────────────────────
-const at = (x: number, y: number, mods: Partial<Pointer> = {}): Pointer => ({ screen: { x, y }, world: { x, y }, shift: false, alt: false, ctrl: false, ...mods })
-function drag(store: ReturnType<typeof open>['store'], from: Pointer, ...to: Pointer[]) {
-  const g = beginGesture(store, from)
-  for (const p of to) g?.move(p)
-  g?.up(to.at(-1) ?? from)
-}
-
-test('tools: rectangle drag draws inside the frame under the pointer, then returns to Move', () => {
-  const { store, frame } = open()
-  store.set({ tool: 'rectangle' })
-  drag(store, at(120, 180), at(150, 200), at(170, 240))
-  const s = store.get(), id = s.selection[0]
-  expect(s.tool).toBe('move')
-  expect(s.doc.nodes[id]).toMatchObject({ type: 'RECTANGLE', parentId: frame, x: 20, y: 80, width: 50, height: 60, name: 'Rectangle 1' })
-  store.undo()
-  expect(store.get().doc.nodes[id]).toBeUndefined() // the whole drag is one undo step
-  store.set({ tool: 'ellipse' })
-  drag(store, at(700, 700))
-  expect(store.get().doc.nodes[store.get().selection[0]]).toMatchObject({ type: 'ELLIPSE', x: 700, y: 700, width: 100, height: 100 })
-})
-
-test('tools: click selects, Shift adds, drag moves and reparents on drop, marquee selects', () => {
-  const { store, page, frame, a, b } = open()
-  drag(store, at(410, 10))
-  expect(store.get().selection).toEqual([a])
-  drag(store, at(540, 100, { shift: true }))
-  expect(store.get().selection).toEqual([a, b])
-  drag(store, at(0, 300))
-  expect(store.get().selection).toEqual([])
-
-  drag(store, at(410, 10), at(300, 110), at(160, 210)) // drop a inside the frame
-  expect(store.get().doc.nodes[a]).toMatchObject({ parentId: frame, x: 50, y: 100 })
-  store.undo()
-  expect(store.get().doc.nodes[a]).toMatchObject({ parentId: page, x: 400, y: 0 })
-
-  drag(store, at(600, 300), at(380, -20))
-  expect(store.get().selection).toEqual([a, b])
-  expect(store.get().overlay).toEqual({})
-})
-
-test('tools: moving snaps to a sibling edge and shows a guide while dragging', () => {
-  const { store, a } = open()
-  const g = beginGesture(store, at(410, 10))!
-  g.move(at(410, 163)) // a's top would be at 153; b's bottom edge is at 150
-  expect(store.get().doc.nodes[a].y).toBe(150)
-  expect(store.get().overlay.guides).toEqual({ x: 450, y: 150 })
-  g.up(at(410, 163))
-  expect(store.get().overlay).toEqual({})
-})
-
-test('tools: handles resize and rotate the selected node', () => {
-  const { store, a } = open()
-  store.set({ selection: [a] })
-  drag(store, at(500, 100), at(520, 130), at(700, 300))
-  expect(store.get().doc.nodes[a]).toMatchObject({ x: 400, y: 0, width: 300, height: 300 })
-  drag(store, at(550, -22), at(872, 150, { shift: true }))
-  expect(store.get().doc.nodes[a].rotation).toBe(90)
-})
-
-test('tools: text tool creates a node in edit mode; hand tool pans', () => {
-  const { store, page } = open()
-  store.set({ tool: 'text' })
-  drag(store, at(10, 500))
-  const s = store.get(), id = s.selection[0]
-  expect(s).toMatchObject({ tool: 'move', editingText: id })
-  expect(s.doc.nodes[id]).toMatchObject({ type: 'TEXT', parentId: page, x: 10, y: 500, textAutoWidth: true })
-  store.set({ tool: 'hand', editingText: null })
-  drag(store, at(0, 0), at(30, 40))
-  expect(store.get().view).toMatchObject({ x: 30, y: 40 })
-})
-
 test('align: several nodes meet at the shared edge, a lone node aligns to its parent frame', () => {
   const { doc, a, b, inner } = scene()
   const left = align(doc, [a, b], 'x', 0)
@@ -399,17 +227,6 @@ test('distribute: middle node moves so the gaps are equal', () => {
   const out = distribute(d, ids, 'x')
   near(out.nodes[ids[1]].x, 150) // span 0..400, 300 of box width, 100 free / 2 gaps = 50
 })
-
-// ── auto layout ──────────────────────────────────────────────────────────────────────────────────────────────────────
-function row(layout: Partial<AutoLayout> = {}, sizes: [number, number][] = [[40, 20], [60, 30], [20, 10]]) {
-  let doc: Document = emptyDocument()
-  const page = doc.pages[0]
-  const f = makeNode('FRAME', { x: 0, y: 0, width: 300, height: 100, layout: { mode: 'HORIZONTAL', gap: 10, padding: [5, 6, 7, 8], align: 'MIN', hugW: true, hugH: true, ...layout } })
-  doc = insert(doc, f, page)
-  const kids = sizes.map(([width, height]) => { const n = makeNode('RECTANGLE', { x: 500, y: 500, width, height }); doc = insert(doc, n, f.id); return n.id })
-  return { doc, page, f: f.id, kids }
-}
-const boxOf = (doc: Document, id: string) => { const n = doc.nodes[id]; return [n.x, n.y, n.width, n.height] }
 
 test('auto layout: places children with gap and padding, hugs content, aligns on the cross axis', () => {
   const { doc, f, kids } = row()
@@ -455,33 +272,6 @@ test('auto layout: adding it sorts children by position and reads gap and paddin
   expect(childrenOf(d, frame).map((k) => k.id)).toEqual([inner, m.id, n.id])
 })
 
-test('auto layout: Shift+A wraps the selection; dragging a child reorders it; dropping in slots it', () => {
-  const { store, a, b } = open()
-  store.set({ selection: [a, b] })
-  COMMANDS.find((c) => c.id === 'add-auto-layout')!.run(store, { back() {}, openExport() {} })
-  const s = store.get(), f = s.selection[0]
-  expect(s.doc.nodes[f].layout?.mode).toBe('HORIZONTAL')
-  expect(childrenOf(s.doc, f).map((k) => k.id)).toEqual([a, b])
-  const fb = worldBox(s.doc, [f])!
-  expect(fb).toEqual({ x: 400, y: 0, w: 200, h: 100 }) // gap read as 0 from the overlap
-  store.set({ selection: [] })
-  drag(store, at(410, 50, { ctrl: true }), at(450, 50), at(590, 50)) // a past b's centre
-  expect(childrenOf(store.get().doc, f).map((k) => k.id)).toEqual([b, a])
-  expect(store.get().doc.nodes[b].x).toBe(0)
-  store.undo()
-  expect(childrenOf(store.get().doc, f).map((k) => k.id)).toEqual([a, b])
-})
-
-// ── constraints ──────────────────────────────────────────────────────────────────────────────────────────────────────
-function pinned(h: Constraint, v: Constraint = 'MIN', parent: Partial<Node> = {}) {
-  let doc: Document = emptyDocument()
-  const f = makeNode('FRAME', { x: 0, y: 0, width: 200, height: 100, ...parent })
-  doc = insert(doc, f, doc.pages[0])
-  const k = makeNode('RECTANGLE', { x: 20, y: 10, width: 40, height: 30, constraints: { h, v } })
-  doc = insert(doc, k, f.id)
-  return { doc, f: f.id, k: k.id }
-}
-
 test('constraints: children follow a frame resize per axis', () => {
   const grow = (h: Constraint, v: Constraint = 'MIN') => { const p = pinned(h, v); return boxOf(resizeNode(p.doc, p.f, { x: 0, y: 0, width: 300, height: 200 }), p.k) }
   expect(grow('MIN')).toEqual([20, 10, 40, 30])
@@ -514,180 +304,93 @@ test('constraints: nested frames cascade; auto-layout frames ignore them; draggi
   expect(worldBox(s, [m.k])!.x).toBe(-30) // moved with the left edge
 })
 
-// ── components ───────────────────────────────────────────────────────────────────────────────────────────────────────
-const red = solid(1, 0, 0), green = solid(0, 1, 0), blue = solid(0, 0, 1)
-const run = (store: ReturnType<typeof open>['store'], id: string) => COMMANDS.find((c) => c.id === id)!.run(store, { back() {}, openExport() {} })
-/** A main component (100×50) with one rectangle, and an instance of it made with "Create instance". */
-function components() {
-  let doc: Document = emptyDocument()
-  const page = doc.pages[0]
-  const m = makeNode('FRAME', { name: 'Button', x: 0, y: 0, width: 100, height: 50, component: true })
-  const r = makeNode('RECTANGLE', { name: 'Bg', x: 10, y: 10, width: 20, height: 20, fills: [red] })
-  doc = insert(insert(doc, m, page), r, m.id)
-  const store = createEditorStore({ summary: { id: 'p1', name: 'P', modifiedAt: '', thumbnail: null }, document: doc, images: {} }, fakeApi().api)
-  store.set({ selection: [m.id] })
-  run(store, 'create-instance')
-  const i = store.get().selection[0]
-  const copy = () => childrenOf(store.get().doc, i)[0]
-  return { store, page, m: m.id, r: r.id, i, copy }
-}
-
-test('components: an instance mirrors its main, and follows edits, added and removed children', () => {
-  const { store, m, r, i, copy } = components()
-  expect(store.get().doc.nodes[i]).toMatchObject({ instanceOf: m, name: 'Button', x: 140, width: 100, height: 50 })
-  expect(copy()).toMatchObject({ ref: r, name: 'Bg', x: 10, fills: [red] })
-  expect(copy().id).not.toBe(r)
-  store.update((d) => patch(d, [r], { fills: [green] }))
-  expect(copy().fills).toEqual([green])
-  const extra = makeNode('ELLIPSE', { x: 50, y: 10, width: 10, height: 10 })
-  store.update((d) => insert(d, extra, m))
-  expect(childrenOf(store.get().doc, i).map((k) => k.ref)).toEqual([r, extra.id])
-  store.update((d) => remove(d, [extra.id]))
-  expect(childrenOf(store.get().doc, i).map((k) => k.ref)).toEqual([r])
-  store.update((d) => resizeNode(d, m, { x: 0, y: 0, width: 120, height: 50 }))
-  expect(store.get().doc.nodes[i].width).toBe(120)
-  const s = store.get().doc
-  expect(syncInstances(s, s)).toBe(s) // a settled document doesn't change
+test('gradients: defaults, angle, rotation, conversion and interpolation', () => {
+  const lin = gradient('LINEAR', black)
+  expect(lin).toMatchObject({ from: { x: 0.5, y: 0 }, to: { x: 0.5, y: 1 }, stops: [{ pos: 0, color: black }, { pos: 1, color: { ...black, a: 0 } }] })
+  expect(gradientAngle(lin)).toBe(90)
+  const turned = rotateGradient(lin, 0)
+  near(turned.from.x, 0); near(turned.from.y, 0.5); near(turned.to.x, 1); near(turned.to.y, 0.5) // about the midpoint
+  const rad = rotateGradient(gradient('RADIAL', black), 90)
+  expect(rad.from).toEqual({ x: 0.5, y: 0.5 }); near(rad.to.x, 0.5); near(rad.to.y, 1) // about the centre
+  expect(convertPaint(lin, 'SOLID')).toEqual({ type: 'SOLID', visible: true, color: black })
+  expect(convertPaint({ type: 'SOLID', visible: false, color: black }, 'DIAMOND')).toMatchObject({ type: 'GRADIENT', kind: 'DIAMOND', visible: false, from: { x: 0.5, y: 0.5 } })
+  const custom = { ...lin, stops: [{ pos: 0.2, color: black }, { pos: 0.8, color: { r: 1, g: 1, b: 1, a: 1 } }] }
+  expect(convertPaint(custom, 'RADIAL')).toMatchObject({ kind: 'RADIAL', stops: custom.stops })
+  const mid = colorAt(custom.stops, 0.5)
+  near(mid.r, 0.5); near(mid.b, 0.5); expect(mid.a).toBe(1)
+  expect(colorAt(custom.stops, 0)).toEqual(black)
+  expect(colorAt(custom.stops, 1).r).toBe(1)
 })
 
-test('components: overrides survive main edits to the same field; reset and detach', () => {
-  const { store, m, r, i, copy } = components()
-  store.update((d) => patch(d, [copy().id], { fills: [blue] }))
-  expect(copy().overrides).toEqual(['fills'])
-  store.update((d) => patch(d, [r], { fills: [green], x: 30 }))
-  expect(copy()).toMatchObject({ fills: [blue], x: 30 })
-  store.set({ selection: [i] })
-  run(store, 'reset-instance')
-  expect(copy()).toMatchObject({ fills: [green] })
-  expect(copy().overrides).toBeUndefined()
-  run(store, 'detach-instance')
-  store.update((d) => patch(d, [r], { fills: [red] }))
-  expect(copy().fills).toEqual([green])
-  expect(store.get().doc.nodes[i].instanceOf).toBeUndefined()
-  expect(copy().ref).toBeUndefined()
-  expect(store.get().doc.nodes[m].component).toBe(true)
+test('gradients: SVG export draws linear/radial in the scaled box, diamond as four quadrants, angular falls back', () => {
+  const { doc, page } = scene()
+  const add = (fills: Paint[], props: Partial<Node> = {}) => { const n = makeNode('RECTANGLE', { x: 0, y: 0, width: 200, height: 100, fills, ...props }); return { d: insert(doc, n, page), id: n.id } }
+  const lin = add([gradient('LINEAR', { r: 1, g: 0, b: 0, a: 1 })])
+  const svg = toSvg(lin.d, [lin.id], () => undefined)
+  expect(svg).toContain('<linearGradient id="g1" gradientUnits="userSpaceOnUse" gradientTransform="scale(200 100) matrix(0 1 -1 0 1 0)" x1="0" y1="0" x2="1" y2="0">')
+  expect(svg).toContain('<stop offset="0" stop-color="rgb(255,0,0)" stop-opacity="1"/><stop offset="1" stop-color="rgb(255,0,0)" stop-opacity="0"/>')
+  expect(svg).toContain('fill="url(#g1)"')
+  const rad = add([gradient('RADIAL', black)])
+  expect(toSvg(rad.d, [rad.id], () => undefined)).toContain('<radialGradient id="g1" gradientUnits="userSpaceOnUse" gradientTransform="scale(200 100) matrix(1 0 0 1 0 0)" cx="0.5" cy="0.5" fx="0.5" fy="0.5" r="0.5">')
+  const dia = add([gradient('DIAMOND', black)])
+  const dsvg = toSvg(dia.d, [dia.id], () => undefined)
+  expect(dsvg.match(/<linearGradient /g)).toHaveLength(4)
+  expect(dsvg.match(/<g clip-path=/g)).toHaveLength(4)
+  const ang = add([], { strokes: [gradient('ANGULAR', { r: 0, g: 0, b: 1, a: 1 })], strokeWeight: 2 })
+  expect(toSvg(ang.d, [ang.id], () => undefined)).toContain('stroke="rgb(0,0,255)" stroke-opacity="1"') // no conic in SVG: first stop
+  const text = add([gradient('LINEAR', black)], { type: 'TEXT', characters: 'Hi', fontSize: 16, textAutoWidth: true })
+  expect(toSvg(text.d, [text.id], () => undefined)).toMatch(/<text [^>]*fill="url\(#g1\)"/)
 })
 
-test('components: a resized instance applies the main child constraints without recording them as overrides', () => {
-  const { store, r, i, copy } = components()
-  store.update((d) => patch(d, [r], { constraints: { h: 'MAX', v: 'MIN' } }))
-  store.update((d) => resizeNode(d, i, { x: 140, y: 0, width: 150, height: 50 }))
-  expect(copy().x).toBe(60)
-  expect(copy().overrides).toBeUndefined()
-  expect(store.get().doc.nodes[i].overrides).toEqual(['width'])
-  store.update((d) => patch(d, [r], { y: 15 }))
-  expect(copy()).toMatchObject({ x: 60, y: 15 })
+test('gradients: rotation turns every handle, so a rotated diamond exports rotated; vector clips keep their fill rule', () => {
+  const dia = rotateGradient(gradient('DIAMOND', black), 45)
+  const m = gradientMatrix(dia)!
+  near(m[0], Math.SQRT1_2); near(m[1], Math.SQRT1_2) // canonical x now runs diagonally
+  const skewed = rotateGradient({ ...gradient('RADIAL', black), w: { x: 0.5, y: 0.75 } }, 90)
+  near(skewed.w!.x, 0.25); near(skewed.w!.y, 0.5) // the width handle turns with the others
+  const { doc, page } = scene()
+  const n = makeNode('RECTANGLE', { width: 200, height: 100, fills: [dia] }), d = insert(doc, n, page)
+  const svg = toSvg(d, [n.id], () => undefined)
+  expect(svg.match(/<polygon [^>]*transform="scale\(200 100\) matrix\(0\.707 0\.707 -0\.707 0\.707 /g)).toHaveLength(4)
+  const v = makeNode('VECTOR', { width: 10, height: 10, fills: [solid(0, 0, 0)], vector: { w: 10, h: 10, fill: [{ d: 'M0 0L10 0L10 10Z', rule: 'evenodd' }], stroke: [] } })
+  expect(toSvg(insert(doc, v, page), [v.id], () => undefined)).toContain('fill-rule="evenodd" clip-rule="evenodd"')
 })
 
-test('components: nested instances sync; an instance inside its own main does not recurse', () => {
-  const { store, m, r, i } = components()
-  let outer = ''
-  store.update((d) => {
-    const a = makeNode('FRAME', { name: 'Card', x: 0, y: 300, width: 200, height: 100, component: true })
-    const nested = makeNode('FRAME', { instanceOf: m, x: 10, y: 10 })
-    outer = a.id
-    return insert(insert(d, a, store.get().pageId), nested, a.id)
-  })
-  store.set({ selection: [outer] })
-  run(store, 'create-instance')
-  const cardInstance = store.get().selection[0], doc = () => store.get().doc
-  const nestedCopy = childrenOf(doc(), cardInstance)[0]
-  expect(nestedCopy.instanceOf).toBe(m)
-  expect(childrenOf(doc(), nestedCopy.id)[0]).toMatchObject({ ref: r, fills: [red] })
-  store.update((d) => patch(d, [r], { fills: [green] }))
-  expect(childrenOf(doc(), childrenOf(doc(), cardInstance)[0].id)[0].fills).toEqual([green])
-
-  const loop = makeNode('FRAME', { instanceOf: m, x: 0, y: 0 })
-  store.update((d) => put(d, [{ ...loop, parentId: m, order: 'z' }]))
-  expect(childrenOf(doc(), loop.id)).toEqual([])
-  expect(childrenOf(doc(), i).length).toBe(2) // the plain instance now mirrors the (empty) nested one too
+test('paths: parse and write back, quadratics become cubics, a closing point folds into the start', () => {
+  const subs = parsePath('M0 0L10 0C10 5 5 10 0 10ZM20 20L30 20')
+  expect(subs).toHaveLength(2)
+  expect(subs[0]).toMatchObject({ closed: true, anchors: [{ x: 0, y: 0 }, { x: 10, y: 0, out: { x: 10, y: 5 } }, { x: 0, y: 10, in: { x: 5, y: 10 } }] })
+  expect(pathData(subs)).toBe('M0 0L10 0C10 5 5 10 0 10ZM20 20L30 20')
+  const q = parsePath('M0 0Q3 3 6 0')[0].anchors
+  expect(q[0].out).toEqual({ x: 2, y: 2 }); expect(q[1].in).toEqual({ x: 4, y: 2 })
+  expect(parsePath('M0 0L10 0L10 10L0 0Z')[0].anchors).toHaveLength(3) // explicit return to the start
+  expect(parsePath('M0 0 5 5 10 0')[0].anchors).toHaveLength(3) // pairs after M are line-tos
+  expect(pathData(parsePath('M0 0L4 0L4 4Z'))).toBe('M0 0L4 0L4 4Z')
 })
 
-test('components: instances take no new children, their nodes stay put, copies out stop mirroring, orphans keep content', () => {
-  const { store, page, m, i, copy } = components()
-  const d0 = store.get().doc
-  expect(moveTo(d0, [copy().id], page)).toBe(d0)
-  const loose = makeNode('RECTANGLE', { x: 150, y: 10, width: 5, height: 5 })
-  const d1 = insert(d0, loose, page)
-  expect(moveTo(d1, [loose.id], i)).toBe(d1)
-  expect(frameAt(d0, page, { x: 160, y: 20 })).toBe(page)
-  store.update((d) => put(d, [{ ...copy(), id: 'pasted', parentId: page, order: 'z' }]))
-  expect(store.get().doc.nodes.pasted.ref).toBeUndefined()
-  store.update((d) => remove(d, [m]))
-  expect(copy()).toMatchObject({ name: 'Bg', fills: [red] })
+test('paths: a freehand stroke is simplified into few smooth anchors', () => {
+  const line = Array.from({ length: 20 }, (_, i) => ({ x: i, y: 2 * i }))
+  expect(fitStroke(line, 1)).toEqual([{ x: 0, y: 0 }, { x: 19, y: 38 }]) // straight: ends only, no handles
+  const arc = Array.from({ length: 40 }, (_, i) => ({ x: 50 * Math.cos(i / 25), y: 50 * Math.sin(i / 25) }))
+  const a = fitStroke(arc, 1)
+  expect(a.length).toBeGreaterThan(2); expect(a.length).toBeLessThan(arc.length / 2)
+  expect(a[0].in).toBeUndefined(); expect(a[0].out).toBeDefined(); expect(a.at(-1)!.out).toBeUndefined()
+  expect(fitStroke([{ x: 1, y: 1 }, { x: 1, y: 1 }], 1)).toEqual([]) // no movement, no stroke
 })
 
-test('components: Ctrl+Alt+K wraps a selection into a component', () => {
-  const { store, a, b } = open()
-  store.set({ selection: [a, b] })
-  expect(keyOf({ key: 'k', code: 'KeyK', ctrlKey: true, metaKey: false, altKey: true, shiftKey: false })).toBe('Ctrl+Alt+K')
-  run(store, 'create-component')
-  const c = store.get().doc.nodes[store.get().selection[0]]
-  expect(c).toMatchObject({ type: 'FRAME', component: true, name: 'Component 1' })
-  expect(childrenOf(store.get().doc, c.id).map((k) => k.id)).toEqual([a, b])
+test('paths: re-fitting a rotated vector keeps every point where it was on the page', () => {
+  const n = makeNode('VECTOR', { x: 100, y: 50, width: 10, height: 10, rotation: 30, vector: { w: 10, h: 10, fill: [{ d: 'M0 0L10 10', rule: 'evenodd' }], stroke: [{ d: 'M0 0Z', rule: 'nonzero' }] } })
+  const pageOf = (node: Node, p: { x: number; y: number }) => apply(localMatrix(node), p)
+  const before = anchorsOf(n)[0].anchors.map((a) => pageOf(n, a))
+  const moved = withAnchors(n, [{ closed: false, anchors: [{ x: -5, y: 0 }, { x: 10, y: 10 }] }])
+  expect(moved).toMatchObject({ width: 15, height: 10, rotation: 30, vector: { w: 15, h: 10, fill: [{ d: 'M0 0L15 10', rule: 'evenodd' }], stroke: [] } })
+  const after = anchorsOf(moved)[0].anchors.map((a) => pageOf(moved, a))
+  near(after[1].x, before[1].x); near(after[1].y, before[1].y) // the point that didn't move stayed put
 })
 
-// ── variants ─────────────────────────────────────────────────────────────────────────────────────────────────────────
-test('variants: names parse into properties', () => {
-  expect(variantProps('Size=Large, State = Hover')).toEqual({ Size: 'Large', State: 'Hover' })
-  expect(variantProps('Button')).toEqual({})
-  expect(variantProps('A=1,broken,B=2')).toEqual({ A: '1', B: '2' })
-})
-
-test('variants: combine wraps mains in a laid-out set; add variant copies the last one', () => {
-  const { store, m } = components()
-  store.set({ selection: [m] })
-  run(store, 'combine-variants')
-  const set = store.get().selection[0], doc = () => store.get().doc
-  expect(doc().nodes[set]).toMatchObject({ componentSet: true, name: 'Button', layout: { mode: 'HORIZONTAL', gap: 20, padding: [20, 20, 20, 20] } })
-  expect(doc().nodes[m].name).toBe('Property 1=Button')
-  run(store, 'add-variant')
-  const v2 = store.get().selection[0]
-  expect(doc().nodes[v2]).toMatchObject({ component: true, parentId: set, name: 'Property 1=Variant 2', x: 20 + 100 + 20 })
-  expect(variantsOf(doc(), set).map((v) => v.id)).toEqual([m, v2])
-  expect(doc().nodes[set].width).toBe(20 + 100 + 20 + 100 + 20)
-  store.set({ selection: [set] })
-  run(store, 'create-instance')
-  const fresh = doc().nodes[store.get().selection[0]]
-  expect(fresh).toMatchObject({ instanceOf: m, name: 'Button', parentId: store.get().pageId })
-})
-
-test('variants: an instance switches variant, keeping overrides on layers with the same name and dropping missing ones', () => {
-  const { store, m, i, copy } = components()
-  store.set({ selection: [m] })
-  run(store, 'combine-variants')
-  run(store, 'add-variant')
-  const v2 = store.get().selection[0], doc = () => store.get().doc
-  const v2bg = childrenOf(doc(), v2)[0].id
-  store.update((d) => patch(d, [v2bg], { fills: [green], cornerRadius: 8 }))
-  const icon = makeNode('ELLIPSE', { name: 'Icon', x: 50, y: 10, width: 10, height: 10 })
-  store.update((d) => insert(d, icon, m))
-  expect(childrenOf(doc(), i)).toHaveLength(2)
-  store.update((d) => patch(d, [copy().id], { opacity: 0.5 }))
-
-  store.update((d) => setVariant(d, i, 'Property 1', 'Variant 2'))
-  expect(doc().nodes[i].instanceOf).toBe(v2)
-  expect(childrenOf(doc(), i)).toHaveLength(1) // v2 has no Icon
-  expect(copy()).toMatchObject({ ref: v2bg, fills: [green], cornerRadius: 8, opacity: 0.5 })
-  store.update((d) => setVariant(d, i, 'Property 1', 'Button'))
-  expect(childrenOf(doc(), i).map((k) => k.name)).toEqual(['Bg', 'Icon'])
-  expect(copy()).toMatchObject({ fills: [red], opacity: 0.5 })
-  expect(setVariant(doc(), i, 'Property 1', 'Missing')).toBe(doc())
-})
-
-test('variants: switching one property keeps the others when such a variant exists', () => {
-  const { store, m, i } = components()
-  store.update((d) => patch(d, [m], { name: 'Size=S, Tone=Light' }))
-  store.set({ selection: [m] })
-  run(store, 'combine-variants')
-  const set = store.get().selection[0]
-  for (const name of ['Size=L, Tone=Light', 'Size=S, Tone=Dark', 'Size=L, Tone=Dark']) {
-    store.set({ selection: [set] }); run(store, 'add-variant')
-    store.update((d) => patch(d, [store.get().selection[0]], { name }))
-  }
-  const byName = (name: string) => variantsOf(store.get().doc, set).find((v) => v.name === name)!.id
-  store.update((d) => setVariant(d, i, 'Tone', 'Dark'))
-  expect(store.get().doc.nodes[i].instanceOf).toBe(byName('Size=S, Tone=Dark'))
-  store.update((d) => setVariant(d, i, 'Size', 'L'))
-  expect(store.get().doc.nodes[i].instanceOf).toBe(byName('Size=L, Tone=Dark'))
+test('paths: a control point sitting on its anchor is not a handle (so the anchor stays grabbable)', () => {
+  const [sub] = parsePath('M0 0C10 0 20 20 20 20L0 20Z')
+  expect(sub.anchors[1]).toEqual({ x: 20, y: 20 })
+  expect(sub.anchors[0].out).toEqual({ x: 10, y: 0 })
+  expect(pathData([sub])).toBe('M0 0C10 0 20 20 20 20L0 20Z')
 })

@@ -1,6 +1,7 @@
 // Components: an instance's subtree mirrors its main component's, except for the fields each instance node overrides.
-import { OVERRIDABLE, type Document, type Node } from '../../../shared/document'
-import { addAutoLayout, childrenOf, duplicate, follow, group, nextName, put, remove, topLevel } from './ops'
+import { makeNode, OVERRIDABLE, type Document, type Node } from '../../../shared/document'
+import { apply, invert, worldMatrix } from './geometry'
+import { addAutoLayout, childrenOf, depth, duplicate, follow, group, insert, lineage, nextName, put, remove, topLevel, type Edit } from './ops'
 
 type Key = (typeof OVERRIDABLE)[number]
 /** An instance root's own place in the document; never taken from the main. */
@@ -8,10 +9,7 @@ const ROOT_OWN: readonly Key[] = ['name', 'visible', 'locked', 'x', 'y', 'rotati
 const GEOMETRY: readonly Key[] = ['x', 'y', 'width', 'height']
 
 /** The nearest instance root at or above a node, or null. */
-export function instanceRoot(doc: Document, id: string): string | null {
-  for (let n: Node | undefined = doc.nodes[id]; n; n = n.parentId ? doc.nodes[n.parentId] : undefined) if (n.instanceOf) return n.id
-  return null
-}
+export const instanceRoot = (doc: Document, id: string): string | null => lineage(doc, id).find((n) => n.instanceOf)?.id ?? null
 /** True for an instance root or anything inside one. */
 export const inInstance = (doc: Document, id: string) => instanceRoot(doc, id) !== null
 
@@ -34,19 +32,25 @@ function derived(n: Node, parent: Node | undefined): Key[] {
   if (parent?.layout) out.push('x', 'y', ...(n.fillW ? ['width' as const] : []), ...(n.fillH ? ['height' as const] : []))
   if (n.layout?.hugW) out.push('width')
   if (n.layout?.hugH) out.push('height')
-  if (n.type === 'TEXT') out.push('height', ...(n.textAutoWidth ? ['width' as const] : []))
+  if (n.type === 'TEXT') out.push(...(n.textFixedHeight ? [] : ['height' as const]), ...(n.textAutoWidth ? ['width' as const] : []))
   return out
 }
 
-/** Adds the fields the user just changed on instance nodes to their overrides. */
-function record(prev: Document, doc: Document): Document {
+/**
+ * Adds the fields the user just changed on instance nodes to their overrides. `base` is the document before this undo
+ * step; a gesture rebuilds every frame from it. So a field counts when it differs from `base` and either changed since
+ * `prev` or was already overridden there (a gesture frame that didn't move it). Values equal to `base`'s are what the
+ * gesture started from, not the user's doing.
+ */
+function record(prev: Document, doc: Document, base: Document): Document {
   const changed: Node[] = []
   for (const n of Object.values(doc.nodes)) {
-    const p = prev.nodes[n.id]
+    const p = prev.nodes[n.id], b = base.nodes[n.id]
     if (!p || p === n || !(n.ref || n.instanceOf) || !inInstance(doc, n.id)) continue
-    const parent = n.parentId ? doc.nodes[n.parentId] : undefined, was = n.parentId ? prev.nodes[n.parentId] : undefined
+    const parent = n.parentId ? doc.nodes[n.parentId] : undefined, was = n.parentId ? base.nodes[n.parentId] : undefined
     const parentResized = !!parent && !!was && (parent.width !== was.width || parent.height !== was.height) // constraints moved it, not the user
-    const keys = OVERRIDABLE.filter((k) => n[k] !== p[k] && !(n.instanceOf && !n.ref && ROOT_OWN.includes(k)) && !(parentResized && GEOMETRY.includes(k)))
+    const keys = OVERRIDABLE.filter((k) => (!b || n[k] !== b[k]) && (n[k] !== p[k] || !!p.overrides?.includes(k))
+      && !(n.instanceOf && !n.ref && ROOT_OWN.includes(k)) && !(parentResized && GEOMETRY.includes(k)))
     const next = [...new Set([...(n.overrides ?? []), ...keys])]
     if (next.length !== (n.overrides?.length ?? 0)) changed.push({ ...n, overrides: next })
   }
@@ -66,15 +70,10 @@ function ownedBy(doc: Document, rootId: string): Node[] {
   walk(rootId)
   return out
 }
-const depth = (doc: Document, id: string) => { let d = 0; for (let n = doc.nodes[id]; n?.parentId; n = doc.nodes[n.parentId]) d++; return d }
-
 /** An instance can't expand its own main, or a main already being expanded above it (A contains B contains A). */
 function expandable(doc: Document, root: Node): boolean {
   const main = doc.nodes[root.instanceOf!]
-  if (!main?.component) return false
-  for (let n = root.parentId ? doc.nodes[root.parentId] : undefined; n; n = n.parentId ? doc.nodes[n.parentId] : undefined)
-    if (n.id === main.id || n.instanceOf === main.id) return false
-  return true
+  return !!main?.component && !lineage(doc, root.parentId).some((n) => n.id === main.id || n.instanceOf === main.id)
 }
 
 function rebuild(doc: Document, rootId: string): Document {
@@ -116,8 +115,8 @@ function rebuild(doc: Document, rootId: string): Document {
  * Keeps every instance in step with its main component after an edit. Runs first in the store's normalize pass,
  * so `next` still holds exactly what the user changed since `prev`.
  */
-export function syncInstances(prev: Document, next: Document): Document {
-  let doc = strip(record(prev, next))
+export function syncInstances(prev: Document, next: Document, base: Document = prev): Document {
+  let doc = strip(record(prev, next, base))
   // shortcut: every edit re-syncs every instance; cache by changed subtree when documents get large.
   const done = new Set<string>()
   for (;;) {
@@ -160,37 +159,63 @@ export const setOf = (doc: Document, mainId: string): Node | undefined => {
   return p?.componentSet ? p : undefined
 }
 
+/** A new instance of a main component (a set's first variant for a set), unplaced: x/y 0, no parent. `at` is the node it is placed beside. */
+export function newInstance(doc: Document, pickedId: string): { node: Node; at: Node } {
+  const picked = doc.nodes[pickedId], main = picked.componentSet ? variantsOf(doc, picked.id)[0] : picked, at = setOf(doc, main.id) ?? main
+  return { at, node: makeNode('FRAME', { name: at.name, instanceOf: main.id, width: main.width, height: main.height, rotation: at.rotation }) }
+}
+
+/** Where a dropped instance of `pickedId` goes: the nearest frame at or above the hit node that isn't part of an instance or of the picked component itself; else the page. */
+export function dropParent(doc: Document, pageId: string, hitId: string | null, pickedId: string): string {
+  let best: string | null = null
+  for (let n = hitId ? doc.nodes[hitId] : undefined; n && n.type !== 'PAGE'; n = n.parentId ? doc.nodes[n.parentId] : undefined) {
+    if (n.instanceOf || n.ref || n.id === pickedId) best = null // inside an instance, or would contain itself
+    else if (!best && n.type === 'FRAME') best = n.id
+  }
+  return best ?? pageId
+}
+
+/** Puts an instance of a component or set into `parentId` (a page or a frame), centred on the page point `c`. */
+export function instantiate(doc: Document, pickedId: string, parentId: string, c: { x: number; y: number }): Edit {
+  const picked = doc.nodes[pickedId]
+  if (!picked || !(picked.component || (picked.componentSet && variantsOf(doc, pickedId).length)) || !doc.nodes[parentId]) return { doc, ids: [] }
+  const { node } = newInstance(doc, pickedId), at = apply(invert(worldMatrix(doc, parentId)), c)
+  return { doc: insert(doc, { ...node, x: at.x - node.width / 2, y: at.y - node.height / 2 }, parentId), ids: [node.id] }
+}
+
+/** Top-level components and sets per page (not variants, not components nested in components), for the Assets panel. */
+export function assetsOf(doc: Document): { page: Node; items: Node[] }[] {
+  const walk = (id: string, out: Node[]) => { for (const n of childrenOf(doc, id)) { if (n.component || n.componentSet) out.push(n); else walk(n.id, out) } }
+  return doc.pages.map((id) => { const items: Node[] = []; walk(id, items); return { page: doc.nodes[id], items } }).filter((g) => g.items.length)
+}
+
 /** Wraps main components that share a parent in a component set laid out in a row. Returns the set's id. */
-export function combineAsVariants(doc: Document, ids: string[]): { doc: Document; id: string | null } {
+export function combineAsVariants(doc: Document, ids: string[]): Edit {
   const mains = topLevel(doc, ids).map((id) => doc.nodes[id])
-  if (!mains.length || mains.some((m) => !m.component || setOf(doc, m.id)) || new Set(mains.map((m) => m.parentId)).size > 1) return { doc, id: null }
+  if (!mains.length || mains.some((m) => !m.component || setOf(doc, m.id)) || new Set(mains.map((m) => m.parentId)).size > 1) return { doc, ids: [] }
   doc = put(doc, mains.filter((m) => !m.name.includes('=')).map((m) => ({ ...m, name: `Property 1=${m.name}` })))
-  const r = group(doc, mains.map((m) => m.id), 'FRAME')
-  if (!r.id) return r
-  doc = addAutoLayout(put(r.doc, [{ ...r.doc.nodes[r.id], componentSet: true, name: mains[0].name.split('=').at(-1)!.trim() || r.doc.nodes[r.id].name }]), r.id)
-  const set = doc.nodes[r.id]
-  return { doc: put(doc, [{ ...set, layout: { ...set.layout!, mode: 'HORIZONTAL', gap: 20, padding: [20, 20, 20, 20] } }]), id: r.id }
+  const r = group(doc, mains.map((m) => m.id), 'FRAME'), id = r.ids[0]
+  if (!id) return r
+  doc = addAutoLayout(put(r.doc, [{ ...r.doc.nodes[id], componentSet: true, name: mains[0].name.split('=').at(-1)!.trim() || r.doc.nodes[id].name }]), id)
+  const set = doc.nodes[id]
+  return { doc: put(doc, [{ ...set, layout: { ...set.layout!, mode: 'HORIZONTAL', gap: 20, padding: [20, 20, 20, 20] } }]), ids: [id] }
 }
 
 /** Copies the set's last variant as "<first prop>=Variant N". Returns the new variant's id. */
-export function addVariant(doc: Document, setId: string): { doc: Document; id: string | null } {
+export function addVariant(doc: Document, setId: string): Edit {
   const variants = variantsOf(doc, setId), last = variants.at(-1)
-  if (!last) return { doc, id: null }
+  if (!last) return { doc, ids: [] }
   const r = duplicate(doc, [last.id]), id = r.ids[0], props = variantProps(last.name)
   const prop = Object.keys(props)[0] ?? 'Property 1', taken = new Set(variants.map((v) => variantProps(v.name)[prop]))
   let n = variants.length + 1
   while (taken.has(`Variant ${n}`)) n++
-  return { doc: put(r.doc, [{ ...r.doc.nodes[id], name: variantName({ ...props, [prop]: `Variant ${n}` }) }]), id }
+  return { doc: put(r.doc, [{ ...r.doc.nodes[id], name: variantName({ ...props, [prop]: `Variant ${n}` }) }]), ids: [id] }
 }
 
 /** Layer names from a main component down to one of its nodes. */
 function namePath(doc: Document, mainId: string, id: string): string[] | null {
-  const path: string[] = []
-  for (let n: Node | undefined = doc.nodes[id]; n; n = n.parentId ? doc.nodes[n.parentId] : undefined) {
-    if (n.id === mainId) return path.reverse()
-    path.push(n.name)
-  }
-  return null
+  const up = lineage(doc, id), i = up.findIndex((n) => n.id === mainId)
+  return i < 0 ? null : up.slice(0, i).map((n) => n.name).reverse()
 }
 function atPath(doc: Document, mainId: string, path: string[]): string | undefined {
   let id: string | undefined = mainId
@@ -207,7 +232,9 @@ export function setVariant(doc: Document, rootId: string, prop: string, value: s
   if (!set) return doc
   const want = { ...variantProps(doc.nodes[root.instanceOf!].name), [prop]: value }
   const variants = variantsOf(doc, set.id)
-  const target = variants.find((v) => variantName(variantProps(v.name)) === variantName(want)) ?? variants.find((v) => variantProps(v.name)[prop] === value)
+  // the same property set in any order: "Size=L, Tone=Dark" matches "Tone=Dark, Size=L"
+  const key = (props: Record<string, string>) => JSON.stringify(Object.entries(props).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+  const target = variants.find((v) => key(variantProps(v.name)) === key(want)) ?? variants.find((v) => variantProps(v.name)[prop] === value)
   if (!target || target.id === root.instanceOf) return doc
   const moved = ownedBy(doc, rootId).filter((n) => n.ref).map((n) => {
     const path = namePath(doc, root.instanceOf!, n.ref!), ref = path && atPath(doc, target.id, path)

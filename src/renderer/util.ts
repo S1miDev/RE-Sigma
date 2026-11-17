@@ -1,10 +1,11 @@
+import { imageType } from '../shared/image'
+
 /** A message fit for the user. Strips the wrapper Electron adds to errors that cross IPC. */
 export const errorText = (e: unknown) =>
   (e instanceof Error ? e.message : String(e)).replace(/^Error invoking remote method '[^']+': (\w*Error: )?/, '')
 
 export function dataUrl(bytes: Uint8Array): string {
-  const is = (s: string, o = 0) => [...s].every((c, i) => bytes[o + i] === c.charCodeAt(0))
-  const type = is('\x89PNG') ? 'image/png' : is('\xff\xd8') ? 'image/jpeg' : is('GIF8') ? 'image/gif' : is('WEBP', 8) ? 'image/webp' : 'application/octet-stream'
+  const type = imageType(bytes) ?? 'application/octet-stream'
   let bin = ''
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
   return `data:${type};base64,${btoa(bin)}`
@@ -21,3 +22,15 @@ export const relativeTime = (iso: string, now = Date.now()) => {
 /** True when a key event belongs to a text field rather than the editor. */
 export const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)
+
+/**
+ * True when a key or clipboard event belongs to the page rather than the editor's shortcuts: typing in a field,
+ * anything while a dialog is open or inside a menu, Enter/Space on a focused button (which press it), and a plain
+ * character typed while the right panel itself has focus: a click that just missed a field must not switch canvas tools.
+ */
+export function keyBelongsToPage(e: Event): boolean {
+  const t = e.target instanceof HTMLElement ? e.target : null, k = e as KeyboardEvent, key = k.key
+  return isTyping(t) || document.querySelector('[aria-modal="true"]') !== null || t?.closest('[role="menu"]') != null
+    || (t?.closest('button') != null && (key === 'Enter' || key === ' '))
+    || (key?.length === 1 && !k.ctrlKey && !k.metaKey && !k.altKey && t?.matches('aside[data-side="right"]') === true)
+}

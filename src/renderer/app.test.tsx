@@ -2,9 +2,10 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, test, vi } from 'vitest'
-import type { ImportResult, ProjectSummary, RefigApi } from '../shared/api'
-import { emptyDocument, type Document } from '../shared/document'
+import type { ExportFile, ImportResult, ProjectSummary, RefigApi, VersionInfo } from '../shared/api'
+import { emptyDocument, makeNode, type Document } from '../shared/document'
 import { App } from './App'
+import { insert } from './editor/model/ops'
 
 /** A typed in-memory stand-in for window.refig. */
 function fakeApi(names: string[] = []) {
@@ -18,6 +19,9 @@ function fakeApi(names: string[] = []) {
     return s
   }
   const find = (id: string) => list.find((p) => p.id === id) ?? (() => { throw new Error('Project not found') })()
+  const versions = new Map<string, { info: VersionInfo; document: Document }[]>()
+  let vn = 0
+  const versionsOf = (id: string) => versions.get(id) ?? []
   const state = { imports: [] as ImportResult[], saveError: null as string | null }
   const api: RefigApi = {
     listProjects: vi.fn(async () => [...list]),
@@ -29,6 +33,17 @@ function fakeApi(names: string[] = []) {
       return find(id)
     }),
     addImage: vi.fn(async () => 'a'.repeat(64)),
+    listVersions: vi.fn(async (id) => versionsOf(id).map(({ info }) => info).reverse()),
+    saveVersion: vi.fn(async (id, name, document) => {
+      versions.set(id, [...versionsOf(id), { info: { id: `10000000-0000-0000-0000-${String(++vn).padStart(12, '0')}`, name, at: new Date().toISOString(), auto: false }, document }])
+      return versionsOf(id).map(({ info }) => info).reverse()
+    }),
+    getVersion: vi.fn(async (id, vid) => ({ document: versionsOf(id).find((v) => v.info.id === vid)!.document, images: {} })),
+    deleteVersion: vi.fn(async (id, vid) => {
+      versions.set(id, versionsOf(id).filter((v) => v.info.id !== vid))
+      return versionsOf(id).map(({ info }) => info).reverse()
+    }),
+    readLibrary: vi.fn(async (id) => ({ document: docs.get(id)!, images: {} })),
     renameProject: vi.fn(async (id, name) => {
       if (list.some((p) => p.name === name && p.id !== id)) throw new Error("Error invoking remote method 'refig:renameProject': Error: A project with this name already exists")
       return Object.assign(find(id), { name })
@@ -40,6 +55,11 @@ function fakeApi(names: string[] = []) {
       choice === 'cancel' ? { file: 'Site.fig', status: 'cancelled' } : { file: 'Site.fig', status: 'imported', summary: add(choice === 'keepBoth' ? 'Site (2)' : 'Site'), omitted: { VECTOR: 8, INSTANCE: 4 } }),
     exportProject: vi.fn(async () => ({ path: 'C:\\out\\A.refig' })),
     exportImage: vi.fn(async () => ({ path: 'C:\\out\\shape.png' })),
+    exportFiles: vi.fn(async (files: ExportFile[]) => files.map((f) => `C:\\out\\${f.name}.${f.kind}`)),
+    openExternal: vi.fn(async () => undefined),
+    listPlugins: vi.fn(async () => [{ id: 'demo', name: 'Demo plugin', main: 'code.js', commands: [{ id: 'run', label: 'Demo plugin' }] }]),
+    readPluginCode: vi.fn(async () => ''),
+    openPluginsFolder: vi.fn(async () => undefined),
   }
   names.forEach(add)
   return { api, list, docs, state }
@@ -187,6 +207,18 @@ test('Editor: draw a rectangle, edit it in the Design panel, autosave writes it'
   expect(rect.fills[0]).toMatchObject({ type: 'SOLID', color: { r: 1, g: 0, b: 0 } })
 })
 
+test('Editor: a fill takes a document colour from the swatches, and it becomes a recent colour', async () => {
+  const { user, draw } = await openEditor()
+  await user.keyboard('r')
+  draw(100, 100, 260, 180)
+  await user.click(screen.getByRole('button', { name: 'Fill 1 swatches' }))
+  const dialog = screen.getByRole('dialog', { name: 'Fill 1 swatches' })
+  const [first] = within(dialog).getAllByRole('button', { name: /^Document / })
+  await user.click(first)
+  await user.click(screen.getByRole('button', { name: 'Fill 1 swatches' }))
+  expect(within(screen.getByRole('dialog', { name: 'Fill 1 swatches' })).getByRole('button', { name: /^Recent / })).toBeInTheDocument()
+})
+
 test('Editor: layers can be renamed, hidden and deleted; undo brings them back', async () => {
   const { user, draw } = await openEditor()
   await user.keyboard('o')
@@ -223,6 +255,89 @@ test('Editor: main menu lists working commands with shortcuts and enables them w
   await user.click(screen.getByRole('menuitem', { name: 'Edit' }))
   await user.click(screen.getByRole('menuitem', { name: /Undo/ }))
   expect(screen.getByText(/This page is empty/)).toBeInTheDocument()
+})
+
+test('Editor: right-click opens a context menu that selects what it hits and runs commands', async () => {
+  const { user, draw, canvas } = await openEditor()
+  fireEvent.contextMenu(canvas, { clientX: 400, clientY: 400 })
+  expect(screen.getAllByRole('menuitem').map((i) => i.textContent)).toEqual([expect.stringContaining('Paste'), expect.stringContaining('Select all')])
+  await user.keyboard('{Escape}')
+  expect(screen.queryByRole('menu')).toBeNull()
+
+  await user.keyboard('r')
+  draw(10, 10, 60, 60)
+  await user.keyboard('{Escape}') // deselect
+  const layer = () => within(screen.getByRole('tree', { name: 'Layers' })).getByRole('treeitem', { name: 'Rectangle 1' })
+  expect(layer()).toHaveAttribute('aria-selected', 'false')
+  fireEvent.contextMenu(canvas, { clientX: 30, clientY: 30 })
+  expect(layer()).toHaveAttribute('aria-selected', 'true')
+  expect(screen.getByRole('menuitem', { name: /Duplicate/ })).toHaveTextContent('Ctrl+D')
+  await user.click(screen.getByRole('menuitem', { name: /Duplicate/ }))
+  expect(screen.queryByRole('menu')).toBeNull()
+  expect(within(screen.getByRole('tree', { name: 'Layers' })).getAllByRole('treeitem')).toHaveLength(2)
+
+  fireEvent.contextMenu(within(screen.getByRole('tree', { name: 'Layers' })).getAllByRole('treeitem')[0].querySelector('div')!) // layer rows open the same menu
+  expect(screen.getByRole('menuitem', { name: /Delete/ })).toBeEnabled()
+})
+
+test('Editor: Ctrl+F2 renames the selection from a pattern; Ctrl+F replaces in layer names', async () => {
+  const { user, draw } = await openEditor()
+  await user.keyboard('r')
+  draw(10, 10, 60, 60)
+  await user.keyboard('{Control>}{F2}{/Control}')
+  const pattern = screen.getByRole('textbox', { name: 'Name pattern' })
+  await user.clear(pattern)
+  await user.type(pattern, 'Card {{n}{Enter}')
+  expect(screen.getByRole('treeitem', { name: 'Card 1' })).toBeInTheDocument()
+
+  await user.keyboard('{Control>}f{/Control}')
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Search in' }), 'names')
+  await user.type(screen.getByRole('textbox', { name: 'Find' }), 'card')
+  await user.type(screen.getByRole('textbox', { name: 'Replace with' }), 'Tile{Enter}')
+  expect(screen.getByRole('treeitem', { name: 'Tile 1' })).toBeInTheDocument()
+})
+
+test('Editor: installed plugins are listed in the command palette and the Plugins menu', async () => {
+  const { user } = await openEditor()
+  await user.keyboard('{Control>}k{/Control}')
+  await user.type(screen.getByRole('combobox', { name: /Search commands/ }), 'demo')
+  expect(screen.getByRole('option', { name: /Demo plugin/ })).toHaveTextContent('Plugin')
+  await user.keyboard('{Escape}')
+
+  await user.click(screen.getByRole('button', { name: 'Main menu' }))
+  await user.click(screen.getByRole('menuitem', { name: /Plugins/ }))
+  expect(screen.getByRole('menuitem', { name: 'Demo plugin' })).toBeInTheDocument()
+  expect(screen.getByRole('menuitem', { name: 'Open plugins folder' })).toBeInTheDocument()
+})
+
+test('Editor: Ctrl+K searches commands, pages and layers; the layer list filters', async () => {
+  const { user, draw } = await openEditor()
+  await user.keyboard('r')
+  draw(10, 10, 60, 60)
+  await user.keyboard('{Escape}')
+  const pages = screen.getByRole('region', { name: 'Pages' })
+  await user.click(within(pages).getByRole('button', { name: 'Add page' })) // now on Page 2, Rectangle 1 is on Page 1
+
+  await user.keyboard('{Control>}k{/Control}')
+  await user.type(screen.getByRole('combobox', { name: /Search commands/ }), 'rectangle')
+  const options = screen.getAllByRole('option')
+  expect(options.map((o) => o.textContent)).toEqual(expect.arrayContaining([expect.stringContaining('Rectangle 1Page 1')]))
+  await user.click(screen.getByRole('option', { name: /Rectangle 1/ }))
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(within(pages).getByRole('button', { name: 'Page 1' })).toHaveAttribute('aria-current', 'page')
+  expect(screen.getByRole('treeitem', { name: 'Rectangle 1' })).toHaveAttribute('aria-selected', 'true')
+
+  await user.keyboard('{Control>}k{/Control}')
+  await user.type(screen.getByRole('combobox', { name: /Search commands/ }), 'ellipse{Enter}') // a command: switches the tool
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(screen.getByRole('button', { name: 'Ellipse' })).toHaveAttribute('aria-pressed', 'true')
+
+  const filter = screen.getByLabelText('Filter layers')
+  await user.type(filter, 'zzz')
+  expect(screen.getByText('No layers match.')).toBeInTheDocument()
+  await user.clear(filter)
+  await user.type(filter, 'rect')
+  expect(screen.getByRole('treeitem', { name: 'Rectangle 1' })).toBeInTheDocument()
 })
 
 test('Editor: pages can be added, renamed and removed', async () => {
@@ -268,4 +383,187 @@ test('Editor: export sends the selection through the API', async () => {
   const [bytes, name, kind] = vi.mocked(api.exportImage).mock.calls[0]
   expect([name, kind]).toEqual(['Rectangle 1', 'svg'])
   expect(new TextDecoder().decode(bytes)).toMatch(/^<svg .*<rect /)
+})
+
+test('Editor: saved export settings export to a folder; the page exports with nothing selected; a slice crops the page', async () => {
+  const { user, draw, api } = await openEditor()
+  await user.click(screen.getByRole('button', { name: 'Export page' })) // empty page: nothing to draw
+  expect(api.exportImage).not.toHaveBeenCalled()
+  await user.keyboard('r')
+  draw(10, 10, 60, 60)
+  await user.selectOptions(screen.getByLabelText('Export format'), 'svg')
+  await user.click(screen.getByRole('button', { name: 'Save as export setting' }))
+  await user.selectOptions(screen.getByLabelText('Export format'), 'pdf') // vector kinds only: jsdom has no canvas to rasterise
+  await user.click(screen.getByRole('button', { name: 'Save as export setting' }))
+  await user.type(screen.getAllByLabelText('Saved export suffix')[1], '-print')
+  await user.click(screen.getByRole('button', { name: 'Export saved settings' }))
+  await waitFor(() => expect(api.exportFiles).toHaveBeenCalled())
+  expect(vi.mocked(api.exportFiles).mock.calls[0][0].map((f) => [f.name, f.kind])).toEqual([['Rectangle 1', 'svg'], ['Rectangle 1-print', 'pdf']])
+
+  await user.click(screen.getByRole('button', { name: 'Slice' }))
+  draw(0, 0, 40, 40)
+  expect(screen.getByRole('treeitem', { name: 'Slice 1' })).toBeInTheDocument()
+  expect(screen.queryByText('Fill')).toBeNull()
+  await user.selectOptions(screen.getByLabelText('Export format'), 'svg')
+  await user.click(screen.getByRole('button', { name: 'Export selection' }))
+  await waitFor(() => expect(api.exportImage).toHaveBeenCalled())
+  expect(new TextDecoder().decode(vi.mocked(api.exportImage).mock.calls[0][0])).toMatch(/^<svg [^>]*>.*<rect /) // the page content under the slice, not the empty slice
+})
+
+test('Editor: Section tool draws a page-level section; size presets resize a frame', async () => {
+  const { user, draw } = await openEditor()
+  await user.keyboard('f')
+  draw(10, 10, 110, 110)
+  await user.selectOptions(screen.getByLabelText('Size preset'), 'iPhone 15 (393×852)')
+  expect(screen.getByLabelText('Width')).toHaveValue('393')
+  expect(screen.getByLabelText('Height')).toHaveValue('852')
+
+  await user.click(screen.getByRole('button', { name: 'Section' }))
+  draw(20, 20, 80, 80) // starts inside the frame, but a section never nests
+  expect(screen.getByRole('treeitem', { name: 'Section 1' })).toBeInTheDocument()
+  expect(screen.queryByLabelText('Size preset')).toBeNull()
+  expect(screen.queryByText('Clip content')).toBeNull()
+})
+
+test('Editor: Prototype section adds an interaction; Present opens the preview and Esc closes it', async () => {
+  const { user, draw } = await openEditor()
+  await user.keyboard('f')
+  draw(10, 10, 110, 110)
+  await user.click(screen.getByRole('button', { name: 'Add interaction' }))
+  expect(screen.getByRole('group', { name: 'Interaction 1' })).toBeInTheDocument()
+  await user.selectOptions(screen.getByLabelText('Action'), 'url')
+  expect(screen.getByLabelText('Link')).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Present' }))
+  expect(screen.getByRole('dialog', { name: 'Prototype preview' })).toBeInTheDocument()
+  await user.keyboard('{Escape}')
+  expect(screen.queryByRole('dialog', { name: 'Prototype preview' })).toBeNull()
+  await user.click(screen.getByRole('button', { name: 'Remove interaction' }))
+  expect(screen.queryByRole('group', { name: 'Interaction 1' })).toBeNull()
+})
+
+test('Editor: Comment tool pins a comment, replies, resolves and deletes it', async () => {
+  const { user, draw } = await openEditor()
+  await user.keyboard('c')
+  draw(40, 40, 40, 40)
+  await user.type(screen.getByLabelText('Comment text'), 'Fix this{Enter}')
+  expect(screen.getByRole('button', { name: 'Fix this' })).toBeInTheDocument() // listed in the Comments section
+  await user.type(screen.getByLabelText('Reply'), 'Done?{Enter}')
+  expect(screen.getByText('Done?')).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Resolve' }))
+  expect(screen.queryByRole('button', { name: 'Fix this' })).toBeNull() // resolved ones are hidden until shown
+  await user.click(screen.getByLabelText('Resolved'))
+  await user.click(screen.getByRole('button', { name: 'Delete' }))
+  expect(screen.queryByRole('button', { name: 'Fix this' })).toBeNull()
+})
+
+test('Editor: Dev mode inspects the selection and shows its CSS', async () => {
+  const { user, draw } = await openEditor()
+  await user.keyboard('r')
+  draw(10, 10, 110, 110)
+  expect(screen.getByLabelText('Width')).toBeInTheDocument() // Design panel
+  await user.click(screen.getByRole('button', { name: 'Dev mode' }))
+  expect(screen.queryByLabelText('Width')).toBeNull()
+  expect(screen.getByLabelText('Generated code')).toHaveTextContent('width: 100px')
+  await user.selectOptions(screen.getByLabelText('Code language'), 'SVG')
+  expect(screen.getByLabelText('Generated code')).toHaveTextContent('<svg')
+  await user.click(screen.getByRole('button', { name: 'Dev mode' }))
+  expect(screen.getByLabelText('Width')).toBeInTheDocument()
+})
+
+const fileMenu = async (user: ReturnType<typeof userEvent.setup>, item: string) => {
+  await user.click(screen.getByRole('button', { name: 'Main menu' }))
+  await user.click(screen.getByRole('menuitem', { name: 'File' }))
+  await user.click(screen.getByRole('menuitem', { name: item }))
+}
+
+test('Editor: Version history saves a named version and restores it as one undo step', async () => {
+  const { user, draw, api, id } = await openEditor()
+  await fileMenu(user, 'Version history…')
+  await user.type(screen.getByLabelText('Version name'), 'Empty page')
+  await user.click(screen.getByRole('button', { name: 'Save version' }))
+  expect(await screen.findByText('Empty page')).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Close' }))
+
+  await user.keyboard('r')
+  draw(10, 10, 60, 60)
+  expect(screen.queryByText(/This page is empty/)).toBeNull()
+  await fileMenu(user, 'Version history…')
+  await user.click(await screen.findByRole('button', { name: 'Restore Empty page' }))
+  expect(await screen.findByText(/This page is empty/)).toBeInTheDocument()
+  expect(api.saveVersion).toHaveBeenCalledWith(id, 'Before restore', expect.anything(), true)
+  await user.keyboard('{Control>}z{/Control}')
+  expect(screen.queryByText(/This page is empty/)).toBeNull()
+})
+
+test('Editor: Libraries adds another project, explains one without components, and removes the link', async () => {
+  const { user, docs, list } = await openEditor(['Alpha', 'Kit', 'Plain'])
+  const kit = docs.get(list[1].id)!
+  const button = makeNode('FRAME', { name: 'Button', parentId: kit.pages[0], width: 100, height: 40, component: true })
+  kit.nodes[button.id] = button
+
+  await fileMenu(user, 'Libraries…')
+  await user.click(await screen.findByRole('button', { name: 'Add Plain' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('no components')
+  await user.click(screen.getByRole('button', { name: 'Add Kit' }))
+  expect(await screen.findByRole('button', { name: 'Update Kit' })).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Remove Kit' }))
+  expect(screen.getByRole('button', { name: 'Add Kit' })).toBeInTheDocument()
+})
+
+test('Editor: the Assets panel lists components and puts an instance on the current page', async () => {
+  const { user, draw } = await openEditor()
+  await user.keyboard('r')
+  draw(10, 10, 60, 60)
+  await user.keyboard('{Control>}k{/Control}')
+  await user.type(screen.getByRole('combobox', { name: /Search commands/ }), 'create component{Enter}')
+  const assets = screen.getByRole('region', { name: 'Assets' })
+  expect(within(assets).getByRole('button', { name: /Component/ })).toBeInTheDocument()
+
+  await user.click(within(screen.getByRole('region', { name: 'Pages' })).getByRole('button', { name: 'Add page' })) // Page 2 is empty
+  await user.type(within(assets).getByLabelText('Filter assets'), 'zzz')
+  expect(within(assets).queryByRole('button', { name: /Component/ })).toBeNull()
+  await user.clear(within(assets).getByLabelText('Filter assets'))
+  await user.click(within(assets).getByRole('button', { name: /Component/ }))
+  expect(screen.getByRole('treeitem', { name: /Component/ })).toHaveAttribute('aria-selected', 'true')
+})
+
+/** Opens a project whose page holds frame "Card" with rectangle "Swatch" inside it. */
+async function openNested() {
+  const f = fakeApi(['Alpha']), user = userEvent.setup()
+  let doc = emptyDocument()
+  const card = makeNode('FRAME', { name: 'Card', x: 0, y: 0, width: 200, height: 200 }), swatch = makeNode('RECTANGLE', { name: 'Swatch', x: 20, y: 20, width: 50, height: 50 })
+  doc = insert(insert(doc, card, doc.pages[0]), swatch, card.id)
+  f.docs.set(f.list[0].id, doc)
+  render(<App api={f.api} />)
+  await user.click(await screen.findByRole('button', { name: 'Open Alpha' }))
+  return { user, canvas: await screen.findByLabelText('Canvas'), tree: () => screen.getByRole('tree', { name: 'Layers' }) }
+}
+
+test('Layers: selecting on the canvas opens the parents, scrolls to the row and highlights it', async () => {
+  const { user, canvas, tree } = await openNested() // the scrolling itself needs real layout: see the e2e test "layers: …"
+  await user.click(within(tree()).getByRole('button', { name: 'Collapse Card' }))
+  expect(within(tree()).queryByRole('treeitem', { name: 'Swatch' })).toBeNull()
+  fireEvent.pointerDown(canvas, { clientX: 30, clientY: 30, button: 0, pointerId: 1, ctrlKey: true }) // Ctrl+click selects inside the frame
+  fireEvent.pointerUp(canvas, { clientX: 30, clientY: 30, pointerId: 1, ctrlKey: true })
+  const row = within(tree()).getByRole('treeitem', { name: 'Swatch' })
+  expect(row).toHaveAttribute('aria-selected', 'true')
+})
+
+test('Layers: while filtering, a matching layer keeps its children and can be collapsed', async () => {
+  const { user, tree } = await openNested()
+  await user.type(screen.getByLabelText('Filter layers'), 'card')
+  expect(within(tree()).getByRole('treeitem', { name: 'Swatch' })).toBeInTheDocument()
+  await user.click(within(tree()).getByRole('button', { name: 'Collapse Card' }))
+  expect(within(tree()).queryByRole('treeitem', { name: 'Swatch' })).toBeNull()
+})
+
+test('Editor: letters typed after a click in the Design panel do not switch canvas tools', async () => {
+  const { user, draw } = await openEditor()
+  await user.keyboard('r')
+  draw(100, 100, 260, 180)
+  await user.click(screen.getByRole('complementary', { name: 'Design' }))
+  await user.keyboard('c')
+  expect(screen.getByRole('button', { name: /^Comment/ })).toHaveAttribute('aria-pressed', 'false')
+  await user.keyboard('{Control>}z{/Control}') // shortcuts with Ctrl still work
+  expect(screen.getByText(/This page is empty/)).toBeInTheDocument()
 })
